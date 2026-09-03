@@ -247,6 +247,11 @@ client alike:
 A status other than `ran` is always `failed`. The task row keeps the raw
 code, the status and the output; the outcome is what the UI shows.
 
+The defaults are Windows codes. Linux and macOS hand the parent only the
+low 8 bits of an exit status, so a script there cannot answer 3010 or
+1618 (they arrive as 194 and 82); a non-Windows snapin that needs the
+reboot or retry outcome maps the code it can actually return.
+
 A fetch that fails (network, 503 from a node that is down) leaves the task
 open and the revision unapplied; the next poll runs the queue again from
 the first open task.
