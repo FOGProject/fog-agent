@@ -56,7 +56,15 @@ func countLines(out []byte) int {
 // the kernel where there is no systemd.
 func osReboot(delay time.Duration, message string) error {
 	if delay > 0 {
+		// A service's PATH does not always reach the sbin directories
+		// shutdown lives in.
 		path, err := exec.LookPath("shutdown")
+		for _, p := range []string{"/usr/sbin/shutdown", "/sbin/shutdown"} {
+			if err == nil {
+				break
+			}
+			path, err = exec.LookPath(p)
+		}
 		if err != nil {
 			return err
 		}
