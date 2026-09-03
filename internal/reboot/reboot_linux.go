@@ -16,11 +16,16 @@ import (
 // osLoggedIn asks logind, which sees graphical, console and ssh sessions
 // alike and is what modern distributions maintain (Debian 13 has retired
 // utmp); `who` is the fallback for a box without systemd.
+//
+// Sessions, not users: logind also books the per-user service manager
+// (class "manager", systemd 256+) and greeters or lock screens as
+// sessions, and a user's manager outlives their last login by a moment.
+// Only the classes a person sits in count.
 func osLoggedIn() (int, error) {
 	if path, err := exec.LookPath("loginctl"); err == nil {
-		out, err := exec.Command(path, "list-users", "--no-legend").Output()
+		out, err := exec.Command(path, "list-sessions", "--no-legend").Output()
 		if err == nil {
-			return countLines(out), nil
+			return countUserSessions(out), nil
 		}
 	}
 	if path, err := exec.LookPath("who"); err == nil {
@@ -40,13 +45,22 @@ func osLoggedIn() (int, error) {
 	return 0, errors.New("neither loginctl nor who is available")
 }
 
-func countLines(out []byte) int {
+// countUserSessions reads `loginctl list-sessions --no-legend`, whose
+// columns are SESSION UID USER SEAT LEADER CLASS TTY IDLE SINCE on systemd
+// 256+ and SESSION UID USER SEAT TTY before that. Older output has no class
+// column and lists only real sessions, so every row counts there.
+func countUserSessions(out []byte) int {
 	n := 0
 	sc := bufio.NewScanner(bytes.NewReader(out))
 	for sc.Scan() {
-		if strings.TrimSpace(sc.Text()) != "" {
-			n++
+		f := strings.Fields(sc.Text())
+		if len(f) == 0 {
+			continue
 		}
+		if len(f) >= 6 && !strings.HasPrefix(f[5], "user") {
+			continue
+		}
+		n++
 	}
 	return n
 }
