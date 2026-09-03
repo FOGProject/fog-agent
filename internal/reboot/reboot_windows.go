@@ -55,12 +55,16 @@ func osLoggedIn() (int, error) {
 // itself, shows the message to every session and honors the countdown.
 // /d p:0:0 marks the reason planned, so it does not land in the event log
 // as an unexpected shutdown.
-func osReboot(delay time.Duration, message string) error {
+func osReboot(mode string, delay time.Duration, message string) error {
 	path, err := exec.LookPath("shutdown.exe")
 	if err != nil {
 		return err
 	}
-	out, err := exec.Command(path, "/r", "/f", "/t", fmt.Sprint(int(delay/time.Second)), "/d", "p:0:0", "/c", message).CombinedOutput()
+	flag := "/r"
+	if mode == ModeShutdown {
+		flag = "/s"
+	}
+	out, err := exec.Command(path, flag, "/f", "/t", fmt.Sprint(int(delay/time.Second)), "/d", "p:0:0", "/c", message).CombinedOutput()
 	if err != nil {
 		return errors.New(strings.TrimSpace(string(out)))
 	}

@@ -200,6 +200,47 @@ revision move, `hostname: applied (fogagent-test -> fog-renamed)`, the
 following run reported `unchanged`, both audited as `agent.result` with
 auth source `agent`.
 
+### Snapins
+
+Capability `snapin` (module `snapinclient`). The block is the host's
+snapin queue exactly as the server tasked it: `snapinTasks` rows in
+`sequence` order, which the server wrote from its resolver -- the host's
+own associations first, then its groups' grants in group order,
+deduplicated. The agent runs them in that order and never re-sorts.
+
+```json
+{
+  "capabilities": ["snapin"],
+  "snapins": [
+    {"task": 41, "snapin": 7, "name": "Install 7-Zip", "file": "7z.msi",
+     "size": 1834496, "sha512": "…", "args": "/qn", "run_with": "msiexec.exe",
+     "run_with_args": "/i", "timeout": 600, "action": "", "abort_on_fail": false}
+  ]
+}
+```
+
+For each task, in order:
+
+| Step | Route | Server side |
+|---|---|---|
+| fetch | `GET /agent/v1/snapin/{task}/file` | the task must belong to this host's own job (404 otherwise, the same message as "no such task"); marks the task, the job and the host's task in progress; streams the bytes from the storage node over the web tier's own FTP session, so the agent trusts only the server's certificate |
+| verify | | the agent hashes as it downloads and refuses a sha512 that is not the one declared. That refusal is reported as exit `-2`, not retried: the file the server has is not the file it described, and the admin needs to see it |
+| run | | `run_with run_with_args file args`, or the file itself when `run_with` is empty (made executable on Unix); `timeout` seconds then the whole process group is killed, exit `-3`; a payload that could not start is exit `-4` |
+| report | `POST /agent/v1/snapin/{task}/result` `{exit_code, details}` | closes the task with the exit code and the last 250 characters of output, through the same code the legacy client's check-in uses: cancels the rest of the job when it aborts on failure, ends the job after its last task, and records `agent.result` on the host |
+
+A fetch that fails (network, 503 from a node that is down) leaves the task
+open and the revision unapplied; the next poll runs the queue again from
+the first open task. `abort_on_fail` stops the agent after a non-zero
+exit; the server cancels what is left, which moves the revision.
+
+`action` (`reboot` or `shutdown`, from the snapin's flags) is a forced
+reason for the reboot coordinator, the way the legacy client's post-snapin
+restart was forced; every shutdown reason together means a shutdown, one
+reason that needs the machine back means a reboot.
+
+Payloads land under the state directory in a root-only directory named
+by task id and are deleted after the run, whatever happened.
+
 ## POST /agent/v1/result
 
 What one provider did at one revision. Same gate as poll. Recorded on the

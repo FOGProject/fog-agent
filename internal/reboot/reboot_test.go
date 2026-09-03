@@ -76,3 +76,16 @@ func TestMergeReplacesSameSource(t *testing.T) {
 		t.Fatalf("drop task: got %+v", r)
 	}
 }
+
+// TestModeRebootWinsAMix: every reason a shutdown means a shutdown; one
+// reason that needs the machine back turns it into a reboot.
+func TestModeRebootWinsAMix(t *testing.T) {
+	d := Decide([]Reason{{Source: "snapin", Detail: "a", Mode: ModeShutdown}}, 0, policy)
+	if !d.Reboot || d.Mode != ModeShutdown {
+		t.Fatalf("all shutdown: got %+v", d)
+	}
+	d = Decide([]Reason{{Source: "snapin", Detail: "a", Mode: ModeShutdown}, {Source: SourceTask, Detail: "task 7"}}, 0, policy)
+	if !d.Reboot || d.Mode != ModeReboot {
+		t.Fatalf("mixed: got %+v", d)
+	}
+}

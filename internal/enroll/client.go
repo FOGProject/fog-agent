@@ -17,6 +17,7 @@ import (
 
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
+	"github.com/FOGProject/fog-agent/internal/provider/snapin"
 	"github.com/FOGProject/fog-agent/internal/reboot"
 )
 
@@ -102,6 +103,8 @@ type DesiredState struct {
 	Task *reboot.Task `json:"task,omitempty"`
 	// Reboot is the policy every reboot obeys; sent with any state.
 	Reboot *reboot.Policy `json:"reboot,omitempty"`
+	// Snapins is the host's snapin queue in run order (capability snapin).
+	Snapins []snapin.Task `json:"snapins,omitempty"`
 }
 
 // ResultRequest is what the agent reports for one capability.
@@ -325,6 +328,49 @@ func (c *Client) Result(ctx context.Context, r ResultRequest) error {
 	}
 	if code != http.StatusOK || out.Status != "ok" {
 		return fmt.Errorf("result: HTTP %d with status %q: %s", code, out.Status, out.Error)
+	}
+	return nil
+}
+
+// SnapinFile streams the payload of one snapin task into w. Fetching it
+// is what marks the task in progress on the server.
+func (c *Client) SnapinFile(ctx context.Context, taskID int, w io.Writer) error {
+	hr, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/agent/v1/snapin/%d/file", c.ServerURL, taskID), nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.HTTP.Do(hr)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusUnauthorized {
+		return ErrUnauthorized
+	}
+	if resp.StatusCode != http.StatusOK {
+		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return fmt.Errorf("snapin file: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+	}
+	_, err = io.Copy(w, resp.Body)
+	return err
+}
+
+// SnapinResult reports one task's exit code and output tail.
+func (c *Client) SnapinResult(ctx context.Context, taskID, exitCode int, details string) error {
+	var out struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	in := struct {
+		ExitCode int    `json:"exit_code"`
+		Details  string `json:"details"`
+	}{exitCode, details}
+	code, err := c.authed(ctx, http.MethodPost, fmt.Sprintf("/agent/v1/snapin/%d/result", taskID), in, &out)
+	if err != nil {
+		return err
+	}
+	if code != http.StatusOK || out.Status != "ok" {
+		return fmt.Errorf("snapin result: HTTP %d with status %q: %s", code, out.Status, out.Error)
 	}
 	return nil
 }

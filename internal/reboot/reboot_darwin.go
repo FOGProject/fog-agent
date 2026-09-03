@@ -27,12 +27,16 @@ func osLoggedIn() (int, error) {
 	return len(users), nil
 }
 
-func osReboot(delay time.Duration, message string) error {
+func osReboot(mode string, delay time.Duration, message string) error {
+	flag := "-r"
+	if mode == ModeShutdown {
+		flag = "-h"
+	}
 	when := "now"
 	if delay > 0 {
 		when = fmt.Sprintf("+%d", int((delay+time.Minute-1)/time.Minute))
 	}
-	out, err := exec.Command("shutdown", "-r", when, message).CombinedOutput()
+	out, err := exec.Command("shutdown", flag, when, message).CombinedOutput()
 	if err != nil {
 		return errors.New(strings.TrimSpace(string(out)))
 	}

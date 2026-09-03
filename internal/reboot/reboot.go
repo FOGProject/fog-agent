@@ -16,6 +16,12 @@ import (
 // machine into imaging. Every other source is a capability name.
 const SourceTask = "task"
 
+// Modes: what the machine does when the coordinator acts.
+const (
+	ModeReboot   = "reboot"
+	ModeShutdown = "shutdown"
+)
+
 // Reason is one outstanding request for a reboot. Force is the policy the
 // server attached to it: for a task, FOG_TASK_FORCE_REBOOT; for a
 // capability, the host's "Enforce Hostname | AD Join Reboots" flag. Both
@@ -27,6 +33,8 @@ type Reason struct {
 	Since  time.Time `json:"since"`
 	// TaskID is set on a task reason: the FOG task the reboot is for.
 	TaskID int `json:"task_id,omitempty"`
+	// Mode is ModeReboot (the default, when empty) or ModeShutdown.
+	Mode string `json:"mode,omitempty"`
 }
 
 // Task is the desired-state block for a waiting FOG task.
@@ -46,6 +54,11 @@ type Policy struct {
 // Decision is what the coordinator concluded for this poll.
 type Decision struct {
 	Reboot bool
+	// Mode is what to do: a reboot unless every reason asked for a
+	// shutdown. A reboot satisfies a shutdown request's "power cycle" but
+	// a shutdown leaves a machine that needed to come back (an imaging
+	// task, a rename) sitting off, so reboot wins a mix.
+	Mode string
 	// Delay is the countdown to give users, zero when nobody is there.
 	Delay time.Duration
 	Why   string
@@ -60,10 +73,14 @@ func Decide(reasons []Reason, loggedIn int, p Policy) Decision {
 	}
 	details := make([]string, 0, len(reasons))
 	allowed := false
+	mode := ModeShutdown
 	for _, r := range reasons {
 		details = append(details, r.Source+": "+r.Detail)
 		if loggedIn == 0 || r.Force {
 			allowed = true
+		}
+		if r.Mode != ModeShutdown {
+			mode = ModeReboot
 		}
 	}
 	sort.Strings(details)
@@ -71,7 +88,7 @@ func Decide(reasons []Reason, loggedIn int, p Policy) Decision {
 	if !allowed {
 		return Decision{Why: fmt.Sprintf("waiting for %d logged-in user(s) to leave (%s)", loggedIn, why)}
 	}
-	d := Decision{Reboot: true, Why: why}
+	d := Decision{Reboot: true, Mode: mode, Why: why}
 	if loggedIn > 0 {
 		d.Delay = time.Duration(p.Grace) * time.Second
 		d.Why = fmt.Sprintf("%d user(s) logged in, %ds warning (%s)", loggedIn, p.Grace, why)
@@ -114,9 +131,13 @@ func LoggedIn() (int, error) {
 	return loggedIn()
 }
 
-// Execute asks the OS to reboot after delay, showing message to whoever is
-// logged in. It returns once the request is accepted; the reboot itself
-// is asynchronous, so callers persist their state before calling this.
-func Execute(delay time.Duration, message string) error {
-	return execute(delay, message)
+// Execute asks the OS to reboot or shut down (mode) after delay, showing
+// message to whoever is logged in. It returns once the request is
+// accepted; the action itself is asynchronous, so callers persist their
+// state before calling this.
+func Execute(mode string, delay time.Duration, message string) error {
+	if mode == "" {
+		mode = ModeReboot
+	}
+	return execute(mode, delay, message)
 }

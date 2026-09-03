@@ -65,10 +65,14 @@ func countUserSessions(out []byte) int {
 	return n
 }
 
-// osReboot uses shutdown(8) for a delayed reboot, which also broadcasts the
+// osReboot uses shutdown(8) for a delayed action, which also broadcasts the
 // message to logged-in users; an immediate one goes through systemctl, or
 // the kernel where there is no systemd.
-func osReboot(delay time.Duration, message string) error {
+func osReboot(mode string, delay time.Duration, message string) error {
+	flag, unit, kernel := "-r", "reboot", syscall.LINUX_REBOOT_CMD_RESTART
+	if mode == ModeShutdown {
+		flag, unit, kernel = "-h", "poweroff", syscall.LINUX_REBOOT_CMD_POWER_OFF
+	}
 	if delay > 0 {
 		// A service's PATH does not always reach the sbin directories
 		// shutdown lives in.
@@ -85,19 +89,19 @@ func osReboot(delay time.Duration, message string) error {
 		// shutdown counts in whole minutes; round up so nobody gets
 		// less warning than the policy promised.
 		minutes := int((delay + time.Minute - 1) / time.Minute)
-		out, err := exec.Command(path, "-r", fmt.Sprintf("+%d", minutes), message).CombinedOutput()
+		out, err := exec.Command(path, flag, fmt.Sprintf("+%d", minutes), message).CombinedOutput()
 		if err != nil {
 			return errors.New(strings.TrimSpace(string(out)))
 		}
 		return nil
 	}
 	if path, err := exec.LookPath("systemctl"); err == nil {
-		out, err := exec.Command(path, "reboot").CombinedOutput()
+		out, err := exec.Command(path, unit).CombinedOutput()
 		if err != nil {
 			return errors.New(strings.TrimSpace(string(out)))
 		}
 		return nil
 	}
 	syscall.Sync()
-	return syscall.Reboot(syscall.LINUX_REBOOT_CMD_RESTART)
+	return syscall.Reboot(kernel)
 }

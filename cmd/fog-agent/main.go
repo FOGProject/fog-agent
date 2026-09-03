@@ -9,8 +9,10 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/provider"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
+	"github.com/FOGProject/fog-agent/internal/provider/snapin"
 	"github.com/FOGProject/fog-agent/internal/reboot"
 )
 
@@ -380,6 +383,16 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, out
 			})
 			out.say(fmt.Sprintf("%s: task %d (%s) waiting", capability, desired.Task.ID, desired.Task.Type))
 			continue
+		case "snapin":
+			// The queue in the server's run order, one at a time. A
+			// task that could not be fetched stays open for the next
+			// poll; everything else closes with a result. The reboot
+			// or shutdown a snapin asks for is a reason for the
+			// coordinator, forced the way the legacy client's was.
+			if !runSnapins(ctx, st, client, desired.Snapins, out) {
+				allOK = false
+			}
+			continue
 		default:
 			// A capability this build has no provider for: the server
 			// is newer, and that is fine (design 0001 5.1).
@@ -409,6 +422,37 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, out
 	return st.SaveConfig()
 }
 
+// runSnapins runs the queue in order and reports each task. It returns
+// false when a task is left open (a fetch failed) or a report did not
+// land, so the revision stays unapplied and the next poll comes back.
+func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, queue []snapin.Task, out *sayer) bool {
+	dir := filepath.Join(st.Dir, "snapins")
+	for _, t := range queue {
+		r := snapin.Run(ctx, t, dir, func(ctx context.Context, w io.Writer) error {
+			return client.SnapinFile(ctx, t.ID, w)
+		})
+		if !r.Fetched {
+			out.say(fmt.Sprintf("snapin %q (task %d): %s; will retry next poll", t.Name, t.ID, r.Details))
+			return false
+		}
+		out.say(fmt.Sprintf("snapin %q (task %d): exit %d (%s)", t.Name, t.ID, r.ExitCode, r.Details))
+		if err := client.SnapinResult(ctx, t.ID, r.ExitCode, r.Details); err != nil {
+			out.say("snapin result: " + err.Error())
+			return false
+		}
+		if t.Action != "" {
+			st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{
+				Source: "snapin", Detail: fmt.Sprintf("snapin %q", t.Name), Force: true, Mode: t.Action,
+			})
+		}
+		if t.AbortOnFail && r.ExitCode != 0 {
+			out.say("snapin: job aborts on failure; leaving the rest to the server")
+			break
+		}
+	}
+	return true
+}
+
 // coordinate is the reboot coordinator's turn: with reasons outstanding it
 // looks at who is logged in, applies the policy, reports the decision as
 // a result, and reboots when allowed. It is the only caller of
@@ -426,7 +470,7 @@ func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, ou
 	if d.Reboot {
 		status = provider.StatusApplied
 	}
-	out.say(fmt.Sprintf("reboot: %s (%s)", status, d.Why))
+	out.say(fmt.Sprintf("reboot: %s (%s%s)", status, d.Why, map[bool]string{true: ", mode " + d.Mode, false: ""}[d.Reboot]))
 	if err := client.Result(ctx, enroll.ResultRequest{
 		Revision: st.Config.AppliedRevision, Capability: "reboot", Status: status, Detail: d.Why,
 	}); err != nil {
@@ -448,7 +492,7 @@ func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, ou
 	if err := st.SaveConfig(); err != nil {
 		return err
 	}
-	if err := reboot.Execute(d.Delay, "FOG: rebooting for "+d.Why); err != nil {
+	if err := reboot.Execute(d.Mode, d.Delay, "FOG: "+d.Mode+" for "+d.Why); err != nil {
 		st.Config.PendingReboot = reasons
 		st.Config.RebootedForTask = 0
 		_ = st.SaveConfig()
