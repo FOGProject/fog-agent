@@ -1,6 +1,6 @@
 # 0003: Software management, Chocolatey first
 
-Status: proposed 2026-09-03. Follows the software row in
+Status: agreed 2026-09-03 (desired state, no bootstrap in v1, Chocolatey first). Follows the software row in
 [0001](0001-architecture.md) section 7: "detection rule, install action,
 optional uninstall action; prefer native managers; existing snapins map onto
 payload with no detection rule".
@@ -46,6 +46,19 @@ server stores a `backend` column. Chocolatey ships in v1 because Tom asked
 for it and because it is the one that already has a foothold in FOG. winget,
 apt/dnf/zypper and brew are later backends behind the same interface and the
 same tables; nothing in the schema is Chocolatey-specific.
+
+**Why Chocolatey before winget.** The agent runs as a Windows service under
+SYSTEM. winget ships as an MSIX app, and MSIX packages cannot be registered
+for the SYSTEM account, so winget in service context is unsupported by
+Microsoft and works only through binary-extraction workarounds (winget-cli
+issue 4422, winget-pkgs issue 346975, as of 2025). Chocolatey is a plain
+executable built for unattended admin use and runs as SYSTEM by design. It
+also has the simpler self-hosting story: a folder or share is a valid
+source, which is what offline labs, FOG's home turf, need. Its costs are
+real and named: it must be installed on the host (follow-on), and the
+community feed rate-limits fleets, which the per-entry `source` answers.
+winget stays a later backend, and the natural route for it is the per-user
+helper from 0001 section 6.1 rather than the service.
 
 **The backend is the `choco` CLI, not "Windows".** The provider execs a
 `choco` binary at a configured path (default
