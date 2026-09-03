@@ -1,0 +1,121 @@
+# Agent protocol v1: enrollment
+
+Status: DRAFT 2026-09-03. The agent owns this contract (design doc 5.1); the
+server implements it under `/agent/v1`. JSON both ways, UTF-8, `Content-Type:
+application/json`.
+
+## POST /agent/v1/enroll
+
+Server-authenticated TLS only (the agent has no certificate yet). The agent
+trusts the CA bundle written at bootstrap, never the OS store. Idempotent: the
+agent repeats the identical request until it gets a terminal answer.
+
+Request:
+
+```json
+{
+  "protocol": 1,
+  "agent_version": "0.1.0",
+  "os": "windows", "arch": "amd64",
+  "hostname": "LAB-PC-07",
+  "identity": {
+    "system_uuid": "…", "system_serial": "…", "board_serial": "…",
+    "chassis_asset": "…", "smbios_version": "3.2",
+    "macs": ["cc:48:3a:5e:11:aa"]
+  },
+  "csr_pem": "-----BEGIN CERTIFICATE REQUEST-----…",
+  "token": "optional enrollment token"
+}
+```
+
+The CSR's subject is ignored; the server sets the issued subject
+(`CN=fog-agent host <id>`) so an agent cannot choose its own identity. Only
+the public key and the proof of possession matter.
+
+Responses:
+
+| HTTP | `status` | Meaning | Agent behavior |
+|---|---|---|---|
+| 200 | `issued` | Approved. Body carries `host_id`, `certificate_pem` (leaf followed by its issuing chain), `not_after` | Store cert, switch to mTLS, done |
+| 202 | `pending` | Waiting for an admin, a token, or a deploy. Body carries `reason` (`unknown-host`, `known-host-no-agent`, `rebind`) and `retry_after` seconds | Log once per reason change, sleep, repeat |
+| 403 | `denied` | An admin denied this key. Body carries `reason` | Log, back off to hourly, repeat (a later approval must still be reachable) |
+| 400 | `error` | The request is malformed (`reason`: `csr`) | Log, back off, repeat |
+| 503 | `error` | The server accepted the request but could not sign (`reason`: `signing`); the row is kept | Log, retry after `retry_after` |
+| 426 | `unsupported` | Server does not speak protocol 1 | Log, back off, repeat |
+
+Approval paths on the server, in order of evaluation:
+
+| Path | Condition | Outcome |
+|---|---|---|
+| Token | `token` present, valid, unspent (or multi-use and unexpired) | Issue; an unknown machine was already created as a pending host and is un-pended by the issue; audit `agent.enroll` via `token` |
+| Post-image | identity resolves to a host with no conflict, and the host's last deploy completed within `FOG_AGENT_ENROLL_DEPLOY_WINDOW` hours (default 24, 0 disables) | Issue and (re)bind; audit via `deploy` |
+| Admin | everything else | Pending row; on approve issue and audit via `admin` with the user; on deny record the key fingerprint so the same key returns `denied` |
+
+An unknown machine becomes a **pending host** immediately (description
+"Pending Registration created by FOG_AGENT"), with an inventory row carrying
+its firmware identity, so it appears where admins already look for pending
+registrations. Approving the enrollment un-pends the host. The agent never
+learns a host id until issue, so nothing about the pending host reaches it.
+
+Reasons a request waits: `unknown-host`, `known-host-no-agent`, `rebind`
+(the host already has an agent key), `identity-conflict` (firmware and MACs
+name different hosts; the firmware's host is kept and the admin sees the
+conflict), `reissue` (same key, certificate already collected), `no-mac`.
+
+A pending row holds the request verbatim (identity, hostname, key
+fingerprint, CSR) so approval signs exactly what was presented. A host with a
+live certificate that receives a new enrollment from the same identity pends
+with reason `rebind`; approving it revokes the old fingerprint.
+
+## What a pending agent may do
+
+Nothing. No other route accepts a request without a client certificate the
+server issued, so "pending" is enforced by TLS, not by application checks.
+
+## POST /agent/v1/poll
+
+The first authenticated call, and the hard floor's heartbeat. Every route
+under `/agent/v1/` other than enroll is reachable only with the client
+certificate enrollment issued: the web server verifies it against the agent
+CA bundle on the TLS handshake (`ssl_verify_client optional` /
+`SSLVerifyClient optional`, so a browser is never asked for one), and the
+router re-verifies the chain against the same bundle and binds the key
+fingerprint to exactly one live, non-pending host before any route matches.
+No token, no session, no `mac=`.
+
+Request:
+
+```json
+{"agent_version": "1.2.3"}
+```
+
+Response `200`:
+
+```json
+{
+  "status": "ok",
+  "protocol": 1,
+  "host": {"id": 231, "name": "7550precision"},
+  "capabilities": [],
+  "poll_interval": 300,
+  "server_time": "2026-09-03T12:43:21-05:00"
+}
+```
+
+`capabilities` is the list from design 0001 5.1; empty is a valid answer and
+the agent idles on it. The server records `hostAgentCheckin` and
+`hostAgentVersion` on every poll.
+
+| Status | Meaning | Agent does |
+|---|---|---|
+| 200 | Bound host, answered | Sleep `poll_interval`, poll again |
+| 401 | No verified certificate, or one bound to no live host (deleted, re-enrolled elsewhere, still pending) | Drop the certificate, keep the key, enroll again |
+
+The 401 is the reimage/rebind path in practice: a host deleted from FOG and
+its agent left running comes back as `unknown-host` pending, with the same
+key, and waits for an admin like any new machine.
+
+Server files behind this: `Agent\Principal` (verification and fingerprint),
+the gate in `Route` before dispatch, and the installer publishing
+`management/other/agent-ca-bundle.pem` (agent CA + root) for both the vhost
+and PHP to verify against.
