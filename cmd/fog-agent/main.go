@@ -30,6 +30,15 @@ import (
 var Version = "dev"
 
 func main() {
+	// Under the Windows service control manager there is no terminal:
+	// the same run loop, with the log in a file and a stop request
+	// canceling the context (service_windows.go).
+	if isService() {
+		if err := runService(); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -48,12 +57,14 @@ func main() {
 		err = cmdRenew(os.Args[2:])
 	case "status":
 		err = cmdStatus(os.Args[2:])
+	case "service":
+		err = cmdService(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
 	}
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "fog-agent:", err)
+		fmt.Fprintln(logOut, "fog-agent:", err)
 		os.Exit(1)
 	}
 }
@@ -66,6 +77,9 @@ func usage() {
                                           enroll if needed, then poll the server
   fog-agent renew [--dir DIR]             renew the certificate now, whatever its expiry
   fog-agent status [--dir DIR]
+  fog-agent service install --server URL --ca FILE [--token T] [--dir DIR]
+                                          Windows: install and start the service
+  fog-agent service uninstall|start|stop|status
   fog-agent version`)
 }
 
@@ -75,14 +89,22 @@ func printJSON(v any) error {
 	return enc.Encode(v)
 }
 
+// logOut is where the agent talks: stderr from a terminal, the log file
+// under the service (runService swaps it before anything is said).
+var logOut io.Writer = os.Stderr
+
 // sayer prints a line only when it changes, so a loop that repeats the
 // same state every few minutes writes one line per change of state, not
-// one per iteration (design doc 5.1: informative, never noisy).
+// one per iteration (design doc 5.1: informative, never noisy). Under
+// the service each line is stamped, since nothing else dates it.
 type sayer struct{ last string }
 
 func (s *sayer) say(msg string) {
 	if msg != s.last {
-		fmt.Fprintln(os.Stderr, msg)
+		if logOut != os.Stderr {
+			msg = time.Now().Format(time.RFC3339) + " " + msg
+		}
+		fmt.Fprintln(logOut, msg)
 		s.last = msg
 	}
 }
@@ -233,6 +255,15 @@ func cmdEnroll(args []string) error {
 // the agent drops it and goes back to enrolling, where it will be pended
 // for an admin like any unknown machine.
 func cmdRun(args []string) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	return runAgent(ctx, args)
+}
+
+// runAgent is the agent: enroll if needed, then poll until ctx ends. The
+// command line gives it an interrupt context; the Windows service gives it
+// one the service control manager cancels.
+func runAgent(ctx context.Context, args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	f := addCommonFlags(fs)
 	once := fs.Bool("once", false, "one poll (enrolling first if needed), print the answer and exit")
@@ -247,8 +278,6 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
 	out := &sayer{}
 	for {
 		if len(st.Cert) == 0 {
