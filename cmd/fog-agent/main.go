@@ -17,6 +17,8 @@ import (
 
 	"github.com/FOGProject/fog-agent/internal/enroll"
 	"github.com/FOGProject/fog-agent/internal/identity"
+	"github.com/FOGProject/fog-agent/internal/provider"
+	"github.com/FOGProject/fog-agent/internal/provider/hostname"
 )
 
 // Version is stamped by the release build (-ldflags "-X main.Version=...").
@@ -287,6 +289,14 @@ func cmdRun(args []string) error {
 					out.say("renew: " + err.Error())
 				}
 			}
+			// Converge when the server's revision is not the one this
+			// agent last applied. A failure leaves the revision
+			// unapplied, so the next poll tries again.
+			if resp.StateRevision != st.Config.AppliedRevision {
+				if err := reconcile(ctx, st, client, out); err != nil {
+					out.say("reconcile: " + err.Error())
+				}
+			}
 			if *once {
 				return printJSON(resp)
 			}
@@ -322,6 +332,46 @@ func renew(ctx context.Context, st *enroll.State, client *enroll.Client, out *sa
 	}
 	out.say(fmt.Sprintf("certificate renewed, valid until %s", resp.NotAfter))
 	return nil
+}
+
+// reconcile fetches the desired state and runs every provider the server
+// listed, reporting each result. The revision is recorded as applied only
+// when nothing failed: a failed provider is retried on the next poll
+// rather than forgotten.
+func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, out *sayer) error {
+	desired, err := client.State(ctx)
+	if err != nil {
+		return err
+	}
+	allOK := true
+	for _, capability := range desired.Capabilities {
+		var r provider.Result
+		switch capability {
+		case "hostname":
+			if desired.Hostname == nil {
+				continue
+			}
+			r = hostname.Ensure(*desired.Hostname)
+		default:
+			// A capability this build has no provider for: the server
+			// is newer, and that is fine (design 0001 5.1).
+			continue
+		}
+		out.say(fmt.Sprintf("%s: %s (%s)", capability, r.Status, r.Detail))
+		if err := client.Result(ctx, enroll.ResultRequest{
+			Revision: desired.Revision, Capability: capability, Status: r.Status, Detail: r.Detail,
+		}); err != nil {
+			out.say("result: " + err.Error())
+		}
+		if r.Status == provider.StatusFailed {
+			allOK = false
+		}
+	}
+	if !allOK {
+		return errors.New("a provider failed; will retry next poll")
+	}
+	st.Config.AppliedRevision = desired.Revision
+	return st.SaveConfig()
 }
 
 // cmdRenew renews now, regardless of expiry: an operator's rotation, and

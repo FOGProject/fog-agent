@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/FOGProject/fog-agent/internal/identity"
+	"github.com/FOGProject/fog-agent/internal/provider/hostname"
 )
 
 // Protocol is the agent protocol version this build speaks.
@@ -82,8 +83,27 @@ type PollResponse struct {
 		Name string `json:"name"`
 	} `json:"host"`
 	Capabilities []string `json:"capabilities"`
-	PollInterval int      `json:"poll_interval"`
-	ServerTime   string   `json:"server_time"`
+	// StateRevision is the digest of this host's desired state; the agent
+	// fetches the state only when it differs from the one it last applied.
+	StateRevision string `json:"state_revision"`
+	PollInterval  int    `json:"poll_interval"`
+	ServerTime    string `json:"server_time"`
+}
+
+// DesiredState is what the server wants this host to look like
+// (protocol-v1.md). Blocks are present only for the capabilities listed.
+type DesiredState struct {
+	Revision     string            `json:"revision"`
+	Capabilities []string          `json:"capabilities"`
+	Hostname     *hostname.Desired `json:"hostname,omitempty"`
+}
+
+// ResultRequest is what the agent reports for one capability.
+type ResultRequest struct {
+	Revision   string `json:"revision"`
+	Capability string `json:"capability"`
+	Status     string `json:"status"`
+	Detail     string `json:"detail,omitempty"`
 }
 
 // NewClient builds a client that verifies the server against caPEM. An
@@ -234,6 +254,73 @@ func (c *Client) Renew(ctx context.Context, csrPEM []byte) (*Response, error) {
 		return nil, fmt.Errorf("renew: HTTP %d with status %q: %s", resp.StatusCode, out.Status, out.Error)
 	}
 	return &out.Response, nil
+}
+
+// authed does one JSON exchange over the certificate: 401 is
+// ErrUnauthorized, a non-JSON body is an error with the status in it, and
+// anything else is decoded into out for the caller to judge.
+func (c *Client) authed(ctx context.Context, method, path string, in any, out any) (int, error) {
+	var body io.Reader
+	if in != nil {
+		b, err := json.Marshal(in)
+		if err != nil {
+			return 0, err
+		}
+		body = bytes.NewReader(b)
+	}
+	hr, err := http.NewRequestWithContext(ctx, method, c.ServerURL+path, body)
+	if err != nil {
+		return 0, err
+	}
+	if in != nil {
+		hr.Header.Set("Content-Type", "application/json")
+	}
+	hr.Header.Set("Accept", "application/json")
+	resp, err := c.HTTP.Do(hr)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return 0, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return resp.StatusCode, ErrUnauthorized
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return resp.StatusCode, fmt.Errorf("%s: HTTP %d, body is not JSON: %.200s", path, resp.StatusCode, raw)
+	}
+	return resp.StatusCode, nil
+}
+
+// State fetches the desired state.
+func (c *Client) State(ctx context.Context) (*DesiredState, error) {
+	var out DesiredState
+	code, err := c.authed(ctx, http.MethodGet, "/agent/v1/state", nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	if code != http.StatusOK {
+		return nil, fmt.Errorf("state: HTTP %d", code)
+	}
+	return &out, nil
+}
+
+// Result reports what one capability did at one revision.
+func (c *Client) Result(ctx context.Context, r ResultRequest) error {
+	var out struct {
+		Status string `json:"status"`
+		Error  string `json:"error"`
+	}
+	code, err := c.authed(ctx, http.MethodPost, "/agent/v1/result", r, &out)
+	if err != nil {
+		return err
+	}
+	if code != http.StatusOK || out.Status != "ok" {
+		return fmt.Errorf("result: HTTP %d with status %q: %s", code, out.Status, out.Error)
+	}
+	return nil
 }
 
 // Enroll sends one request and decodes the reply. Non-JSON or unexpected

@@ -32,6 +32,10 @@ const (
 type Config struct {
 	ServerURL string `json:"server_url"`
 	HostID    int    `json:"host_id,omitempty"`
+	// AppliedRevision is the desired-state revision every capability last
+	// converged on without failing; a poll reporting a different one is
+	// what triggers a fetch. Empty until the first reconcile.
+	AppliedRevision string `json:"applied_revision,omitempty"`
 }
 
 // State is the on-disk material. Load never generates anything by itself;

@@ -361,3 +361,77 @@ func TestRenewSendsTheRequestOverTheCertificate(t *testing.T) {
 		t.Fatalf("unexpected renew answer: %+v", resp)
 	}
 }
+
+// TestStateAndResultRideTheCertificate pins the convergence exchange: the
+// desired state decodes with its hostname block, and a result goes back
+// as the server's State::result() expects it.
+func TestStateAndResultRideTheCertificate(t *testing.T) {
+	caPEM, serverCert, serverKey, caCert, caKey := testCA(t)
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert)
+	var gotResult map[string]string
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			w.WriteHeader(401)
+			fmt.Fprint(w, `{"error":"client certificate required"}`)
+			return
+		}
+		switch {
+		case r.URL.Path == "/agent/v1/state" && r.Method == http.MethodGet:
+			fmt.Fprint(w, `{"revision":"abcdef0123456789","capabilities":["hostname"],"hostname":{"name":"lab-01","enforce":true}}`)
+		case r.URL.Path == "/agent/v1/result" && r.Method == http.MethodPost:
+			if err := json.NewDecoder(r.Body).Decode(&gotResult); err != nil {
+				http.Error(w, err.Error(), 400)
+				return
+			}
+			fmt.Fprint(w, `{"status":"ok"}`)
+		default:
+			http.Error(w, "wrong route", 404)
+		}
+	}))
+	srv.TLS = &tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{serverCert.Raw}, PrivateKey: serverKey}},
+		ClientAuth:   tls.VerifyClientCertIfGiven,
+		ClientCAs:    pool,
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	client, err := NewClient(srv.URL, caPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.State(context.Background()); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("state without a certificate: want ErrUnauthorized, got %v", err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(13), Subject: pkix.Name{CommonName: "fog-agent host 7"},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.UseCertificate(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), key); err != nil {
+		t.Fatal(err)
+	}
+	st, err := client.State(context.Background())
+	if err != nil {
+		t.Fatalf("state: %v", err)
+	}
+	if st.Revision != "abcdef0123456789" || len(st.Capabilities) != 1 || st.Hostname == nil || st.Hostname.Name != "lab-01" || !st.Hostname.Enforce {
+		t.Fatalf("unexpected state: %+v", st)
+	}
+	err = client.Result(context.Background(), ResultRequest{Revision: st.Revision, Capability: "hostname", Status: "applied", Detail: "old -> lab-01"})
+	if err != nil {
+		t.Fatalf("result: %v", err)
+	}
+	if gotResult["revision"] != "abcdef0123456789" || gotResult["capability"] != "hostname" || gotResult["status"] != "applied" || gotResult["detail"] != "old -> lab-01" {
+		t.Fatalf("server received %v", gotResult)
+	}
+}

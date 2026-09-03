@@ -96,14 +96,20 @@ Response `200`:
   "status": "ok",
   "protocol": 1,
   "host": {"id": 231, "name": "7550precision"},
-  "capabilities": [],
+  "capabilities": ["hostname"],
+  "state_revision": "3f1c9a0b2d4e5f60",
   "poll_interval": 300,
   "server_time": "2026-09-03T12:43:21-05:00"
 }
 ```
 
 `capabilities` is the list from design 0001 5.1; empty is a valid answer and
-the agent idles on it. The server records `hostAgentCheckin` and
+the agent idles on it. A capability is listed when its legacy module is on for
+the host (the global `FOG_CLIENT_*_ENABLED` setting and the host's resolved
+module set, the same two checks the old client's endpoints make), so existing
+per-host and per-group module choices carry over. `state_revision` is a
+digest of the desired state; the agent fetches it only when this differs from
+the revision it last applied. The server records `hostAgentCheckin` and
 `hostAgentVersion` on every poll.
 
 | Status | Meaning | Agent does |
@@ -114,6 +120,42 @@ the agent idles on it. The server records `hostAgentCheckin` and
 The 401 is the reimage/rebind path in practice: a host deleted from FOG and
 its agent left running comes back as `unknown-host` pending, with the same
 key, and waits for an admin like any new machine.
+
+## GET /agent/v1/state
+
+The desired state, fetched when `state_revision` moved. Same gate as poll.
+Blocks appear only for the capabilities listed; a server that does not offer
+something never describes it.
+
+```json
+{
+  "revision": "3f1c9a0b2d4e5f60",
+  "capabilities": ["hostname"],
+  "hostname": {"name": "lab-01", "enforce": true}
+}
+```
+
+| Block | Source | Provider |
+|---|---|---|
+| `hostname` | the host record's name; `enforce` is the host's "Enforce Hostname / AD Join Reboots" flag, the admin's permission to reboot to finish a rename | `ensure hostname`: compares case-insensitively, sets only on a difference. Linux `hostnamectl` (no reboot), Windows `SetComputerNameEx` (reboot pending), macOS `scutil` |
+
+Nothing in the agent reboots. A rename that needs one is reported as
+`pending_reboot`; the reboot coordinator (design 0001 section 6), when it
+exists, will own the when and consult `enforce`.
+
+## POST /agent/v1/result
+
+What one provider did at one revision. Same gate as poll. Recorded on the
+host as an `agent.result` audit row, which is where FOG already shows what
+happened to a host; no table until inventory needs one.
+
+```json
+{"revision": "3f1c9a0b2d4e5f60", "capability": "hostname", "status": "applied", "detail": "old-name -> lab-01"}
+```
+
+`status` is one of `applied`, `unchanged`, `pending_reboot`, `failed`. The
+agent records the revision as applied only when no provider failed, so a
+failure is retried on the next poll rather than forgotten.
 
 ## POST /agent/v1/renew
 
