@@ -21,6 +21,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/provider"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
+	"github.com/FOGProject/fog-agent/internal/provider/power"
 	"github.com/FOGProject/fog-agent/internal/provider/snapin"
 	"github.com/FOGProject/fog-agent/internal/provider/software"
 	"github.com/FOGProject/fog-agent/internal/reboot"
@@ -351,12 +352,52 @@ func runAgent(ctx context.Context, args []string) error {
 		if *once {
 			return err
 		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(wait):
+		// Sleep until the poll is due or a power schedule fires,
+		// whichever is first; a firing runs the coordinator right away.
+		if fired, err := waitOrFire(ctx, st, client, wait, out); err != nil {
+			return err
+		} else if fired {
+			continue
 		}
 	}
+}
+
+// waitOrFire sleeps for wait unless a power schedule is due sooner, in
+// which case it records the firing, hands the coordinator a forced
+// reason and runs it, and reports true so the loop polls again at once
+// (a shutdown that went through never returns here).
+func waitOrFire(ctx context.Context, st *enroll.State, client *enroll.Client, wait time.Duration, out *sayer) (bool, error) {
+	now := time.Now()
+	after := now
+	if st.Config.PowerFired.After(after) {
+		after = st.Config.PowerFired
+	}
+	next, sched, ok := power.Next(st.Config.PowerSchedules, after)
+	if !ok || next.Sub(now) >= wait {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-time.After(wait):
+		}
+		return false, nil
+	}
+	select {
+	case <-ctx.Done():
+		return false, ctx.Err()
+	case <-time.After(next.Sub(now)):
+	}
+	st.Config.PowerFired = next
+	st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{
+		Source: "power", Detail: fmt.Sprintf("scheduled %s (%s)", sched.Action, sched.Cron), Force: true, Mode: sched.Action,
+	})
+	if err := st.SaveConfig(); err != nil {
+		return false, err
+	}
+	out.say(fmt.Sprintf("power: scheduled %s (%s) is due", sched.Action, sched.Cron))
+	if err := coordinate(ctx, st, client, out); err != nil {
+		out.say("reboot: " + err.Error())
+	}
+	return true, nil
 }
 
 // renew asks for a new certificate for the current key and switches the
@@ -419,6 +460,29 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, out
 				TaskID: desired.Task.ID,
 			})
 			out.say(fmt.Sprintf("%s: task %d (%s) waiting", capability, desired.Task.ID, desired.Task.Type))
+			continue
+		case "power":
+			// Schedules are kept for the run loop to fire between polls;
+			// an on-demand action is a forced request to the coordinator,
+			// accepted here and consumed on the server by that report.
+			if desired.Power == nil {
+				st.Config.PowerSchedules = nil
+				continue
+			}
+			st.Config.PowerSchedules = desired.Power.Schedules
+			for _, od := range desired.Power.OnDemand {
+				st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{
+					Source: "power", Detail: fmt.Sprintf("on-demand %s", od.Action), Force: true, Mode: od.Action,
+				})
+				out.say(fmt.Sprintf("power: on-demand %s accepted", od.Action))
+				if err := client.Result(ctx, enroll.ResultRequest{
+					Revision: desired.Revision, Capability: capability, Status: provider.StatusApplied,
+					Detail: fmt.Sprintf("on-demand %s accepted (id %d)", od.Action, od.ID),
+				}); err != nil {
+					out.say("result: " + err.Error())
+					allOK = false
+				}
+			}
 			continue
 		case "software":
 			// The desired package set, converged in order. Outcomes do

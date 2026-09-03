@@ -264,6 +264,33 @@ reason that needs the machine back means a reboot.
 Payloads land under the state directory in a root-only directory named
 by task id and are deleted after the run, whatever happened.
 
+### Power
+
+Capability `power` (module short name `powermanagement`), design 0004. The
+block is the host's resolved shutdown and reboot schedules (its own rows and
+its groups' grants, `wol` left out because the server sends that packet
+itself) plus any on-demand action an admin has clicked:
+
+```json
+"power": {
+  "schedules": [{"cron": "30 22 * * 1-5", "action": "shutdown"}],
+  "ondemand":  [{"id": 41, "action": "reboot"}]
+}
+```
+
+`cron` is the five-field form FOG stores (`minute hour day-of-month month
+day-of-week`; `*`, lists, ranges and `/step`; day-of-month and day-of-week
+both restricted means either matches). The agent fires schedules itself,
+sleeping until the earlier of its next poll and its next firing, and each
+firing is a forced reason to the reboot coordinator in that action's mode.
+
+Each on-demand entry is handed to the coordinator as a forced reason and
+acknowledged at once with `POST /agent/v1/result` `{capability: "power",
+status: "applied", detail: "on-demand reboot accepted (id 41)"}`; that
+report is what deletes the host's on-demand rows on the server, so an admin's
+request stands until an agent has actually taken it. The coordinator's own
+decision follows as a `reboot` result like any other.
+
 ### Software
 
 Capability `software` (module short name `software`), design 0003. The

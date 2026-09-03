@@ -17,6 +17,7 @@ import (
 
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
+	"github.com/FOGProject/fog-agent/internal/provider/power"
 	"github.com/FOGProject/fog-agent/internal/provider/snapin"
 	"github.com/FOGProject/fog-agent/internal/provider/software"
 	"github.com/FOGProject/fog-agent/internal/reboot"
@@ -109,6 +110,9 @@ type DesiredState struct {
 	// Software is the desired package set and its drift interval
 	// (capability software).
 	Software *software.Policy `json:"software,omitempty"`
+	// Power is the host's shutdown and reboot schedules plus any
+	// on-demand action waiting (capability power).
+	Power *power.Policy `json:"power,omitempty"`
 }
 
 // ResultRequest is what the agent reports for one capability.

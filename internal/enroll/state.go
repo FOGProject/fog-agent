@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/FOGProject/fog-agent/internal/identity"
+	"github.com/FOGProject/fog-agent/internal/provider/power"
 	"github.com/FOGProject/fog-agent/internal/reboot"
 )
 
@@ -61,6 +62,12 @@ type Config struct {
 	// at all (Chocolatey missing); the binary is then looked for every
 	// poll so installing it converges the host at once.
 	SoftwareBlocked bool `json:"software_blocked,omitempty"`
+	// PowerSchedules is the host's resolved shutdown and reboot schedules
+	// as of the last reconcile, fired by the run loop between polls.
+	PowerSchedules []power.Schedule `json:"power_schedules,omitempty"`
+	// PowerFired is the last scheduled firing acted on, kept so a machine
+	// that comes back within the same minute does not fire it again.
+	PowerFired time.Time `json:"power_fired,omitempty"`
 }
 
 // State is the on-disk material. Load never generates anything by itself;
