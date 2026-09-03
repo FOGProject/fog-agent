@@ -143,6 +143,23 @@ Nothing in the agent reboots. A rename that needs one is reported as
 `pending_reboot`; the reboot coordinator (design 0001 section 6), when it
 exists, will own the when and consult `enforce`.
 
+Two server-side facts that decide whether a capability appears at all:
+
+- The capability list is the host's *resolved* modules intersected with the
+  global `FOG_CLIENT_*_ENABLED` switches. FOG has no default tier in module
+  resolution, so a host with no module rows has no capabilities. Hosts the
+  agent creates get the `isDefault` modules at creation, the same as boot
+  registration and the Host Management form (fogproject PR #1707).
+- A host record whose name fails FOG's own rule (1 to 15 characters of the
+  allowed set) is invalid, and an invalid host does not authenticate: the
+  agent gets 401 and re-enrolls as `rebind`. The API refuses such a name, so
+  this only bites on a name written straight into the database.
+
+Proven 2026-09-03 on a throwaway Debian VM: rename in FOG, next poll saw the
+revision move, `hostname: applied (fogagent-test -> fog-renamed)`, the
+following run reported `unchanged`, both audited as `agent.result` with
+auth source `agent`.
+
 ## POST /agent/v1/result
 
 What one provider did at one revision. Same gate as poll. Recorded on the
