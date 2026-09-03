@@ -499,7 +499,7 @@ func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, p
 	for _, r := range reports {
 		outcome, err := client.SoftwareResult(ctx, r.Entry.ID, r.Status, r.InstalledVersion, r.ExitCode, r.Details)
 		if err != nil {
-			out.say("software result: " + err.Error())
+			out.say(fmt.Sprintf("software %q: %s", r.Entry.Package, err))
 			ok = false
 			continue
 		}
