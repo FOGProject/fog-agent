@@ -113,6 +113,21 @@ func TestConvergeRunsInOrderAndReportsVersions(t *testing.T) {
 	}
 }
 
+// Tracking latest runs upgrade every time; when nothing newer exists the
+// version does not move and the report says converged, not upgraded.
+func TestConvergeUpgradeWithNothingNewerIsConverged(t *testing.T) {
+	b := &fake{available: true, installed: map[string]string{"vlc": "9.9"}}
+	reports := Converge(context.Background(), b, []Entry{{Package: "vlc", State: StatePresent, Version: VersionLatest}})
+	r := reports[0]
+	if r.Action != Upgrade || r.Status != StatusConverged || r.InstalledVersion != "9.9" {
+		t.Errorf("got %s/%s/%q, want upgrade ran, converged, 9.9", r.Action, r.Status, r.InstalledVersion)
+	}
+	b = &fake{available: true, installed: map[string]string{"vlc": "1.0"}}
+	if r := Converge(context.Background(), b, []Entry{{Package: "vlc", State: StatePresent, Version: VersionLatest}})[0]; r.Status != StatusUpgraded || r.InstalledVersion != "9.9" {
+		t.Errorf("a real upgrade must still say upgraded: %s %q", r.Status, r.InstalledVersion)
+	}
+}
+
 func TestConvergeWithoutActionsListsOnce(t *testing.T) {
 	b := &fake{available: true, installed: map[string]string{"vlc": "3.0"}}
 	Converge(context.Background(), b, []Entry{{Package: "vlc", State: StatePresent}})

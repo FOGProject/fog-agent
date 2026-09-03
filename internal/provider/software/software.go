@@ -133,6 +133,8 @@ type Report struct {
 	InstalledVersion string
 	ExitCode         int
 	Details          string
+	// before is the version installed when the run started.
+	before string
 }
 
 // Converge runs the set in order against one backend and returns a report
@@ -156,7 +158,7 @@ func Converge(ctx context.Context, b Backend, entries []Entry) []Report {
 	acted := false
 	for _, e := range entries {
 		action, why := Decide(e, installed)
-		r := Report{Entry: e, Action: action, Status: StatusConverged, Details: why}
+		r := Report{Entry: e, Action: action, Status: StatusConverged, Details: why, before: installed[strings.ToLower(e.Package)]}
 		switch action {
 		case Install:
 			r.Status, r.ExitCode, r.Details = fill(StatusInstalled, b.Install(ctx, e))
@@ -178,7 +180,15 @@ func Converge(ctx context.Context, b Backend, entries []Entry) []Report {
 		}
 	}
 	for i := range reports {
-		reports[i].InstalledVersion = installed[strings.ToLower(reports[i].Entry.Package)]
+		r := &reports[i]
+		r.InstalledVersion = installed[strings.ToLower(r.Entry.Package)]
+		// An upgrade that found nothing newer changed nothing: report
+		// it as converged, the truth, not as an upgrade. The exit code
+		// still travels so a non-zero one is classified as usual.
+		if r.Action == Upgrade && r.Status == StatusUpgraded && r.ExitCode == 0 && r.InstalledVersion == r.before {
+			r.Status = StatusConverged
+			r.Details = fmt.Sprintf("%s %s is the latest available\n%s", r.Entry.Package, r.before, r.Details)
+		}
 	}
 	return reports
 }

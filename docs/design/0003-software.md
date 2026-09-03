@@ -1,6 +1,9 @@
 # 0003: Software management, Chocolatey first
 
-Status: agreed 2026-09-03 (desired state, no bootstrap in v1, Chocolatey first). Follows the software row in
+Status: agreed 2026-09-03 (desired state, no bootstrap in v1, Chocolatey first);
+proven 2026-09-03 on the Linux lab with a shim and on `telliottwin11` with real
+Chocolatey under the Windows service (pinned, re-pinned, latest, absent,
+uninstall, missing backend). Follows the software row in
 [0001](0001-architecture.md) section 7: "detection rule, install action,
 optional uninstall action; prefer native managers; existing snapins map onto
 payload with no detection rule".
