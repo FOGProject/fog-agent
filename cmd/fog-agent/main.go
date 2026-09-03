@@ -435,22 +435,46 @@ func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, qu
 			out.say(fmt.Sprintf("snapin %q (task %d): %s; will retry next poll", t.Name, t.ID, r.Details))
 			return false
 		}
-		out.say(fmt.Sprintf("snapin %q (task %d): exit %d (%s)", t.Name, t.ID, r.ExitCode, r.Details))
-		if err := client.SnapinResult(ctx, t.ID, r.ExitCode, r.Details); err != nil {
+		outcome, err := client.SnapinResult(ctx, t.ID, r.Status, r.ExitCode, r.Details)
+		if err != nil {
 			out.say("snapin result: " + err.Error())
 			return false
+		}
+		out.say(fmt.Sprintf("snapin %q (task %d): %s, exit %d, outcome %s (%s)", t.Name, t.ID, r.Status, r.ExitCode, outcome, firstLine(r.Details)))
+		// The server read the exit code against the snapin's return-code
+		// table; the agent acts on its answer, not on the number.
+		switch outcome {
+		case enroll.OutcomeRetry:
+			// The task went back to queued (an installer was busy, say).
+			// Stop here so the revision stays unapplied and the next poll
+			// starts the queue again from this task.
+			out.say("snapin: retry later; stopping the queue for this poll")
+			return false
+		case enroll.OutcomeReboot:
+			st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{
+				Source: "snapin", Detail: fmt.Sprintf("snapin %q asked for a reboot (exit %d)", t.Name, r.ExitCode), Force: true, Mode: reboot.ModeReboot,
+			})
+		case enroll.OutcomeFailed:
+			if t.AbortOnFail {
+				out.say("snapin: job aborts on failure; leaving the rest to the server")
+				return true
+			}
 		}
 		if t.Action != "" {
 			st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{
 				Source: "snapin", Detail: fmt.Sprintf("snapin %q", t.Name), Force: true, Mode: t.Action,
 			})
 		}
-		if t.AbortOnFail && r.ExitCode != 0 {
-			out.say("snapin: job aborts on failure; leaving the rest to the server")
-			break
-		}
 	}
 	return true
+}
+
+// firstLine is enough of a detail for the console; the server has the rest.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // coordinate is the reboot coordinator's turn: with reasons outstanding it

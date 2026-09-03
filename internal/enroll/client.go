@@ -355,24 +355,37 @@ func (c *Client) SnapinFile(ctx context.Context, taskID int, w io.Writer) error 
 	return err
 }
 
-// SnapinResult reports one task's exit code and output tail.
-func (c *Client) SnapinResult(ctx context.Context, taskID, exitCode int, details string) error {
+// Outcomes the server hands back for a reported snapin task, from the
+// snapin's return-code table applied to the raw exit code.
+const (
+	OutcomeSuccess = "success"
+	OutcomeReboot  = "reboot"
+	OutcomeRetry   = "retry"
+	OutcomeFailed  = "failed"
+)
+
+// SnapinResult reports one task: whether the payload ran, its raw exit
+// code when it did, and the output tail. The server answers with the
+// outcome it decided, which is what the agent acts on.
+func (c *Client) SnapinResult(ctx context.Context, taskID int, status string, exitCode int, details string) (string, error) {
 	var out struct {
-		Status string `json:"status"`
-		Error  string `json:"error"`
+		Status  string `json:"status"`
+		Outcome string `json:"outcome"`
+		Error   string `json:"error"`
 	}
 	in := struct {
+		Status   string `json:"status"`
 		ExitCode int    `json:"exit_code"`
 		Details  string `json:"details"`
-	}{exitCode, details}
+	}{status, exitCode, details}
 	code, err := c.authed(ctx, http.MethodPost, fmt.Sprintf("/agent/v1/snapin/%d/result", taskID), in, &out)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if code != http.StatusOK || out.Status != "ok" {
-		return fmt.Errorf("snapin result: HTTP %d with status %q: %s", code, out.Status, out.Error)
+		return "", fmt.Errorf("snapin result: HTTP %d with status %q: %s", code, out.Status, out.Error)
 	}
-	return nil
+	return out.Outcome, nil
 }
 
 // Enroll sends one request and decodes the reply. Non-JSON or unexpected

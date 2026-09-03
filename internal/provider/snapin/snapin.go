@@ -37,22 +37,29 @@ type Task struct {
 	AbortOnFail bool   `json:"abort_on_fail"`
 }
 
-// Exit codes the agent reports for a task that never ran the payload.
-// Negative so they cannot collide with a program's own exit status.
+// Statuses: whether the payload ran at all. The exit code is the program's
+// own and is only meaningful for StatusRan; the server maps it to an
+// outcome (success, reboot, retry, failed) with the snapin's return-code
+// table, the way Intune and SCCM read installer codes. Everything else
+// here is the agent's failure to run it, named rather than encoded as a
+// number that could collide with a program's.
 const (
-	ExitHashMismatch = -2
-	ExitTimeout      = -3
-	ExitCannotRun    = -4
+	StatusRan          = "ran"
+	StatusHashMismatch = "hash_mismatch"
+	StatusTimeout      = "timeout"
+	StatusCannotRun    = "cannot_run"
 )
 
-// MaxDetails is what the server keeps of the output (stReturnDetails).
-const MaxDetails = 250
+// MaxDetails is how much of the output tail is reported. The server's
+// column is TEXT; this is the agent's own bound on what it sends.
+const MaxDetails = 4096
 
 // Result is what one task came to.
 type Result struct {
 	// Fetched is false when the payload never arrived: nothing ran, the
 	// task stays open, and the next poll tries again.
 	Fetched  bool
+	Status   string
 	ExitCode int
 	Details  string
 }
@@ -65,7 +72,7 @@ type Fetch func(ctx context.Context, w io.Writer) error
 func Run(ctx context.Context, t Task, dir string, fetch Fetch) Result {
 	work := filepath.Join(dir, strconv.Itoa(t.ID))
 	if err := os.MkdirAll(work, 0o700); err != nil {
-		return Result{Fetched: true, ExitCode: ExitCannotRun, Details: "workdir: " + err.Error()}
+		return Result{Fetched: true, Status: StatusCannotRun, Details: "workdir: " + err.Error()}
 	}
 	defer os.RemoveAll(work)
 	path := filepath.Join(work, filepath.Base(t.File))
@@ -78,7 +85,7 @@ func Run(ctx context.Context, t Task, dir string, fetch Fetch) Result {
 		// the server has is not the file it described, and fetching it
 		// again will not change that. Closing the task with this code is
 		// what lets the admin see it.
-		return Result{Fetched: true, ExitCode: ExitHashMismatch, Details: fmt.Sprintf(
+		return Result{Fetched: true, Status: StatusHashMismatch, Details: fmt.Sprintf(
 			"sha512 mismatch: server says %.16s…, payload is %.16s…", t.SHA512, sum)}
 	}
 	runCtx, cancel := ctx, context.CancelFunc(func() {})
@@ -88,7 +95,7 @@ func Run(ctx context.Context, t Task, dir string, fetch Fetch) Result {
 	defer cancel()
 	cmd, err := command(runCtx, t, path)
 	if err != nil {
-		return Result{Fetched: true, ExitCode: ExitCannotRun, Details: err.Error()}
+		return Result{Fetched: true, Status: StatusCannotRun, Details: err.Error()}
 	}
 	out := &tail{max: 4096}
 	cmd.Stdout, cmd.Stderr = out, out
@@ -97,19 +104,19 @@ func Run(ctx context.Context, t Task, dir string, fetch Fetch) Result {
 	// the output pipe; do not wait on them past the kill.
 	cmd.WaitDelay = 2 * time.Second
 	err = cmd.Run()
-	r := Result{Fetched: true, Details: out.String()}
+	r := Result{Fetched: true, Status: StatusRan, Details: out.String()}
 	switch {
 	case err == nil:
 	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
-		r.ExitCode = ExitTimeout
-		r.Details = fmt.Sprintf("timed out after %ds; %s", t.Timeout, r.Details)
+		r.Status = StatusTimeout
+		r.Details = fmt.Sprintf("timed out after %ds\n%s", t.Timeout, r.Details)
 	default:
 		var exit *exec.ExitError
 		if errors.As(err, &exit) {
 			r.ExitCode = exit.ExitCode()
 		} else {
-			r.ExitCode = ExitCannotRun
-			r.Details = err.Error() + "; " + r.Details
+			r.Status = StatusCannotRun
+			r.Details = err.Error() + "\n" + r.Details
 		}
 	}
 	r.Details = clip(r.Details)
@@ -153,11 +160,15 @@ func (t *tail) String() string {
 	return strings.TrimSpace(string(t.buf))
 }
 
-// clip folds the output onto one line and keeps the end of it.
+// clip keeps the end of the output, whole lines where it can.
 func clip(s string) string {
-	s = strings.Join(strings.Fields(s), " ")
+	s = strings.TrimSpace(s)
 	if len(s) > MaxDetails {
-		s = "…" + s[len(s)-MaxDetails+1:]
+		s = s[len(s)-MaxDetails:]
+		if i := strings.IndexByte(s, '\n'); i >= 0 && i < MaxDetails/4 {
+			s = s[i+1:]
+		}
+		s = "…" + s
 	}
 	return s
 }

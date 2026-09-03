@@ -29,7 +29,7 @@ func payload(body string) (Fetch, string) {
 func TestRunReportsTheExitCodeAndOutput(t *testing.T) {
 	fetch, sum := payload("#!/bin/sh\necho hello from snapin; exit 3\n")
 	r := Run(context.Background(), Task{ID: 1, File: "x.sh", SHA512: sum}, t.TempDir(), fetch)
-	if !r.Fetched || r.ExitCode != 3 || !strings.Contains(r.Details, "hello from snapin") {
+	if !r.Fetched || r.Status != StatusRan || r.ExitCode != 3 || !strings.Contains(r.Details, "hello from snapin") {
 		t.Fatalf("got %+v", r)
 	}
 }
@@ -41,7 +41,7 @@ func TestRunRefusesAHashMismatch(t *testing.T) {
 	marker := filepath.Join(t.TempDir(), "ran")
 	fetch, _ := payload("#!/bin/sh\ntouch " + marker + "\n")
 	r := Run(context.Background(), Task{ID: 2, File: "x.sh", SHA512: strings.Repeat("0", 128)}, t.TempDir(), fetch)
-	if !r.Fetched || r.ExitCode != ExitHashMismatch {
+	if !r.Fetched || r.Status != StatusHashMismatch {
 		t.Fatalf("got %+v", r)
 	}
 	if _, err := os.Stat(marker); err == nil {
@@ -50,11 +50,11 @@ func TestRunRefusesAHashMismatch(t *testing.T) {
 }
 
 // TestRunKillsOnTimeout: a snapin's timeout is enforced and reported as
-// its own exit code, not as the program's.
+// its own status, never as a program exit code.
 func TestRunKillsOnTimeout(t *testing.T) {
 	fetch, sum := payload("#!/bin/sh\nsleep 30\n")
 	r := Run(context.Background(), Task{ID: 3, File: "x.sh", SHA512: sum, Timeout: 1}, t.TempDir(), fetch)
-	if r.ExitCode != ExitTimeout || !strings.Contains(r.Details, "timed out") {
+	if r.Status != StatusTimeout || !strings.Contains(r.Details, "timed out") {
 		t.Fatalf("got %+v", r)
 	}
 }
@@ -73,7 +73,7 @@ func TestRunLeavesAnUnfetchedTaskOpen(t *testing.T) {
 func TestRunWithInterpreter(t *testing.T) {
 	fetch, sum := payload("echo first:$1 second:$2\n")
 	r := Run(context.Background(), Task{ID: 5, File: "x.sh", SHA512: sum, RunWith: "sh", RunWithArgs: "-e", Args: `one "two words"`}, t.TempDir(), fetch)
-	if r.ExitCode != 0 || !strings.Contains(r.Details, "first:one second:two words") {
+	if r.Status != StatusRan || r.ExitCode != 0 || !strings.Contains(r.Details, "first:one second:two words") {
 		t.Fatalf("got %+v", r)
 	}
 }
@@ -105,11 +105,12 @@ func TestSplitArgs(t *testing.T) {
 }
 
 func TestClip(t *testing.T) {
-	long := strings.Repeat("x", 300)
-	if got := clip(long); len(got) > MaxDetails+2 || !strings.HasPrefix(got, "…") {
-		t.Fatalf("clip did not keep the tail within %d: %d", MaxDetails, len(got))
+	long := strings.Repeat("x", MaxDetails+100) + "\nlast line"
+	got := clip(long)
+	if len(got) > MaxDetails+3 || !strings.HasPrefix(got, "…") || !strings.HasSuffix(got, "last line") {
+		t.Fatalf("clip did not keep the tail within %d: len %d", MaxDetails, len(got))
 	}
-	if got := clip("a\n  b\tc"); got != "a b c" {
-		t.Fatalf("clip folding: %q", got)
+	if got := clip("  short\n"); got != "short" {
+		t.Fatalf("clip trimming: %q", got)
 	}
 }

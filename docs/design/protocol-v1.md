@@ -224,14 +224,32 @@ For each task, in order:
 | Step | Route | Server side |
 |---|---|---|
 | fetch | `GET /agent/v1/snapin/{task}/file` | the task must belong to this host's own job (404 otherwise, the same message as "no such task"); marks the task, the job and the host's task in progress; streams the bytes from the storage node over the web tier's own FTP session, so the agent trusts only the server's certificate |
-| verify | | the agent hashes as it downloads and refuses a sha512 that is not the one declared. That refusal is reported as exit `-2`, not retried: the file the server has is not the file it described, and the admin needs to see it |
-| run | | `run_with run_with_args file args`, or the file itself when `run_with` is empty (made executable on Unix); `timeout` seconds then the whole process group is killed, exit `-3`; a payload that could not start is exit `-4` |
-| report | `POST /agent/v1/snapin/{task}/result` `{exit_code, details}` | closes the task with the exit code and the last 250 characters of output, through the same code the legacy client's check-in uses: cancels the rest of the job when it aborts on failure, ends the job after its last task, and records `agent.result` on the host |
+| verify | | the agent hashes as it downloads and refuses a sha512 that is not the one declared. That refusal is reported as status `hash_mismatch`, not retried: the file the server has is not the file it described, and the admin needs to see it |
+| run | | `run_with run_with_args file args`, or the file itself when `run_with` is empty (made executable on Unix); `timeout` seconds then the whole process group is killed, status `timeout`; a payload that could not start is `cannot_run` |
+| report | `POST /agent/v1/snapin/{task}/result` `{status, exit_code, details}` | `status` is `ran` or one of the three above; `exit_code` is the program's own, untouched, meaningful only for `ran`; `details` the last 4 KB of output. The server answers `{"status":"ok","outcome":…}` |
+
+**Outcome, decided by the server.** A raw exit code says nothing by
+itself: an MSI answers 3010 for "installed, reboot to finish" and 1618
+for "another installer is running, try later", and treating either as a
+failure aborts jobs that did not fail. Each snapin carries a return-code
+table (lines of `code=class`, the Intune defaults when empty: 0 and 1707
+success, 3010 and 1641 reboot, 1618 retry, anything else failed) and the
+server reads the code against it, for this agent and for the legacy
+client alike:
+
+| Outcome | Server | Agent |
+|---|---|---|
+| `success` | task complete | next task |
+| `reboot` | task complete | forced reason for the reboot coordinator, then next task |
+| `retry` | task back to queued, details kept | stops the queue for this poll; the next poll starts again here |
+| `failed` | task complete; cancels the rest of the job when it aborts on failure | stops when the job aborts on failure, else next task |
+
+A status other than `ran` is always `failed`. The task row keeps the raw
+code, the status and the output; the outcome is what the UI shows.
 
 A fetch that fails (network, 503 from a node that is down) leaves the task
 open and the revision unapplied; the next poll runs the queue again from
-the first open task. `abort_on_fail` stops the agent after a non-zero
-exit; the server cancels what is left, which moves the revision.
+the first open task.
 
 `action` (`reboot` or `shutdown`, from the snapin's flags) is a forced
 reason for the reboot coordinator, the way the legacy client's post-snapin
