@@ -18,6 +18,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
 	"github.com/FOGProject/fog-agent/internal/provider/snapin"
+	"github.com/FOGProject/fog-agent/internal/provider/software"
 	"github.com/FOGProject/fog-agent/internal/reboot"
 )
 
@@ -105,6 +106,9 @@ type DesiredState struct {
 	Reboot *reboot.Policy `json:"reboot,omitempty"`
 	// Snapins is the host's snapin queue in run order (capability snapin).
 	Snapins []snapin.Task `json:"snapins,omitempty"`
+	// Software is the desired package set and its drift interval
+	// (capability software).
+	Software *software.Policy `json:"software,omitempty"`
 }
 
 // ResultRequest is what the agent reports for one capability.
@@ -384,6 +388,31 @@ func (c *Client) SnapinResult(ctx context.Context, taskID int, status string, ex
 	}
 	if code != http.StatusOK || out.Status != "ok" {
 		return "", fmt.Errorf("snapin result: HTTP %d with status %q: %s", code, out.Status, out.Error)
+	}
+	return out.Outcome, nil
+}
+
+// SoftwareResult reports one software entry: what convergence did, the
+// version the host has now, the backend's exit code and its output tail.
+// The server answers its reading of the code as an outcome.
+func (c *Client) SoftwareResult(ctx context.Context, softwareID int, status, installedVersion string, exitCode int, details string) (string, error) {
+	var out struct {
+		Status  string `json:"status"`
+		Outcome string `json:"outcome"`
+		Error   string `json:"error"`
+	}
+	in := struct {
+		Status           string `json:"status"`
+		InstalledVersion string `json:"installed_version"`
+		ExitCode         int    `json:"exit_code"`
+		Details          string `json:"details"`
+	}{status, installedVersion, exitCode, details}
+	code, err := c.authed(ctx, http.MethodPost, fmt.Sprintf("/agent/v1/software/%d/result", softwareID), in, &out)
+	if err != nil {
+		return "", err
+	}
+	if code != http.StatusOK || out.Status != "ok" {
+		return "", fmt.Errorf("software result: HTTP %d with status %q: %s", code, out.Status, out.Error)
 	}
 	return out.Outcome, nil
 }

@@ -264,6 +264,59 @@ reason that needs the machine back means a reboot.
 Payloads land under the state directory in a root-only directory named
 by task id and are deleted after the run, whatever happened.
 
+### Software
+
+Capability `software` (module short name `software`), design 0003. The
+block is the desired package set in run order, resolved the way the snapin
+queue is (the host's direct assignments, then its groups' grants in group
+order, deduplicated), plus the server's drift interval:
+
+```json
+"software": {
+  "drift_interval": 21600,
+  "entries": [
+    {"id": 3, "backend": "choco", "package": "googlechrome", "version": "latest",
+     "state": "present", "source": "", "args": "", "timeout": 900}
+  ]
+}
+```
+
+`version` is `""` (any), `latest` (upgrade at every check) or an exact
+version (pinned; installed with `--force` when the host has another).
+`state` is `present` or `absent`. A disabled entry is left out, not sent as
+absent: turning an entry off stops managing the package, it does not
+remove it.
+
+The agent converges the set when the revision changes and again whenever
+`drift_interval` seconds have passed since its last check, fetching the
+state for that. One installed-list call from the backend, then each entry
+in order, then a second list when anything ran so every report carries the
+version the host ended with. Outcomes never hold the revision: a failed
+install is reported and tried again at the next drift check, not every
+poll. Only a report that did not reach the server keeps the revision
+unapplied.
+
+| Step | Route | Notes |
+|---|---|---|
+| report | `POST /agent/v1/software/{id}/result` `{status, installed_version, exit_code, details}` | `status` is `converged`, `installed`, `upgraded`, `removed`, `timeout` or `cannot_run`; `exit_code` is the package manager's own, meaningful for the three action statuses; `details` the last 4 KB of output. The server answers `{"status":"ok","outcome":…}` |
+
+The outcome is read the way a snapin's is, against the entry's return-code
+table, with the snapin defaults plus Chocolatey's `350` (pending reboot
+detected) as `reboot`. `converged` is always `success`; `timeout` and
+`cannot_run` always `failed`. `reboot` becomes a non-forced reason for the
+coordinator, so an installer that wants a reboot to finish waits for the
+logged-in user, unlike a task or a snapin. The status row on the server
+keeps the action word when it succeeded, else the outcome, else the
+never-ran status verbatim, so the host's Software tab and the snapin
+history read alike.
+
+The Chocolatey backend is the `choco` executable at a path
+(`%ProgramData%\chocolatey\bin\choco.exe` on Windows, `choco` on PATH
+elsewhere), which is how FOG's own snapin templates call it and why the
+pipeline can be proven with a shim on Linux. Detection is `choco list -r`
+(`--local-only` added on 1.x, which 2.x rejects). A host without the
+binary reports `cannot_run` for every entry.
+
 ## POST /agent/v1/result
 
 What one provider did at one revision. Same gate as poll. Recorded on the

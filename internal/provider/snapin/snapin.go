@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/FOGProject/fog-agent/internal/procs"
 	"io"
 	"os"
 	"os/exec"
@@ -97,7 +98,7 @@ func Run(ctx context.Context, t Task, dir string, fetch Fetch) Result {
 	if err != nil {
 		return Result{Fetched: true, Status: StatusCannotRun, Details: err.Error()}
 	}
-	out := &tail{max: 4096}
+	out := procs.NewTail(MaxDetails)
 	cmd.Stdout, cmd.Stderr = out, out
 	cmd.Dir = work
 	// A payload that spawned children and was killed leaves them holding
@@ -143,78 +144,10 @@ func download(ctx context.Context, path string, fetch Fetch) (string, error) {
 
 // tail keeps the last max bytes written: the end of the output is where
 // the error is, and the server keeps 250 characters of it anyway.
-type tail struct {
-	buf []byte
-	max int
-}
+// tail, clip and splitArgs are procs' helpers under the names this
+// package's tests know them by.
+type tail = procs.Tail
 
-func (t *tail) Write(p []byte) (int, error) {
-	t.buf = append(t.buf, p...)
-	if len(t.buf) > t.max {
-		t.buf = t.buf[len(t.buf)-t.max:]
-	}
-	return len(p), nil
-}
+func clip(s string) string { return procs.Clip(s, MaxDetails) }
 
-func (t *tail) String() string {
-	return strings.TrimSpace(string(t.buf))
-}
-
-// clip keeps the end of the output, whole lines where it can.
-func clip(s string) string {
-	s = strings.TrimSpace(s)
-	if len(s) > MaxDetails {
-		s = s[len(s)-MaxDetails:]
-		if i := strings.IndexByte(s, '\n'); i >= 0 && i < MaxDetails/4 {
-			s = s[i+1:]
-		}
-		s = "…" + s
-	}
-	return s
-}
-
-// splitArgs splits an argument string the way a shell reads a command
-// line: on whitespace, honoring single and double quotes and a backslash
-// inside double quotes or bare text. FOG stores a snapin's arguments as
-// one string, the same string the legacy client handed the OS.
-func splitArgs(s string) []string {
-	var (
-		args  []string
-		cur   strings.Builder
-		open  bool
-		quote rune
-		esc   bool
-	)
-	for _, r := range s {
-		switch {
-		case esc:
-			cur.WriteRune(r)
-			esc = false
-		case r == '\\' && quote != '\'':
-			esc = true
-			open = true
-		case quote != 0:
-			if r == quote {
-				quote = 0
-			} else {
-				cur.WriteRune(r)
-			}
-		case r == '"' || r == '\'':
-			quote = r
-			open = true
-		case r == ' ' || r == '\t' || r == '\n':
-			if open {
-				args = append(args, cur.String())
-				cur.Reset()
-				open = false
-			}
-		default:
-			cur.WriteRune(r)
-			open = true
-		}
-	}
-	if open {
-		args = append(args, cur.String())
-	}
-	return args
-}
+func splitArgs(s string) []string { return procs.SplitArgs(s) }

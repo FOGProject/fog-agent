@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/reboot"
@@ -49,6 +50,13 @@ type Config struct {
 	// boot into FOS, and rebooting it again every poll fixes nothing;
 	// a new task (a new id) is a new request.
 	RebootedForTask int `json:"rebooted_for_task,omitempty"`
+	// SoftwareChecked is when the software set was last converged. The
+	// drift check re-runs it after the server's interval even when the
+	// revision has not moved.
+	SoftwareChecked time.Time `json:"software_checked,omitempty"`
+	// SoftwareDrift is the server's drift interval in seconds as of the
+	// last reconcile; zero when the host has no software set.
+	SoftwareDrift int `json:"software_drift,omitempty"`
 }
 
 // State is the on-disk material. Load never generates anything by itself;

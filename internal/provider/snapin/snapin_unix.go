@@ -4,9 +4,9 @@ package snapin
 
 import (
 	"context"
+	"github.com/FOGProject/fog-agent/internal/procs"
 	"os"
 	"os/exec"
-	"syscall"
 )
 
 // command builds the run: the interpreter with its own arguments, then
@@ -27,9 +27,6 @@ func command(ctx context.Context, t Task, path string) (*exec.Cmd, error) {
 	// Its own process group, killed as a group on timeout: a script's
 	// children (an installer it launched) go with it, and cannot keep the
 	// task alive past the deadline the snapin was given.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Cancel = func() error {
-		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-	}
+	procs.Attach(cmd)
 	return cmd, nil
 }

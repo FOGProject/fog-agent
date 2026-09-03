@@ -22,6 +22,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/provider"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
 	"github.com/FOGProject/fog-agent/internal/provider/snapin"
+	"github.com/FOGProject/fog-agent/internal/provider/software"
 	"github.com/FOGProject/fog-agent/internal/reboot"
 )
 
@@ -300,6 +301,13 @@ func cmdRun(args []string) error {
 				if err := reconcile(ctx, st, client, out); err != nil {
 					out.say("reconcile: " + err.Error())
 				}
+			} else if st.Config.SoftwareDrift > 0 && time.Since(st.Config.SoftwareChecked) >= time.Duration(st.Config.SoftwareDrift)*time.Second {
+				// The drift check: the set has not changed, the host
+				// might have. The interval is the one the last
+				// reconcile saw, so this costs nothing until it is due.
+				if err := drift(ctx, st, client, out); err != nil {
+					out.say("software drift: " + err.Error())
+				}
 			}
 			// The coordinator runs every poll, not only when state
 			// moved: a reboot deferred for a logged-in user becomes
@@ -382,6 +390,20 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, out
 				TaskID: desired.Task.ID,
 			})
 			out.say(fmt.Sprintf("%s: task %d (%s) waiting", capability, desired.Task.ID, desired.Task.Type))
+			continue
+		case "software":
+			// The desired package set, converged in order. Outcomes do
+			// not hold the revision: a failed install is reported and
+			// tried again at the drift check, not every poll. Only a
+			// report that did not land keeps the revision unapplied.
+			if desired.Software == nil {
+				st.Config.SoftwareDrift = 0
+				continue
+			}
+			st.Config.SoftwareDrift = desired.Software.DriftInterval
+			if !runSoftware(ctx, st, client, desired.Software, out) {
+				allOK = false
+			}
 			continue
 		case "snapin":
 			// The queue in the server's run order, one at a time. A
@@ -469,12 +491,60 @@ func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, qu
 	return true
 }
 
+// runSoftware converges the software set and reports every entry. It
+// returns false only when a report did not land.
+func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, policy *software.Policy, out *sayer) bool {
+	reports := software.Converge(ctx, &software.Choco{}, policy.Entries)
+	ok := true
+	for _, r := range reports {
+		outcome, err := client.SoftwareResult(ctx, r.Entry.ID, r.Status, r.InstalledVersion, r.ExitCode, r.Details)
+		if err != nil {
+			out.say("software result: " + err.Error())
+			ok = false
+			continue
+		}
+		out.say(fmt.Sprintf("software %q: %s, exit %d, outcome %s, installed %q (%s)", r.Entry.Package, r.Status, r.ExitCode, outcome, r.InstalledVersion, firstLine(r.Details)))
+		if outcome == enroll.OutcomeReboot {
+			// Not forced: an installer that wants a reboot to finish can
+			// wait for the logged-in user, unlike a task or a snapin.
+			st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{
+				Source: "software", Detail: fmt.Sprintf("%s asked for a reboot (exit %d)", r.Entry.Package, r.ExitCode), Mode: reboot.ModeReboot,
+			})
+		}
+	}
+	st.Config.SoftwareChecked = time.Now()
+	return ok
+}
+
+// driftDue says whether the software set should be re-checked without
+// the revision having moved.
+func driftDue(st *enroll.State, policy *software.Policy, now time.Time) bool {
+	if policy == nil || len(policy.Entries) == 0 || policy.DriftInterval <= 0 {
+		return false
+	}
+	return now.Sub(st.Config.SoftwareChecked) >= time.Duration(policy.DriftInterval)*time.Second
+}
+
 // firstLine is enough of a detail for the console; the server has the rest.
 func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		return s[:i]
 	}
 	return s
+}
+
+// drift fetches the desired state for its software block only and
+// converges it, leaving the applied revision alone.
+func drift(ctx context.Context, st *enroll.State, client *enroll.Client, out *sayer) error {
+	desired, err := client.State(ctx)
+	if err != nil {
+		return err
+	}
+	if !driftDue(st, desired.Software, time.Now()) {
+		return nil
+	}
+	runSoftware(ctx, st, client, desired.Software, out)
+	return st.SaveConfig()
 }
 
 // coordinate is the reboot coordinator's turn: with reasons outstanding it

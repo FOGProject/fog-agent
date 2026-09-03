@@ -104,10 +104,13 @@ One new capability, `software`, alongside `hostname`, `taskreboot` and
 `snapin` in `FOG\Agent\State::CAPABILITIES`. The desired state carries:
 
 ```json
-"software": [
-  {"id": 3, "backend": "choco", "package": "googlechrome", "version": "latest",
-   "state": "present", "source": "", "args": "", "timeout": 900}
-]
+"software": {
+  "drift_interval": 21600,
+  "entries": [
+    {"id": 3, "backend": "choco", "package": "googlechrome", "version": "latest",
+     "state": "present", "source": "", "args": "", "timeout": 900}
+  ]
+}
 ```
 
 Results go to `POST /agent/v1/software/{id}/result` with
