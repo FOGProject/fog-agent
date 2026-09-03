@@ -175,6 +175,67 @@ func (c *Client) Poll(ctx context.Context, req PollRequest) (*PollResponse, erro
 	return &out, nil
 }
 
+// RenewLead is how long before expiry the agent renews. A third of the
+// one-year life the server issues, so a machine that is off for a term
+// still comes back inside its certificate; an agent that misses the window
+// falls through to the 401 path and an admin, which is the right outcome
+// for a certificate that actually lapsed.
+const RenewLead = 120 * 24 * time.Hour
+
+// RenewDue reports whether the leaf in certPEM expires within RenewLead of
+// now. An unparseable certificate is due: renewing it is the only move
+// that can improve things.
+func RenewDue(certPEM []byte, now time.Time) bool {
+	block, _ := pem.Decode(certPEM)
+	if block == nil {
+		return true
+	}
+	leaf, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return true
+	}
+	return now.Add(RenewLead).After(leaf.NotAfter)
+}
+
+// Renew asks for a new certificate for the same key, over the connection
+// the current certificate authenticates. The reply is the enroll "issued"
+// shape and is stored the same way. 401 is ErrUnauthorized, as for Poll.
+func (c *Client) Renew(ctx context.Context, csrPEM []byte) (*Response, error) {
+	body, err := json.Marshal(map[string]string{"csr_pem": string(csrPEM)})
+	if err != nil {
+		return nil, err
+	}
+	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ServerURL+"/agent/v1/renew", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	hr.Header.Set("Content-Type", "application/json")
+	hr.Header.Set("Accept", "application/json")
+	resp, err := c.HTTP.Do(hr)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, ErrUnauthorized
+	}
+	var out struct {
+		Response
+		Error string `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, fmt.Errorf("renew: HTTP %d, body is not JSON: %.200s", resp.StatusCode, raw)
+	}
+	if resp.StatusCode != http.StatusOK || out.Status != StatusIssued {
+		return nil, fmt.Errorf("renew: HTTP %d with status %q: %s", resp.StatusCode, out.Status, out.Error)
+	}
+	return &out.Response, nil
+}
+
 // Enroll sends one request and decodes the reply. Non-JSON or unexpected
 // HTTP statuses are errors; the four protocol statuses are returned as data
 // so the caller decides what to do with each.

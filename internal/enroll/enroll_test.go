@@ -250,3 +250,114 @@ func TestLoadCreatesTheStateDirectory(t *testing.T) {
 		t.Fatalf("first write into a fresh state dir: %v", err)
 	}
 }
+
+// TestRenewDueIsALeadTimeBeforeExpiry pins the renewal window: due inside
+// RenewLead of NotAfter, not due before, and due for anything that does
+// not parse.
+func TestRenewDueIsALeadTimeBeforeExpiry(t *testing.T) {
+	_, _, _, caCert, caKey := testCA(t)
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	notAfter := time.Date(2027, 9, 3, 12, 0, 0, 0, time.UTC)
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(11), Subject: pkix.Name{CommonName: "fog-agent host 7"},
+		NotBefore: notAfter.Add(-365 * 24 * time.Hour), NotAfter: notAfter,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if RenewDue(certPEM, notAfter.Add(-RenewLead-time.Hour)) {
+		t.Fatal("an hour before the lead window opens: must not be due")
+	}
+	if !RenewDue(certPEM, notAfter.Add(-RenewLead+time.Hour)) {
+		t.Fatal("an hour into the lead window: must be due")
+	}
+	if !RenewDue(certPEM, notAfter.Add(time.Hour)) {
+		t.Fatal("expired: must be due")
+	}
+	if !RenewDue([]byte("not a certificate"), notAfter) {
+		t.Fatal("unparseable: must be due")
+	}
+}
+
+// TestRenewSendsTheRequestOverTheCertificate pins the exchange: the CSR
+// travels in the body over a connection carrying the current certificate,
+// and the issued answer comes back in the enroll shape. Without a
+// certificate the server's 401 is ErrUnauthorized.
+func TestRenewSendsTheRequestOverTheCertificate(t *testing.T) {
+	caPEM, serverCert, serverKey, caCert, caKey := testCA(t)
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert)
+	var gotCSR string
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/agent/v1/renew" || r.Method != http.MethodPost {
+			http.Error(w, "wrong route", 404)
+			return
+		}
+		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
+			w.WriteHeader(401)
+			fmt.Fprint(w, `{"error":"client certificate required"}`)
+			return
+		}
+		var body struct {
+			CSRPEM string `json:"csr_pem"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		gotCSR = body.CSRPEM
+		fmt.Fprint(w, `{"status":"issued","host_id":7,"certificate_pem":"-----BEGIN CERTIFICATE-----\nnew\n-----END CERTIFICATE-----\n","not_after":"2028-01-01 00:00:00"}`)
+	}))
+	srv.TLS = &tls.Config{
+		Certificates: []tls.Certificate{{Certificate: [][]byte{serverCert.Raw}, PrivateKey: serverKey}},
+		ClientAuth:   tls.VerifyClientCertIfGiven,
+		ClientCAs:    pool,
+	}
+	srv.StartTLS()
+	defer srv.Close()
+
+	client, err := NewClient(srv.URL, caPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Renew(context.Background(), []byte("x")); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("renew without a certificate: want ErrUnauthorized, got %v", err)
+	}
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(12), Subject: pkix.Name{CommonName: "fog-agent host 7"},
+		NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, caCert, &key.PublicKey, caKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := client.UseCertificate(certPEM, key); err != nil {
+		t.Fatal(err)
+	}
+	csr, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{}, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	csrPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: csr})
+	resp, err := client.Renew(context.Background(), csrPEM)
+	if err != nil {
+		t.Fatalf("renew with the certificate: %v", err)
+	}
+	if gotCSR != string(csrPEM) {
+		t.Fatal("the server did not receive the CSR that was sent")
+	}
+	if resp.Status != StatusIssued || resp.HostID != 7 || resp.CertificatePEM == "" || resp.NotAfter != "2028-01-01 00:00:00" {
+		t.Fatalf("unexpected renew answer: %+v", resp)
+	}
+}

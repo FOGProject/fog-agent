@@ -115,6 +115,38 @@ The 401 is the reimage/rebind path in practice: a host deleted from FOG and
 its agent left running comes back as `unknown-host` pending, with the same
 key, and waits for an admin like any new machine.
 
+## POST /agent/v1/renew
+
+Same gate as poll: the caller is already bound to its host by the certificate
+it presents, and the body carries a request for the **same key**. The answer
+is the enroll `issued` shape and the agent stores it the same way. Renewal is
+same-key only; a new key is a new claim on the machine and goes through
+enroll, where it pends as `rebind` for an admin. The old certificate is not
+revoked: it binds to the same key and lapses on its own.
+
+Request:
+
+```json
+{"csr_pem": "-----BEGIN CERTIFICATE REQUEST-----\n..."}
+```
+
+Response `200`:
+
+```json
+{"status": "issued", "host_id": 231, "certificate_pem": "...", "not_after": "2027-09-03 14:44:06"}
+```
+
+| Status | Meaning | Agent does |
+|---|---|---|
+| 200 | Renewed; `hostAgentNotAfter` updated, audited | Store it, present it from the next connection |
+| 400 | Not a CSR, or one for a different key | Report; keep the current certificate |
+| 401 | As for poll | Drop the certificate, keep the key, enroll again |
+| 503 | Signing helper unavailable on this server | Report; retry next poll |
+
+The agent renews inside `RenewLead` (120 days) of expiry, checked after each
+successful poll, and `fog-agent renew` forces one at any time. A machine that
+misses the window entirely falls through to the 401 path and an admin.
+
 Server files behind this: `Agent\Principal` (verification and fingerprint),
 the gate in `Route` before dispatch, and the installer publishing
 `management/other/agent-ca-bundle.pem` (agent CA + root) for both the vhost

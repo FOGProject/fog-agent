@@ -37,6 +37,8 @@ func main() {
 		err = cmdEnroll(os.Args[2:])
 	case "run":
 		err = cmdRun(os.Args[2:])
+	case "renew":
+		err = cmdRenew(os.Args[2:])
 	case "status":
 		err = cmdStatus(os.Args[2:])
 	default:
@@ -55,6 +57,7 @@ func usage() {
   fog-agent enroll --server URL --ca FILE [--token T] [--once] [--dir DIR]
   fog-agent run [--server URL] [--ca FILE] [--token T] [--once] [--dir DIR]
                                           enroll if needed, then poll the server
+  fog-agent renew [--dir DIR]             renew the certificate now, whatever its expiry
   fog-agent status [--dir DIR]
   fog-agent version`)
 }
@@ -276,6 +279,14 @@ func cmdRun(args []string) error {
 			if resp.PollInterval > 0 {
 				wait = time.Duration(resp.PollInterval) * time.Second
 			}
+			// Renewal rides the same session, once the poll has proved
+			// it. A failed renewal is reported and retried next poll;
+			// the current certificate keeps working until it expires.
+			if enroll.RenewDue(st.Cert, time.Now()) {
+				if err := renew(ctx, st, client, out); err != nil {
+					out.say("renew: " + err.Error())
+				}
+			}
 			if *once {
 				return printJSON(resp)
 			}
@@ -289,6 +300,62 @@ func cmdRun(args []string) error {
 		case <-time.After(wait):
 		}
 	}
+}
+
+// renew asks for a new certificate for the current key and switches the
+// client to it. The old certificate is not touched until the new one is
+// on disk, so a failure anywhere leaves the agent as it was.
+func renew(ctx context.Context, st *enroll.State, client *enroll.Client, out *sayer) error {
+	csr, err := st.CSR()
+	if err != nil {
+		return err
+	}
+	resp, err := client.Renew(ctx, csr)
+	if err != nil {
+		return err
+	}
+	if err := st.SaveIssued([]byte(resp.CertificatePEM), resp.HostID); err != nil {
+		return err
+	}
+	if err := client.UseCertificate(st.Cert, st.Key); err != nil {
+		return err
+	}
+	out.say(fmt.Sprintf("certificate renewed, valid until %s", resp.NotAfter))
+	return nil
+}
+
+// cmdRenew renews now, regardless of expiry: an operator's rotation, and
+// the way a lab proves the route without waiting out the lead time.
+func cmdRenew(args []string) error {
+	fs := flag.NewFlagSet("renew", flag.ContinueOnError)
+	dir := fs.String("dir", enroll.DefaultDir, "state directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	st, err := enroll.Load(*dir)
+	if err != nil {
+		return err
+	}
+	if len(st.Cert) == 0 {
+		return errors.New("not enrolled: nothing to renew")
+	}
+	if st.Config.ServerURL == "" || len(st.CA()) == 0 {
+		return errors.New("no server or CA remembered; enroll first")
+	}
+	client, err := enroll.NewClient(st.Config.ServerURL, st.CA())
+	if err != nil {
+		return err
+	}
+	if err := client.UseCertificate(st.Cert, st.Key); err != nil {
+		return err
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+	out := &sayer{}
+	if err := renew(ctx, st, client, out); err != nil {
+		return err
+	}
+	return printJSON(map[string]any{"host_id": st.Config.HostID, "enrolled": true})
 }
 
 func cmdStatus(args []string) error {
