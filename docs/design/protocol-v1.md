@@ -139,9 +139,49 @@ something never describes it.
 |---|---|---|
 | `hostname` | the host record's name; `enforce` is the host's "Enforce Hostname / AD Join Reboots" flag, the admin's permission to reboot to finish a rename | `ensure hostname`: compares case-insensitively, sets only on a difference. Linux `hostnamectl` (no reboot), Windows `SetComputerNameEx` (reboot pending), macOS `scutil` |
 
-Nothing in the agent reboots. A rename that needs one is reported as
-`pending_reboot`; the reboot coordinator (design 0001 section 6), when it
-exists, will own the when and consult `enforce`.
+Two more blocks serve the reboot coordinator (design 0001 section 6):
+
+```json
+{
+  "capabilities": ["hostname", "taskreboot"],
+  "task": {"id": 41, "type": "Deploy", "force": false},
+  "reboot": {"grace": 60}
+}
+```
+
+| Block | Source | Consumer |
+|---|---|---|
+| `task` | capability `taskreboot` (module `taskreboot`): the task waiting for this host in a state that needs it to boot into FOS, exactly what `Client\Jobs` answers the old client. `null` while none waits, so queueing or canceling a task moves the revision. `force` is FOG_TASK_FORCE_REBOOT | the coordinator records a reboot reason for the task, or withdraws it |
+| `reboot` | sent with any non-empty capability list. `grace` is FOG_GRACE_TIMEOUT, seconds | the countdown logged-in users get before a forced reboot |
+
+### The reboot coordinator
+
+The only thing in the agent that reboots. Providers never do; a provider
+whose change needs one reports `pending_reboot` and the coordinator
+records a reason for it, forced if the host's `enforce` flag is set. A
+waiting task is a reason too, forced if FOG_TASK_FORCE_REBOOT is on.
+Reasons persist in the state file across restarts.
+
+Every poll, with reasons outstanding, the coordinator counts logged-in
+users (logind or `who` on Linux, WTS sessions on Windows, `who` on macOS)
+and decides:
+
+| Users | Any reason forced | Decision |
+|---|---|---|
+| none | either | reboot now |
+| some | no | wait; reported as `reboot pending_reboot` with the count |
+| some | yes | reboot after `grace` seconds, message shown to users |
+
+The decision is reported as a result with capability `reboot`
+(`applied` when a reboot was requested, `pending_reboot` when it waited),
+so the host's audit shows why the machine went down or why it did not.
+
+**Where this diverges from the old client:** the agent reboots **once per
+task id**. A machine that comes back with the same task still queued did
+not boot into FOS (boot order, no PXE on that segment), and the old
+client's answer, rebooting it again every check-in, takes the machine
+away from its user without fixing that. Cancel and re-queue the task to
+ask again; a new task is a new id.
 
 Two server-side facts that decide whether a capability appears at all:
 

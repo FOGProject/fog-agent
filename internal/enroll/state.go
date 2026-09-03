@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 
 	"github.com/FOGProject/fog-agent/internal/identity"
+	"github.com/FOGProject/fog-agent/internal/reboot"
 )
 
 // Files inside the state directory.
@@ -36,6 +37,18 @@ type Config struct {
 	// converged on without failing; a poll reporting a different one is
 	// what triggers a fetch. Empty until the first reconcile.
 	AppliedRevision string `json:"applied_revision,omitempty"`
+	// PendingReboot is what the reboot coordinator still owes: reasons
+	// recorded by providers and the task poll that policy has not yet
+	// let it act on. Persisted so a restart does not forget them.
+	PendingReboot []reboot.Reason `json:"pending_reboot,omitempty"`
+	// RebootGrace is the server's FOG_GRACE_TIMEOUT as of the last
+	// reconcile, kept so a deferred reboot uses it on a later poll.
+	RebootGrace int `json:"reboot_grace,omitempty"`
+	// RebootedForTask is the FOG task this agent last rebooted for. A
+	// machine that came back with the same task still queued did not
+	// boot into FOS, and rebooting it again every poll fixes nothing;
+	// a new task (a new id) is a new request.
+	RebootedForTask int `json:"rebooted_for_task,omitempty"`
 }
 
 // State is the on-disk material. Load never generates anything by itself;

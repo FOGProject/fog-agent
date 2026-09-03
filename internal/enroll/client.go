@@ -17,6 +17,7 @@ import (
 
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
+	"github.com/FOGProject/fog-agent/internal/reboot"
 )
 
 // Protocol is the agent protocol version this build speaks.
@@ -96,6 +97,11 @@ type DesiredState struct {
 	Revision     string            `json:"revision"`
 	Capabilities []string          `json:"capabilities"`
 	Hostname     *hostname.Desired `json:"hostname,omitempty"`
+	// Task is the FOG task waiting to boot this machine into imaging,
+	// present only while one is queued (capability taskreboot).
+	Task *reboot.Task `json:"task,omitempty"`
+	// Reboot is the policy every reboot obeys; sent with any state.
+	Reboot *reboot.Policy `json:"reboot,omitempty"`
 }
 
 // ResultRequest is what the agent reports for one capability.

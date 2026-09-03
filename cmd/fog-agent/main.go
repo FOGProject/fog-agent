@@ -19,6 +19,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/provider"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
+	"github.com/FOGProject/fog-agent/internal/reboot"
 )
 
 // Version is stamped by the release build (-ldflags "-X main.Version=...").
@@ -297,6 +298,12 @@ func cmdRun(args []string) error {
 					out.say("reconcile: " + err.Error())
 				}
 			}
+			// The coordinator runs every poll, not only when state
+			// moved: a reboot deferred for a logged-in user becomes
+			// due when they leave, and nothing else notices that.
+			if err := coordinate(ctx, st, client, out); err != nil {
+				out.say("reboot: " + err.Error())
+			}
 			if *once {
 				return printJSON(resp)
 			}
@@ -343,15 +350,36 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, out
 	if err != nil {
 		return err
 	}
+	if desired.Reboot != nil {
+		st.Config.RebootGrace = desired.Reboot.Grace
+	}
 	allOK := true
 	for _, capability := range desired.Capabilities {
 		var r provider.Result
+		force := false
 		switch capability {
 		case "hostname":
 			if desired.Hostname == nil {
 				continue
 			}
 			r = hostname.Ensure(*desired.Hostname)
+			force = desired.Hostname.Enforce
+		case "taskreboot":
+			// Not a provider: a waiting task is a reboot request, and
+			// a cancelled one withdraws it. The coordinator acts on it
+			// below, under the same policy as everything else.
+			if desired.Task == nil || desired.Task.ID == st.Config.RebootedForTask {
+				st.Config.PendingReboot = reboot.Drop(st.Config.PendingReboot, reboot.SourceTask)
+				continue
+			}
+			st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{
+				Source: reboot.SourceTask,
+				Detail: fmt.Sprintf("task %d (%s)", desired.Task.ID, desired.Task.Type),
+				Force:  desired.Task.Force,
+				TaskID: desired.Task.ID,
+			})
+			out.say(fmt.Sprintf("%s: task %d (%s) waiting", capability, desired.Task.ID, desired.Task.Type))
+			continue
 		default:
 			// A capability this build has no provider for: the server
 			// is newer, and that is fine (design 0001 5.1).
@@ -363,15 +391,70 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, out
 		}); err != nil {
 			out.say("result: " + err.Error())
 		}
-		if r.Status == provider.StatusFailed {
+		switch r.Status {
+		case provider.StatusFailed:
 			allOK = false
+		case provider.StatusPendingReboot:
+			st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{
+				Source: capability, Detail: r.Detail, Force: force,
+			})
 		}
 	}
 	if !allOK {
+		// Keep whatever reasons were recorded; only the revision waits.
+		_ = st.SaveConfig()
 		return errors.New("a provider failed; will retry next poll")
 	}
 	st.Config.AppliedRevision = desired.Revision
 	return st.SaveConfig()
+}
+
+// coordinate is the reboot coordinator's turn: with reasons outstanding it
+// looks at who is logged in, applies the policy, reports the decision as
+// a result, and reboots when allowed. It is the only caller of
+// reboot.Execute in the agent.
+func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, out *sayer) error {
+	if len(st.Config.PendingReboot) == 0 {
+		return nil
+	}
+	users, err := reboot.LoggedIn()
+	if err != nil {
+		return err
+	}
+	d := reboot.Decide(st.Config.PendingReboot, users, reboot.Policy{Grace: st.Config.RebootGrace})
+	status := provider.StatusPendingReboot
+	if d.Reboot {
+		status = provider.StatusApplied
+	}
+	out.say(fmt.Sprintf("reboot: %s (%s)", status, d.Why))
+	if err := client.Result(ctx, enroll.ResultRequest{
+		Revision: st.Config.AppliedRevision, Capability: "reboot", Status: status, Detail: d.Why,
+	}); err != nil {
+		out.say("result: " + err.Error())
+	}
+	if !d.Reboot {
+		return nil
+	}
+	// Persist before asking: the reboot is asynchronous and the reasons
+	// are satisfied the moment it is accepted. A refused request puts
+	// them back.
+	reasons := st.Config.PendingReboot
+	for _, r := range reasons {
+		if r.TaskID != 0 {
+			st.Config.RebootedForTask = r.TaskID
+		}
+	}
+	st.Config.PendingReboot = nil
+	if err := st.SaveConfig(); err != nil {
+		return err
+	}
+	if err := reboot.Execute(d.Delay, "FOG: rebooting for "+d.Why); err != nil {
+		st.Config.PendingReboot = reasons
+		st.Config.RebootedForTask = 0
+		_ = st.SaveConfig()
+		return err
+	}
+	return nil
 }
 
 // cmdRenew renews now, regardless of expiry: an operator's rotation, and
