@@ -155,7 +155,9 @@ Chocolatey specifics that shape the code:
   a follow-on (section 8).
 - Chocolatey is not bootstrapped in v1. A host without it reports
   `cannot_run` for every entry and the Software tab says "Chocolatey is not
-  installed" once, not per row. Installing it is a follow-on with a real
+  installed" once, not per row. The agent then looks for the binary every
+  poll (a stat) and converges as soon as it appears, rather than at the
+  next drift check: installing Chocolatey is the admin's next move. Installing it is a follow-on with a real
   decision in it (community install script over the network, or a nupkg
   the FOG server ships), so it is not decided here.
 - `choco` holds its own lock and returns 1618-style codes when it collides

@@ -330,7 +330,7 @@ func runAgent(ctx context.Context, args []string) error {
 				if err := reconcile(ctx, st, client, out); err != nil {
 					out.say("reconcile: " + err.Error())
 				}
-			} else if st.Config.SoftwareDrift > 0 && time.Since(st.Config.SoftwareChecked) >= time.Duration(st.Config.SoftwareDrift)*time.Second {
+			} else if st.Config.SoftwareDrift > 0 && (time.Since(st.Config.SoftwareChecked) >= time.Duration(st.Config.SoftwareDrift)*time.Second || blockedCleared(st)) {
 				// The drift check: the set has not changed, the host
 				// might have. The interval is the one the last
 				// reconcile saw, so this costs nothing until it is due.
@@ -542,6 +542,25 @@ func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, p
 		}
 	}
 	st.Config.SoftwareChecked = time.Now()
+	// A set the backend could not run at all is reported once, and the
+	// binary is then looked for every poll: installing Chocolatey is the
+	// admin's next move, and six hours is the wrong wait for it.
+	st.Config.SoftwareBlocked = len(reports) > 0
+	for _, r := range reports {
+		if r.Status != software.StatusCannotRun {
+			st.Config.SoftwareBlocked = false
+		}
+	}
+	return ok
+}
+
+// blockedCleared says whether a backend that was missing at the last run
+// is there now; a stat, so it costs nothing per poll.
+func blockedCleared(st *enroll.State) bool {
+	if !st.Config.SoftwareBlocked {
+		return false
+	}
+	ok, _ := (&software.Choco{}).Available()
 	return ok
 }
 
@@ -551,7 +570,7 @@ func driftDue(st *enroll.State, policy *software.Policy, now time.Time) bool {
 	if policy == nil || len(policy.Entries) == 0 || policy.DriftInterval <= 0 {
 		return false
 	}
-	return now.Sub(st.Config.SoftwareChecked) >= time.Duration(policy.DriftInterval)*time.Second
+	return now.Sub(st.Config.SoftwareChecked) >= time.Duration(policy.DriftInterval)*time.Second || blockedCleared(st)
 }
 
 // firstLine is enough of a detail for the console; the server has the rest.

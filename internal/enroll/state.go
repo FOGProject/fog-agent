@@ -57,6 +57,10 @@ type Config struct {
 	// SoftwareDrift is the server's drift interval in seconds as of the
 	// last reconcile; zero when the host has no software set.
 	SoftwareDrift int `json:"software_drift,omitempty"`
+	// SoftwareBlocked is set when the last run could not run its backend
+	// at all (Chocolatey missing); the binary is then looked for every
+	// poll so installing it converges the host at once.
+	SoftwareBlocked bool `json:"software_blocked,omitempty"`
 }
 
 // State is the on-disk material. Load never generates anything by itself;
