@@ -29,8 +29,10 @@ type Entry struct {
 type Policy struct {
 	// DriftInterval is how often, in seconds, the host re-checks the set
 	// without the revision having moved.
-	DriftInterval int     `json:"drift_interval"`
-	Entries       []Entry `json:"entries"`
+	DriftInterval int `json:"drift_interval"`
+	// Bootstrap is what to do when the backend is missing.
+	Bootstrap Bootstrap `json:"bootstrap"`
+	Entries   []Entry   `json:"entries"`
 }
 
 // The version policies and states the server sends.

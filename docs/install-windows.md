@@ -25,6 +25,11 @@ What `service install` does, in order:
 The service writes `%ProgramData%\FOG\agent\agent.log` (rolled to `.1` past
 1 MB) and start, stop and fatal errors to the Application event log.
 
+A host with software assigned but no Chocolatey reports every entry as
+"cannot run" and checks for it at each poll. Set
+`FOG_SOFTWARE_CHOCO_BOOTSTRAP_URL` on the server (FOG Configuration, FOG
+Client) to have the agent install Chocolatey itself from that script.
+
 Other commands: `service status`, `service stop`, `service start`,
 `service uninstall`. Uninstall removes the service and leaves the state
 directory (this machine's key and certificate) and the binary in place, so a

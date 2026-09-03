@@ -430,7 +430,7 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, out
 				continue
 			}
 			st.Config.SoftwareDrift = desired.Software.DriftInterval
-			if !runSoftware(ctx, st, client, desired.Software, out) {
+			if !runSoftware(ctx, st, client, desired.Revision, desired.Software, out) {
 				allOK = false
 			}
 			continue
@@ -522,8 +522,28 @@ func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, qu
 
 // runSoftware converges the software set and reports every entry. It
 // returns false only when a report did not land.
-func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, policy *software.Policy, out *sayer) bool {
-	reports := software.Converge(ctx, &software.Choco{}, policy.Entries)
+func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, revision string, policy *software.Policy, out *sayer) bool {
+	backend := &software.Choco{}
+	bootstrapFailed := false
+	if ok, _ := backend.Available(); !ok && policy.Bootstrap.URL != "" {
+		// The backend is missing and the server says to install it.
+		// Reported as a result on the capability, so the audit says
+		// where Chocolatey came from; the entries then run as usual.
+		out.say("software: Chocolatey is missing; bootstrapping from " + policy.Bootstrap.URL)
+		bctx, cancel := context.WithTimeout(ctx, software.BootstrapTimeout)
+		tail, err := software.InstallChoco(bctx, software.BootstrapClient(st.CA()), policy.Bootstrap, st.Dir)
+		cancel()
+		status, detail := provider.StatusApplied, "Chocolatey bootstrap: installed from "+policy.Bootstrap.URL
+		if err != nil {
+			bootstrapFailed = true
+			status, detail = provider.StatusFailed, "Chocolatey bootstrap failed: "+err.Error()+"\n"+tail
+		}
+		out.say(firstLine(detail))
+		if err := client.Result(ctx, enroll.ResultRequest{Revision: revision, Capability: "software", Status: status, Detail: detail}); err != nil {
+			out.say("result: " + err.Error())
+		}
+	}
+	reports := software.Converge(ctx, backend, policy.Entries)
 	ok := true
 	for _, r := range reports {
 		outcome, err := client.SoftwareResult(ctx, r.Entry.ID, r.Status, r.InstalledVersion, r.ExitCode, r.Details)
@@ -550,6 +570,11 @@ func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, p
 		if r.Status != software.StatusCannotRun {
 			st.Config.SoftwareBlocked = false
 		}
+	}
+	if bootstrapFailed {
+		// Not every poll: a bootstrap that failed is tried again at the
+		// drift check, like any other failed action.
+		st.Config.SoftwareBlocked = false
 	}
 	return ok
 }
@@ -591,7 +616,7 @@ func drift(ctx context.Context, st *enroll.State, client *enroll.Client, out *sa
 	if !driftDue(st, desired.Software, time.Now()) {
 		return nil
 	}
-	runSoftware(ctx, st, client, desired.Software, out)
+	runSoftware(ctx, st, client, desired.Revision, desired.Software, out)
 	return st.SaveConfig()
 }
 

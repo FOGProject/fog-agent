@@ -156,11 +156,17 @@ Chocolatey specifics that shape the code:
 - Community source rate limits. `source` is per entry so shops with an
   internal feed set it; the agent adds nothing. FOG hosting a NuGet feed is
   a follow-on (section 8).
-- Chocolatey is not bootstrapped in v1. A host without it reports
-  `cannot_run` for every entry and the Software tab says "Chocolatey is not
-  installed" once, not per row. The agent then looks for the binary every
-  poll (a stat) and converges as soon as it appears, rather than at the
-  next drift check: installing Chocolatey is the admin's next move. Installing it is a follow-on with a real
+- Chocolatey is not bootstrapped unless the server says so. A host without
+  it reports `cannot_run` for every entry and the Software tab says
+  "Chocolatey is not installed" once, not per row. The agent then looks for
+  the binary every poll (a stat) and converges as soon as it appears, rather
+  than at the next drift check: installing Chocolatey is the admin's next
+  move. With `FOG_SOFTWARE_CHOCO_BOOTSTRAP_URL` set (built after the Windows
+  proof; off by default because the fetched script runs as SYSTEM), the
+  agent fetches that install script, runs it, reports the attempt on the
+  capability, and converges in the same run. `FOG_SOFTWARE_CHOCO_NUPKG_URL`
+  points the script at a package the admin hosts, for hosts with no route
+  to the community feed. FOG serving the package itself is still section 8. Installing it is a follow-on with a real
   decision in it (community install script over the network, or a nupkg
   the FOG server ships), so it is not decided here.
 - `choco` holds its own lock and returns 1618-style codes when it collides
@@ -196,7 +202,8 @@ Chocolatey specifics that shape the code:
 
 ## 8. Follow-ons, deliberately not in this slice
 
-- Bootstrap Chocolatey on hosts that lack it.
+- FOG hosting the Chocolatey package and install script itself, so the
+  bootstrap needs no internet (the URL settings already accept any host).
 - FOG as a package source (host `.nupkg` files and serve a NuGet v2 feed
   from the storage node), which also gives an offline path.
 - winget backend for Windows, apt/dnf/zypper for Linux, brew for macOS,

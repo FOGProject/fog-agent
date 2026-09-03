@@ -274,6 +274,7 @@ order, deduplicated), plus the server's drift interval:
 ```json
 "software": {
   "drift_interval": 21600,
+  "bootstrap": {"url": "", "nupkg_url": ""},
   "entries": [
     {"id": 3, "backend": "choco", "package": "googlechrome", "version": "latest",
      "state": "present", "source": "", "args": "", "timeout": 900}
@@ -286,6 +287,18 @@ version (pinned; installed with `--force` when the host has another).
 `state` is `present` or `absent`. A disabled entry is left out, not sent as
 absent: turning an entry off stops managing the package, it does not
 remove it.
+
+`bootstrap` is what the agent does when Chocolatey is missing. An empty
+`url` (the default, `FOG_SOFTWARE_CHOCO_BOOTSTRAP_URL`) means nothing: every
+entry reports `cannot_run` and the agent looks for the binary at each poll.
+With a `url` the agent fetches that install script (trusting the system
+roots plus the FOG CA, so the FOG server can host it) into its state
+directory and runs it with PowerShell as SYSTEM, `nupkg_url`
+(`FOG_SOFTWARE_CHOCO_NUPKG_URL`) becoming the script's
+`chocolateyDownloadUrl` when set. The attempt is reported as a result on
+the `software` capability, `applied` or `failed`, and the entries run right
+after. A failed bootstrap is tried again at the next drift check, not every
+poll. Windows only: elsewhere the bootstrap reports `failed` and says so.
 
 The agent converges the set when the revision changes and again whenever
 `drift_interval` seconds have passed since its last check, fetching the
