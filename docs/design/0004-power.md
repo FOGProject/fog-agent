@@ -1,6 +1,6 @@
 # 0004: Power management through the coordinator
 
-Status: built 2026-09-03, proof pending. Follows the power row in
+Status: built and proven 2026-09-03 (section 4). Follows the power row in
 [0001](0001-architecture.md) section 7: "keep the server model; execution
 goes through the coordinator".
 
@@ -61,7 +61,28 @@ block the way `Client\PM` dropped them; the server keeps sending the packet.
 
 ## 4. Proof
 
-Linux lab VM (`fog-agent-test`, host 239): a reboot schedule two minutes
-out fires through the coordinator and the machine comes back; an on-demand
-shutdown from the host list is accepted, audited, consumed, and the VM goes
-down; a `wol` schedule never reaches the agent.
+Linux lab VM (`fog-agent-test`, host 239), 2026-09-03:
+
+- A reboot schedule set six minutes out fired on its minute
+  (`reboot applied: power: scheduled reboot (0 23 * * *)`), the coordinator
+  rebooted the machine, the agent came back polling, and `power_fired`
+  persisted as that minute. A three-minute lead was too short: the row
+  reached the agent one poll too late and it correctly did not fire for a
+  minute already past.
+- An on-demand shutdown row was acknowledged on the next poll
+  (`power applied: on-demand shutdown accepted (id 2)`), the row was gone
+  from `powerManagement` on that report, the coordinator shut the VM down
+  (`reboot applied: power: on-demand shutdown`, VirtualBox state
+  `poweroff`).
+- Flipping the schedule row to `wol` left the agent's persisted schedule
+  list empty on its next poll.
+
+The same on-demand shutdown against the Windows VM (`telliottwin11`, host
+105) shut the machine down but proved nothing about the agent: the legacy
+fog-client is still installed there, its power module read and deleted the
+row on its own check-in first, and no agent audit row appeared. A host
+running both consumes on-demand rows with whichever asks first; the Windows
+proof waits for the legacy client to be removed from that VM.
+
+Lab note: a reboot kills a `systemd-run` transient unit, so the agent on the
+VM runs from a real unit file (`fog-agent-lab.service`).
