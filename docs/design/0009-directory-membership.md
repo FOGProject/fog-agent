@@ -220,8 +220,41 @@ them now would be shipping the shape of a feature nobody has approved.
 
 The server compares `hostADOU` against `hdComputerDN`'s parent. On a
 difference it calls `ldap_rename()` with the same RDN and the new parent DN,
-then clears `hdComputerDN` so the next agent report re-establishes truth from
-the directory rather than from FOG's assumption that the move worked.
+and records the DN the object now has — a true return from `ldap_rename` is
+the directory confirming the object is there, so that is an observation, not
+an assumption. Leaving the old DN in place would make FOG move an object that
+has already moved, once per poll, forever.
+
+Built as `FOG\Agent\DirectoryPlacement` over `FOG\Net\FOGLdap`. Two things
+about it read backwards, and both were found by building it:
+
+**It hangs off the poll, not off the fact report.** The obvious wiring is to
+place after storing a report, since that is when the observation changes. But
+a report only happens when the *machine's* membership moved, and the other
+source of drift — the whole reason this document exists — is an admin editing
+the host's OU, which no machine will ever report. Hanging placement off the
+report would mean an edited OU never takes effect until the host happens to
+change domains: §1.1's bug, arrived at from the other direction.
+
+**`ouDrifted()` is not the gate.** It answers "no drift" when the observed
+container is unknown, deliberately (§7: a report full of rows nobody can act
+on is a report nobody reads). But no Linux join tool exposes a DN, so gating
+on it excludes every Linux host from placement forever — and looks exactly
+like the feature not working. A host that cannot say where it is gets asked
+about at the directory instead, by machine account name. The directory is the
+authority on where its own objects live, and it can answer for a machine that
+is switched off, which is the point of §2. That costs a bind, so it is bounded
+to hourly per host by `hdPlacementAt`; a host that *does* report its DN and is
+where it belongs is compared for free on every poll and never opens a
+connection.
+
+`hdPlacementAt` is stamped on every consultation, successful or not, because
+it is what that cooldown reads. It is named for the attempt: `hdMovedAt` would
+have claimed a move on every occasion nothing happened, the same defect
+`hdObservedAt` was renamed to avoid.
+
+Off unless both the switch and a server are configured. This writes to
+somebody's directory, so it must never begin working because they upgraded.
 
 `php-ldap` is a hard dependency of a FOG install, not an optional extra —
 every supported distro's package list carries it (`lib/redhat/config.sh:23`,
@@ -279,25 +312,56 @@ A `Directory Membership` report under Lists, gated on `host` like
 observed OU differs from its desired OU is exactly the thing §1.1 silently
 never fixed, and after §5 it is also the work queue for the fixer.
 
-## 8. The open question
+## 8. The credential — decided
 
 Everything in §3, §4 and §7 is reporting: no new credential, no new rights, no
 change to what any machine does. Everything in §5 and §6 turns FOG into a
 directory *writer*, and §5 in particular means FOG holds an account that can
 move computer objects.
 
-That is an access-control change and it is not mine to make. The options, in
-the order I would rank them:
+That was an access-control change, so it went to Tom rather than being
+assumed. **Decided 2026-09-04: option 1, a FOG-level directory service
+account.** The options as they were put:
 
-1. **A FOG-level directory service account**, stored like the LDAP plugin's
-   existing bind credential, used only for placement. One secret, held in one
-   place, never distributed. Rights can be delegated narrowly in AD to "move
-   computer objects within this subtree", which is a normal delegation.
+1. **A FOG-level directory service account** *(chosen)*, stored like the LDAP
+   plugin's existing bind credential, used only for placement. One secret,
+   held in one place, never distributed. Rights can be delegated narrowly in
+   AD to "move computer objects within this subtree", which is a normal
+   delegation.
 2. **Reuse the per-host `hostADUser`/`hostADPass`** for the move. No new
    secret, but it conflates the join account with the placement account and
    keeps the credential-per-host model this document is trying to shrink.
 3. **Ship §3/§4/§7 only.** Reporting and drift detection, no writes. Strictly
    an improvement over today, and it is the part that carries no new risk.
+
+The narrow-delegation claim in option 1 is the load-bearing one, so it was
+tested rather than asserted, against a Samba AD DC standing in for a customer
+forest. A service account granted create-child and delete-child of computer
+objects on `OU=Workstations` alone, and nothing else:
+
+```
+FOGLdap::connect  ok (ldaps, certificate verified)
+FOGLdap::findComputer  CN=WS-014,OU=Engineering,OU=Workstations,DC=fogad,DC=lab
+
+FOGLdap::moveTo  -> OU=Sales,OU=Workstations,DC=fogad,DC=lab
+  ok, now at CN=WS-014,OU=Sales,OU=Workstations,DC=fogad,DC=lab
+
+FOGLdap::moveTo  -> CN=Computers,DC=fogad,DC=lab (outside the delegation)
+  refused, as it must be: Insufficient access
+  still at CN=WS-014,OU=Sales,OU=Workstations,DC=fogad,DC=lab
+```
+
+The second half is the half that matters. An account that could move a
+computer object anywhere in the forest could hide a machine somewhere nobody
+monitors; one that is refused at the edge of its subtree cannot. Re-runnable:
+`scripts/background_scripts/prove_fogldap_moves_a_computer.php`, which drives
+the shipped `FOGLdap` rather than raw `ldap_*` calls, so it re-proves the code
+path and not just the idea.
+
+Settings, all created off and empty by schema 424: `FOG_DIRECTORY_LDAP_URI`,
+`FOG_DIRECTORY_BIND_DN`, `FOG_DIRECTORY_BIND_PASSWORD` (encrypted, read
+through the same probe the LDAP plugin uses), `FOG_DIRECTORY_BASE_DN`,
+`FOG_DIRECTORY_CA_CERT`, and `FOG_DIRECTORY_PLACEMENT_ENABLED`.
 
 ## 9. What this is not
 
