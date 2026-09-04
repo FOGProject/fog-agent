@@ -26,6 +26,7 @@ import (
 	// The observed program list, aliased because `software` above is the
 	// desired-state install capability: two different things (design 0006).
 	softwarefacts "github.com/FOGProject/fog-agent/internal/software"
+	"github.com/FOGProject/fog-agent/internal/usersession"
 )
 
 // Protocol is the agent protocol version this build speaks.
@@ -130,6 +131,12 @@ type PollRequest struct {
 	// "nothing new", never "nothing installed".
 	Inventory *inventory.Inventory    `json:"inventory,omitempty"`
 	Software  []softwarefacts.Program `json:"software,omitempty"`
+	// Sessions is the user-session report (design 0008): who is logged on
+	// now, and which sessions the agent watched end. Absent when the host's
+	// usertracker module is off, or when this platform has no collector --
+	// and absent is not the same as an empty open set, which would tell the
+	// server to close every session it holds for this host.
+	Sessions *usersession.Report `json:"sessions,omitempty"`
 }
 
 // PollResponse is what the server can do for this host right now.
@@ -161,6 +168,11 @@ type PollResponse struct {
 	// stops. Collapsing them would make every pre-facts server silently
 	// switch inventory off.
 	CollectFacts *bool `json:"collect_facts,omitempty"`
+	// CollectSessions carries FOG's usertracker module resolved for this
+	// host. A pointer for the same reason as CollectFacts: absent means an
+	// older server that has never heard of it, which must not read as an
+	// admin having switched it off.
+	CollectSessions *bool `json:"collect_sessions,omitempty"`
 }
 
 // DesiredState is what the server wants this host to look like

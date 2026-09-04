@@ -101,7 +101,12 @@ own host, as opposed to what it has applied:
 ```json
 {"agent_version": "1.2.3", "applied_revision": "3f1c9a0b…", "want_state": false,
  "inventory": {"sysman": "Dell Inc.", "…": "…"},
- "software": [{"name": "openssh-server", "version": "9.6p1", "source": "rpm", "…": "…"}]}
+ "software": [{"name": "openssh-server", "version": "9.6p1", "source": "rpm", "…": "…"}],
+ "sessions": {"open": [{"key": "2", "user": "telliott", "domain": "LAB", "type": "console",
+                        "state": "active", "started_at": "2026-09-04T09:12:03Z"}],
+              "closed": [{"key": "3", "user": "tom", "type": "remote", "state": "active",
+                          "started_at": "2026-09-04T07:01:44Z", "ended_at": "2026-09-04T08:55:10Z",
+                          "end_reason": "logout"}]}}
 ```
 
 A fact block is present only when the agent's own content hash for it moved,
@@ -131,7 +136,8 @@ Response `200`:
   "state": {"revision": "3f1c9a0b2d4e5f60", "capabilities": ["hostname"], "hostname": {"name": "lab-01", "enforce": true}},
   "want_inventory": false,
   "want_software": false,
-  "collect_facts": true
+  "collect_facts": true,
+  "collect_sessions": true
 }
 ```
 
@@ -147,6 +153,20 @@ no current hash for -- a fresh enrollment, a restored database, an admin who
 cleared the row. They are the server's half of the same conditional: it can
 always force a resend, and the agent honors the request on its next poll
 whether or not anything changed locally.
+
+`sessions` is design 0008 and does **not** follow the hash rule above. The
+open set is the server's evidence a session is still alive, so it is sent
+whenever it differs from the last one the server acknowledged, whenever a
+closure is waiting, and at least hourly regardless. `closed` carries only
+sessions the agent watched end; a session that vanished because the machine
+lost power is closed by the server, at the host's last contact, marked
+`inferred`. **An absent `sessions` block is "nothing new"; an `open: []` is
+"nobody is logged on" and closes every session the server holds.**
+
+`collect_sessions` is FOG's `usertracker` module resolved for the host, and
+carries the same absent-is-not-false rule as `collect_facts` below. An agent
+told `false` stops reading sessions at all rather than reading and
+discarding: the privacy-relevant act is looking at who is logged on.
 
 `collect_facts` is the install's gate (`FOG_AGENT_INVENTORY_ENABLED`) and is
 always stated, never omitted. An agent stops running its collectors when it

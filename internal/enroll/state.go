@@ -19,6 +19,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/provider/power"
 	"github.com/FOGProject/fog-agent/internal/reboot"
+	"github.com/FOGProject/fog-agent/internal/usersession"
 )
 
 // Files inside the state directory.
@@ -99,6 +100,23 @@ type Config struct {
 	// application and so carries no reason. Cleared by any poll that
 	// succeeds.
 	UnauthorizedSince time.Time `json:"unauthorized_since,omitzero"`
+	// SessionsAcked is the digest of the open user-session set the server
+	// last accepted (design 0008 section 4). Sessions do NOT use the facts
+	// hash gate: the open set is also the server's evidence a session is
+	// still alive, so it is resent on SessionResyncInterval even unchanged.
+	SessionsAcked string `json:"sessions_acked,omitempty"`
+	// SessionsPending are sessions the agent watched end but the server has
+	// not acknowledged. Held here, not dropped, so a failed poll resends the
+	// closure rather than losing it -- a lost close becomes a session that
+	// stays open forever, which is the legacy defect 0008 exists to fix.
+	SessionsPending []usersession.Session `json:"sessions_pending,omitempty"`
+	// SessionsChecked is when the open set was last accepted by the server.
+	SessionsChecked time.Time `json:"sessions_checked,omitzero"`
+	// SessionsDisabled is set when the server said collect_sessions was
+	// false, which is FOG's usertracker module turned off for this host. The
+	// agent then does not collect at all: the privacy-relevant act is reading
+	// who is logged on, not sending it.
+	SessionsDisabled bool `json:"sessions_disabled,omitempty"`
 	// FactsDisabled is set when the server said collect_facts was false.
 	// Stored rather than re-read each poll so a restart does not resume
 	// gathering on a site that turned it off.

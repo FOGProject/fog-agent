@@ -267,6 +267,12 @@ bytes** gzipped at `BestSpeed` -- 10.4x. Two decisions follow:
 
 Not desired state: the server never tells the agent what to install here
 (that is 0003). Not a device relation: multiple disks/NICs/GPUs are 0007. Not
-an event stream: user-tracking login/logout events are ordered and lossless
-(0008), a different shape from an idempotent snapshot, and do not ride this
-channel.
+user sessions: those are 0008, which rides this same poll request but not this
+gate -- a hash that has not moved would suppress the resend that proves a
+session is still open.
+
+(This paragraph originally said user-tracking events were "ordered and
+lossless". They are not, and cannot be: the lab server's rows show six of
+eleven sessions with no logout, because a logout needs a network round trip at
+the moment the machine is going away. 0008 §1 has the evidence and replaces
+the event model with sessions.)

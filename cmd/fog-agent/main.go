@@ -288,6 +288,7 @@ func runAgent(ctx context.Context, args []string) error {
 		return err
 	}
 	out := &sayer{}
+	watch := &sessionWatcher{}
 	for {
 		if len(st.Cert) == 0 {
 			// A token setup kept for us outranks nothing on the command
@@ -324,6 +325,7 @@ func runAgent(ctx context.Context, args []string) error {
 		// asked, and recorded only once the poll has succeeded.
 		now := time.Now()
 		sent := attachFacts(st, &req, now, out)
+		sessionDigest, sessionsSent := watch.attach(st, &req, now)
 		resp, err := client.Poll(ctx, req)
 		switch {
 		case errors.Is(err, enroll.ErrCertificateUnknown):
@@ -379,6 +381,9 @@ func runAgent(ctx context.Context, args []string) error {
 			if resp.PollInterval > 0 {
 				wait = time.Duration(resp.PollInterval) * time.Second
 			}
+			if err := recordSessions(st, sessionDigest, sessionsSent, resp, now); err != nil {
+				out.say("state: " + err.Error())
+			}
 			if err := recordFacts(st, sent, resp, now); err != nil {
 				out.say("facts: " + err.Error())
 			}
@@ -423,7 +428,7 @@ func runAgent(ctx context.Context, args []string) error {
 		}
 		// Sleep until the poll is due or a power schedule fires,
 		// whichever is first; a firing runs the coordinator right away.
-		if fired, err := waitOrFire(ctx, st, client, wait, out); err != nil {
+		if fired, err := waitOrFire(ctx, st, client, wait, watch, out); err != nil {
 			return err
 		} else if fired {
 			continue
@@ -435,7 +440,7 @@ func runAgent(ctx context.Context, args []string) error {
 // which case it records the firing, hands the coordinator a forced
 // reason and runs it, and reports true so the loop polls again at once
 // (a shutdown that went through never returns here).
-func waitOrFire(ctx context.Context, st *enroll.State, client *enroll.Client, wait time.Duration, out *sayer) (bool, error) {
+func waitOrFire(ctx context.Context, st *enroll.State, client *enroll.Client, wait time.Duration, watch *sessionWatcher, out *sayer) (bool, error) {
 	now := time.Now()
 	after := now
 	if st.Config.PowerFired.After(after) {
@@ -443,17 +448,13 @@ func waitOrFire(ctx context.Context, st *enroll.State, client *enroll.Client, wa
 	}
 	next, sched, ok := power.Next(st.Config.PowerSchedules, after)
 	if !ok || next.Sub(now) >= wait {
-		select {
-		case <-ctx.Done():
-			return false, ctx.Err()
-		case <-time.After(wait):
+		if err := sleepSampling(ctx, st, watch, wait, out); err != nil {
+			return false, err
 		}
 		return false, nil
 	}
-	select {
-	case <-ctx.Done():
-		return false, ctx.Err()
-	case <-time.After(next.Sub(now)):
+	if err := sleepSampling(ctx, st, watch, next.Sub(now), out); err != nil {
+		return false, err
 	}
 	st.Config.PowerFired = next
 	st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{
