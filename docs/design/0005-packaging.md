@@ -1,6 +1,6 @@
 # 0005: Packaging and the support log
 
-Status: Windows MSI built 2026-09-04, proof in section 4. Linux and macOS
+Status: Windows MSI built and proven on a lab host 2026-09-04, section 4. Linux and macOS
 packages are later slices.
 
 ## 1. Shape
@@ -36,9 +36,33 @@ later convenience, not a v1 requirement.
 
 ## 4. Proof
 
-Windows lab VM (`telliottwin11`, host 105): with the hand-installed
-service removed and the legacy client (FOG Service 0.13) installed first,
-the MSI removed the legacy product, installed the agent, ran `setup`
-(already enrolled, so no new request), registered and started the service,
-and the agent polled again with its existing certificate. Results are
-recorded in the commit that closes this section.
+Windows lab VM (`telliottwin11`, host 105), 2026-09-04: with the legacy
+client (FOG Service 0.13) installed first, `msiexec /i fog-agent-x64.msi
+/qn SERVER=... CA=...` exited 0, the legacy product was gone from Add/Remove
+Programs, FOG Agent 0.0.29 was present, the `fog-agent` service was RUNNING,
+the on-disk exe reported the built version, and `setup` found the host
+already enrolled and started polling on the existing certificate. The
+server saw poll, `payload/snapin/{id}` and `result` requests from the host,
+all 200.
+
+Two defects were found and fixed getting there, both in the packaging and
+neither in the agent (this is what the proof was for):
+
+- **wixl cannot persist a multi-UpgradeCode Upgrade table the Windows engine
+  will load.** With MajorUpgrade's own rows plus the legacy `<Upgrade>` row,
+  `FindRelatedProducts` failed with error 2229 ("could not load table
+  Upgrade") and the install rolled back 1603 -- before touching a file.
+  Each UpgradeCode alone loaded; the two together did not. `build/msi.sh`
+  now appends the legacy row with `msibuild` after wixl, which rewrites the
+  table cleanly.
+- **an unversioned exe is not overwritten, so `setup` ran a stale binary.**
+  The Go exe had no version resource and wixl left `File.Version` empty, so
+  over a prior install the engine kept the old `fog-agent.exe` -- which
+  predated the `setup` command -- and the deferred Setup action exited 2
+  (1603). `build/msi.sh` now stamps a VERSIONINFO resource (goversioninfo)
+  and sets `File.Version` to match, so the package file is always newer than
+  an unversioned one on disk.
+
+Both were invisible to the Linux-side `msiinfo`, which reads back tables
+wixl wrote even when the Windows engine rejects them; only installing on a
+real Windows host surfaced them.

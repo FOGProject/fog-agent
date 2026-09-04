@@ -38,11 +38,18 @@
     <!-- The legacy client ("FOG Service", fog-client 0.x) is removed as a
          related product. Two agents on one host fight over the same rows:
          its power module consumed an on-demand shutdown before the agent
-         saw it (design 0004). This is its MSI's UpgradeCode. -->
-    <Upgrade Id="1CCFDEAF-53E9-43AC-AE18-F9F86CEFA4EA">
-      <UpgradeVersion Minimum="0.0.0" IncludeMinimum="yes" Maximum="99.0.0"
-                      OnlyDetect="no" Property="LEGACYFOGCLIENT" />
-    </Upgrade>
+         saw it (design 0004). Its UpgradeCode is
+         {1CCFDEAF-53E9-43AC-AE18-F9F86CEFA4EA}.
+
+         The row that retires it is NOT authored here: wixl (msitools 0.106)
+         persists an Upgrade table the Windows Installer engine cannot load
+         (error 2229 at FindRelatedProducts, 1603) whenever the table holds
+         more than one UpgradeCode. MajorUpgrade already contributes our own
+         UpgradeCode's two rows, so a second one here is exactly that case.
+         build/msi.sh appends the legacy row with msibuild after wixl, which
+         rewrites the table cleanly; LEGACYFOGCLIENT is its ActionProperty
+         and MajorUpgrade's RemoveExistingProducts does the removal. -->
+    <Property Id="LEGACYFOGCLIENT" Secure="yes" />
 
     <Media Id="1" Cabinet="fogagent.cab" EmbedCab="yes" />
 
