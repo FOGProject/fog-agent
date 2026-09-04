@@ -77,12 +77,21 @@ Linux lab VM (`fog-agent-test`, host 239), 2026-09-03:
 - Flipping the schedule row to `wol` left the agent's persisted schedule
   list empty on its next poll.
 
-The same on-demand shutdown against the Windows VM (`telliottwin11`, host
-105) shut the machine down but proved nothing about the agent: the legacy
-fog-client is still installed there, its power module read and deleted the
-row on its own check-in first, and no agent audit row appeared. A host
-running both consumes on-demand rows with whichever asks first; the Windows
-proof waits for the legacy client to be removed from that VM.
+Windows VM (`telliottwin11`, host 105), same day, after the legacy
+fog-client was removed from it: an on-demand shutdown was acknowledged
+(`power applied: on-demand shutdown accepted (id 4)`), the row consumed,
+and the coordinator shut the machine down after the 60 s warning for its
+two logged-in users. Two things learned on the way:
+
+- With the legacy client still installed, its power module read and
+  deleted the row first and the agent never saw it. A host running both
+  consumes on-demand rows with whichever asks first, which is why the
+  installer should remove the legacy client (open slice).
+- The agent had been upgraded in place from a build without `power`, and
+  the inherited revision was already marked applied, so the row sat for
+  ten minutes until an unrelated task moved the revision. The applied
+  revision now also records the capability set that applied it, and a
+  build with a different set converges the revision on its first poll.
 
 Lab note: a reboot kills a `systemd-run` transient unit, so the agent on the
 VM runs from a real unit file (`fog-agent-lab.service`).
