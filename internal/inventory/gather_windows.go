@@ -3,9 +3,12 @@
 package inventory
 
 import (
+	"strconv"
 	"strings"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows/registry"
 
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/identity/smbios"
@@ -39,6 +42,26 @@ func gather() (Inventory, bool) {
 			inv.Mem = hw.Mem
 		}
 	}
+	// SMBIOS types 4 and 17 are optional, and a hypervisor is entitled to
+	// leave them out. VirtualBox does: the lab VM's table carries types
+	// 0, 1, 2, 3, 11 and nothing else, so everything above resolves and the
+	// processor and memory come back empty. Real firmware does emit them
+	// (verified against dmidecode on a Precision 7550: 3900/5100 MHz,
+	// 32768 MB), which is exactly why this had to be found on a VM.
+	//
+	// The fallbacks are the same kind of call as the rest of this file --
+	// a registry read and a kernel call, no WMI -- and they run only when
+	// SMBIOS said nothing, because when it speaks it is the better source:
+	// type 4 reports the real current and max clocks, where the registry
+	// only carries the nominal one, and type 17 reports installed modules
+	// rather than what the OS can address.
+	if inv.CPUVersion == "" {
+		inv.CPUMan, inv.CPUVersion, inv.CPUCurrent = cpuFromRegistry()
+	}
+	if inv.Mem == "" {
+		inv.Mem = physicalMemoryMB()
+	}
+
 	// The system UUID comes from the identity view rather than being parsed
 	// twice: it is the value enrollment bound this agent's certificate to,
 	// and the inventory row must agree with it.
@@ -53,12 +76,13 @@ func gather() (Inventory, bool) {
 // ---------------------------------------------------------------- the disk
 
 var (
-	procCreateFileW  = kernel32.NewProc("CreateFileW")
-	procDeviceIoCtl  = kernel32.NewProc("DeviceIoControl")
-	procCloseHandle  = kernel32.NewProc("CloseHandle")
-	kernel32         = syscall.NewLazyDLL("kernel32.dll")
-	user32           = syscall.NewLazyDLL("user32.dll")
-	procEnumDisplayD = user32.NewProc("EnumDisplayDevicesW")
+	procCreateFileW          = kernel32.NewProc("CreateFileW")
+	procDeviceIoCtl          = kernel32.NewProc("DeviceIoControl")
+	procCloseHandle          = kernel32.NewProc("CloseHandle")
+	procGlobalMemoryStatusEx = kernel32.NewProc("GlobalMemoryStatusEx")
+	kernel32                 = syscall.NewLazyDLL("kernel32.dll")
+	user32                   = syscall.NewLazyDLL("user32.dll")
+	procEnumDisplayD         = user32.NewProc("EnumDisplayDevicesW")
 )
 
 // IOCTL_STORAGE_QUERY_PROPERTY, and the StorageDeviceProperty query that
@@ -252,4 +276,60 @@ func gpus() (vendors, products string) {
 		v = append(v, strings.Fields(name)[0])
 	}
 	return strings.Join(v, ","), strings.Join(p, ",")
+}
+
+// ------------------------------------------- processor and memory fallbacks
+
+// cpuFromRegistry reads the processor description the kernel publishes for
+// CPU 0. Windows writes this key from CPUID at boot on every machine,
+// physical or virtual, so it is there when SMBIOS type 4 is not.
+//
+// ~MHz is the nominal clock, not the current one -- which is why this is a
+// fallback and not the primary source. There is no max-speed equivalent
+// here, so CPUMax is deliberately left as SMBIOS found it (empty): a
+// guessed maximum is worse than a blank field in an inventory.
+func cpuFromRegistry() (man, version, mhz string) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE,
+		`HARDWARE\DESCRIPTION\System\CentralProcessor\0`, registry.QUERY_VALUE)
+	if err != nil {
+		return "", "", ""
+	}
+	defer k.Close()
+	man, _, _ = k.GetStringValue("VendorIdentifier")
+	version, _, _ = k.GetStringValue("ProcessorNameString")
+	if hz, _, err := k.GetIntegerValue("~MHz"); err == nil && hz > 0 {
+		mhz = strconv.FormatUint(hz, 10)
+	}
+	return strings.TrimSpace(man), strings.TrimSpace(version), mhz
+}
+
+// memoryStatusEx is Win32 MEMORYSTATUSEX. dwLength must be set to the size
+// of the struct before the call or GlobalMemoryStatusEx fails.
+type memoryStatusEx struct {
+	Length               uint32
+	MemoryLoad           uint32
+	TotalPhys            uint64
+	AvailPhys            uint64
+	TotalPageFile        uint64
+	AvailPageFile        uint64
+	TotalVirtual         uint64
+	AvailVirtual         uint64
+	AvailExtendedVirtual uint64
+}
+
+// A wrong layout here reads garbage rather than failing, so pin the size the
+// same way the disk and display structs in this file are pinned.
+var _ = [1]struct{}{}[unsafe.Sizeof(memoryStatusEx{})-64]
+
+// physicalMemoryMB reports RAM the OS can address, in MB, matching what the
+// Linux gatherer takes from /proc/meminfo. It is a few MB below the installed
+// total because firmware reserves some; SMBIOS type 17, when present, is
+// preferred precisely because it reports what is fitted.
+func physicalMemoryMB() string {
+	m := memoryStatusEx{Length: uint32(unsafe.Sizeof(memoryStatusEx{}))}
+	r, _, _ := procGlobalMemoryStatusEx.Call(uintptr(unsafe.Pointer(&m)))
+	if r == 0 || m.TotalPhys == 0 {
+		return ""
+	}
+	return strconv.FormatUint(m.TotalPhys/(1024*1024), 10)
 }

@@ -87,6 +87,26 @@ the agent has already read, and only two facts need anything else --
 the boot disk (`IOCTL_STORAGE_QUERY_PROPERTY` on `\\.\PhysicalDrive0`)
 and the display adapters (`EnumDisplayDevices`).
 
+**Types 4 and 17 are optional, and a hypervisor may omit them.** VirtualBox
+does: the lab VM's table (captured 2026-09-04, now the fixture in
+`internal/identity/smbios/testdata/virtualbox-7.dmi`) carries types 0, 1, 2,
+3 and 11 and nothing else. Every firmware and enclosure string resolves, and
+the processor and memory come back **empty** -- so a Windows guest
+inventoried from SMBIOS alone would report no CPU and no RAM. Real firmware
+does emit them, verified against `dmidecode` on a Precision 7550 (3900/5100
+MHz, 32768 MB summed from four type-17 structures, two of them empty slots),
+which is exactly why only a VM could surface this.
+
+The Windows gatherer therefore falls back, and only when SMBIOS said nothing:
+`HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0` for the vendor, name
+and nominal clock, and `GlobalMemoryStatusEx` for total physical memory. Both
+are the same kind of call as the rest of that file -- a registry read and a
+kernel call, still no WMI. SMBIOS stays preferred where it speaks: type 4
+gives the real current *and* maximum clock where the registry has only the
+nominal one, and type 17 reports the modules fitted rather than what the OS
+can address. `CPUMax` has no registry equivalent and is deliberately left
+blank rather than guessed.
+
 WMI or a PowerShell CIM query would work and would be less code. It is
 rejected on two grounds: it means spawning a process or initializing COM
 on every collection to read values this process can ask the kernel for
