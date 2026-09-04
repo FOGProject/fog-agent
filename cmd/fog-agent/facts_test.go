@@ -22,6 +22,7 @@ func TestFactsDue(t *testing.T) {
 		{"server wants inventory", enroll.Config{FactsChecked: now, WantInventory: true}, true},
 		{"server wants software", enroll.Config{FactsChecked: now, WantSoftware: true}, true},
 		{"server wants directory", enroll.Config{FactsChecked: now, WantDirectory: true}, true},
+		{"server wants printers", enroll.Config{FactsChecked: now, WantPrinters: true}, true},
 		// The gate outranks everything, including a request the server
 		// made before the setting changed: an agent that kept gathering
 		// would burn CPU on every host for a block the server discards.
@@ -155,5 +156,82 @@ func TestRecordFactsHonorsAndIgnoresTheGate(t *testing.T) {
 				t.Errorf("FactsDisabled = %t, want %t", st.Config.FactsDisabled, tc.want)
 			}
 		})
+	}
+}
+
+func TestRecordFactsPersistsThePrintersHash(t *testing.T) {
+	// The same failure TestRecordFactsSavesWhenOnlyTheDirectoryMoved guards,
+	// re-run for the fourth block. recordFacts skips the disk write when
+	// nothing it owns changed, and it decides that by comparing a struct
+	// listing the fields it owns -- so a new hash left out of that struct is
+	// set in memory, never written, and resent after every service restart
+	// for the life of the agent.
+	dir := t.TempDir()
+	st := &enroll.State{Dir: dir}
+	if err := recordFacts(st, sentFacts{printers: "p1"}, &enroll.PollResponse{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := enroll.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Config.PrintersHash != "p1" {
+		t.Errorf("PrintersHash = %q after reload, want p1: the change was"+
+			" never written to disk", reloaded.Config.PrintersHash)
+	}
+}
+
+func TestRecordFactsKeepsThePrintersHashApartFromTheOthers(t *testing.T) {
+	st := &enroll.State{Dir: t.TempDir()}
+	st.Config.InventoryHash, st.Config.SoftwareHash = "inv", "soft"
+	st.Config.DirectoryHash = "dir"
+
+	if err := recordFacts(st, sentFacts{gathered: true, printers: "p1"},
+		&enroll.PollResponse{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if st.Config.PrintersHash != "p1" {
+		t.Errorf("PrintersHash = %q", st.Config.PrintersHash)
+	}
+	if st.Config.InventoryHash != "inv" || st.Config.SoftwareHash != "soft" ||
+		st.Config.DirectoryHash != "dir" {
+		t.Errorf("an unsent block was recorded: inv=%q soft=%q dir=%q",
+			st.Config.InventoryHash, st.Config.SoftwareHash, st.Config.DirectoryHash)
+	}
+}
+
+func TestRecordFactsKeepsAnAcceptedPrintersHashWhenNothingWasSent(t *testing.T) {
+	// The other direction, and the one a "record what was sent" loop gets
+	// wrong by assigning unconditionally: a poll that carried no printers
+	// block must leave the accepted hash alone. Clearing it would make the
+	// agent resend the full printer list on the very next poll, every time
+	// any other fact moved.
+	st := &enroll.State{Dir: t.TempDir()}
+	st.Config.PrintersHash = "accepted"
+
+	if err := recordFacts(st, sentFacts{gathered: true, directory: "d1"},
+		&enroll.PollResponse{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if st.Config.PrintersHash != "accepted" {
+		t.Errorf("PrintersHash = %q, want accepted", st.Config.PrintersHash)
+	}
+}
+
+func TestRecordFactsCarriesAndClearsTheServersPrinterRequest(t *testing.T) {
+	st := &enroll.State{Dir: t.TempDir()}
+	if err := recordFacts(st, sentFacts{}, &enroll.PollResponse{WantPrinters: true}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !st.Config.WantPrinters {
+		t.Fatal("the server asked for printers and the agent did not record it")
+	}
+	// The answer is authoritative: once the server holds the hash it stops
+	// asking, and assigning rather than or-ing is what clears the flag.
+	if err := recordFacts(st, sentFacts{}, &enroll.PollResponse{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if st.Config.WantPrinters {
+		t.Error("the server stopped asking and the agent kept the flag set")
 	}
 }

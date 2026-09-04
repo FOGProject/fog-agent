@@ -89,6 +89,9 @@ type Config struct {
 	// a machine to a domain, so this hash almost never moves -- which is
 	// the point: an unchanged answer costs one comparison, not a row.
 	DirectoryHash string `json:"directory_hash,omitempty"`
+	// PrintersHash is the same gate for the installed-printers block
+	// (design 0010 §3).
+	PrintersHash string `json:"printers_hash,omitempty"`
 	// FactsChecked is when the collectors last ran. They are re-run on
 	// FactsInterval rather than every poll: enumerating a package-managed
 	// host's 2800 packages every five minutes buys nothing.
@@ -99,6 +102,7 @@ type Config struct {
 	WantInventory bool `json:"want_inventory,omitempty"`
 	WantSoftware  bool `json:"want_software,omitempty"`
 	WantDirectory bool `json:"want_directory,omitempty"`
+	WantPrinters  bool `json:"want_printers,omitempty"`
 	// UnauthorizedSince is when an unbroken run of 401s began that the
 	// server did NOT attribute to this agent's certificate. The identity
 	// is kept while it runs, and discarded only once it outlasts

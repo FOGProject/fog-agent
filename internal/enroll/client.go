@@ -19,6 +19,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/directory"
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/inventory"
+	"github.com/FOGProject/fog-agent/internal/printers"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
 	"github.com/FOGProject/fog-agent/internal/provider/power"
 	"github.com/FOGProject/fog-agent/internal/provider/snapin"
@@ -137,6 +138,12 @@ type PollRequest struct {
 	// as the two above, and the same rule about absence: absent is "nothing
 	// new", never "this machine left its domain".
 	Directory *directory.Directory `json:"directory,omitempty"`
+	// Printers is what is actually installed on the machine (design 0010
+	// §3). Same hash gate, and the same rule about absence: absent is
+	// "nothing new", never "this machine has no printers" -- the server
+	// treats a reported list as complete, so a false empty would mark
+	// every assigned printer as missing.
+	Printers *printers.Printers `json:"printers,omitempty"`
 	// Sessions is the user-session report (design 0008): who is logged on
 	// now, and which sessions the agent watched end. Absent when the host's
 	// usertracker module is off, or when this platform has no collector --
@@ -168,6 +175,7 @@ type PollResponse struct {
 	WantInventory bool `json:"want_inventory,omitempty"`
 	WantSoftware  bool `json:"want_software,omitempty"`
 	WantDirectory bool `json:"want_directory,omitempty"`
+	WantPrinters  bool `json:"want_printers,omitempty"`
 	// Error is the server's human sentence when Status is not "ok". FOG
 	// already sends one (Route's agent error path, and the schema-update
 	// answer), and without this field the agent read the status word and

@@ -7,6 +7,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/directory"
 	"github.com/FOGProject/fog-agent/internal/enroll"
 	"github.com/FOGProject/fog-agent/internal/inventory"
+	"github.com/FOGProject/fog-agent/internal/printers"
 	"github.com/FOGProject/fog-agent/internal/software"
 )
 
@@ -28,7 +29,7 @@ func factsDue(cfg enroll.Config, now time.Time) bool {
 		return false
 	}
 	return cfg.WantInventory || cfg.WantSoftware || cfg.WantDirectory ||
-		now.Sub(cfg.FactsChecked) >= FactsInterval
+		cfg.WantPrinters || now.Sub(cfg.FactsChecked) >= FactsInterval
 }
 
 // sentFacts is the hashes of the blocks a poll actually carried, empty for
@@ -39,6 +40,7 @@ type sentFacts struct {
 	inventory string
 	software  string
 	directory string
+	printers  string
 }
 
 // attachFacts runs the collectors when due and hangs onto the request only
@@ -70,9 +72,20 @@ func attachFacts(st *enroll.State, req *enroll.PollRequest, now time.Time, out *
 			sent.directory = h
 		}
 	}
-	if sent.inventory != "" || sent.software != "" || sent.directory != "" {
-		out.say(fmt.Sprintf("facts: sending inventory=%t software=%d directory=%t",
-			req.Inventory != nil, len(req.Software), req.Directory != nil))
+	if pr, ok := printers.Gather(); ok {
+		if h := pr.Hash(); h != st.Config.PrintersHash || st.Config.WantPrinters {
+			req.Printers = &pr
+			sent.printers = h
+		}
+	}
+	if sent.inventory != "" || sent.software != "" || sent.directory != "" ||
+		sent.printers != "" {
+		queues := 0
+		if req.Printers != nil {
+			queues = len(req.Printers.Installed)
+		}
+		out.say(fmt.Sprintf("facts: sending inventory=%t software=%d directory=%t printers=%d",
+			req.Inventory != nil, len(req.Software), req.Directory != nil, queues))
 	}
 	return sent
 }
@@ -85,13 +98,20 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	// Config holds slices, so it is not comparable; the fields this
 	// function owns are, and they are the only ones that can have moved.
 	type owned struct {
-		inv, soft, dir            string
-		checked                   time.Time
-		wantI, wantS, wantD, offX bool
+		inv, soft, dir, print            string
+		checked                          time.Time
+		wantI, wantS, wantD, wantP, offX bool
 	}
-	before := owned{st.Config.InventoryHash, st.Config.SoftwareHash,
-		st.Config.DirectoryHash, st.Config.FactsChecked, st.Config.WantInventory,
-		st.Config.WantSoftware, st.Config.WantDirectory, st.Config.FactsDisabled}
+	// One snapshot function rather than two literals: the pair only means
+	// anything if both sides list the same fields in the same order, and a
+	// field added to one and not the other silently stops persisting.
+	snapshot := func() owned {
+		return owned{st.Config.InventoryHash, st.Config.SoftwareHash,
+			st.Config.DirectoryHash, st.Config.PrintersHash, st.Config.FactsChecked,
+			st.Config.WantInventory, st.Config.WantSoftware,
+			st.Config.WantDirectory, st.Config.WantPrinters, st.Config.FactsDisabled}
+	}
+	before := snapshot()
 
 	if sent.gathered {
 		st.Config.FactsChecked = now
@@ -105,20 +125,22 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	if sent.directory != "" {
 		st.Config.DirectoryHash = sent.directory
 	}
+	if sent.printers != "" {
+		st.Config.PrintersHash = sent.printers
+	}
 	// The answer is authoritative: the server stops asking once it holds
 	// a hash, so assigning rather than or-ing is what clears the flags.
 	st.Config.WantInventory = resp.WantInventory
 	st.Config.WantSoftware = resp.WantSoftware
 	st.Config.WantDirectory = resp.WantDirectory
+	st.Config.WantPrinters = resp.WantPrinters
 	// Absent leaves the setting alone: a server too old to send the gate
 	// must not read as one that turned it off.
 	if resp.CollectFacts != nil {
 		st.Config.FactsDisabled = !*resp.CollectFacts
 	}
 
-	after := owned{st.Config.InventoryHash, st.Config.SoftwareHash,
-		st.Config.DirectoryHash, st.Config.FactsChecked, st.Config.WantInventory,
-		st.Config.WantSoftware, st.Config.WantDirectory, st.Config.FactsDisabled}
+	after := snapshot()
 	if before == after {
 		return nil
 	}
