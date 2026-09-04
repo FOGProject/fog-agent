@@ -5,7 +5,7 @@ package software
 import "testing"
 
 func TestParseDpkgLine(t *testing.T) {
-	got, ok := parseDpkgLine("openssh-server\t1:8.9p1-3ubuntu0.10\tUbuntu Developers <ubuntu-devel@lists.ubuntu.com>\tamd64")
+	got, ok := parseDpkgLine("ii \topenssh-server\t1:8.9p1-3ubuntu0.10\tUbuntu Developers <ubuntu-devel@lists.ubuntu.com>\tamd64")
 	if !ok {
 		t.Fatal("well-formed dpkg line was rejected")
 	}
@@ -25,9 +25,38 @@ func TestParseDpkgLineRejectsJunk(t *testing.T) {
 	// dpkg-query's output ends with a blank line, and a short row is not a
 	// package: neither may become a Program with an empty name, because the
 	// server keys rows on the name.
-	for _, line := range []string{"", "\t\t\t", "onlyname\tversion"} {
+	for _, line := range []string{"", "\t\t\t\t", "ii \tonlyname\tversion"} {
 		if _, ok := parseDpkgLine(line); ok {
 			t.Errorf("%q should not parse", line)
+		}
+	}
+}
+
+func TestParseDpkgLineDropsPackagesThatAreNotInstalled(t *testing.T) {
+	// The exact line the lab VM produced after `apt-get remove
+	// apt-listchanges`: dpkg still KNOWS the package, so `dpkg-query -W`
+	// still lists it, in "rc" -- desired remove, config files left. Counting
+	// it as installed meant the uninstall never reached FOG: the content
+	// hash did not move, so the agent reported nothing and the row on the
+	// server stayed open forever.
+	if _, ok := parseDpkgLine("rc \tapt-listchanges\t4.8\tJonathan Kamens <jik@kamens.us>\tall"); ok {
+		t.Error("a package in rc state must not be reported as installed")
+	}
+	for _, tc := range []struct {
+		status string
+		want   bool
+	}{
+		{"ii ", true},  // installed
+		{"hi ", true},  // held at a version, still installed
+		{"rc ", false}, // removed, config files left
+		{"un ", false}, // not installed, never was
+		{"iU ", false}, // unpacked but never configured
+		{"iF ", false}, // half-configured
+		{"", false},    // no status at all
+		{"i", false},   // truncated
+	} {
+		if got := dpkgInstalled(tc.status); got != tc.want {
+			t.Errorf("dpkgInstalled(%q) = %t, want %t", tc.status, got, tc.want)
 		}
 	}
 }

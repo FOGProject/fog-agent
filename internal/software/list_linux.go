@@ -24,7 +24,7 @@ func list() ([]Program, bool) {
 		parse func(string) (Program, bool)
 		args  []string
 	}{
-		{"dpkg-query", parseDpkgLine, []string{"-W", "-f=${Package}\t${Version}\t${Maintainer}\t${Architecture}\n"}},
+		{"dpkg-query", parseDpkgLine, []string{"-W", "-f=${db:Status-Abbrev}\t${Package}\t${Version}\t${Maintainer}\t${Architecture}\n"}},
 		{"rpm", parseRPMLine, []string{"-qa", "--qf", "%{NAME}\t%{VERSION}-%{RELEASE}\t%{VENDOR}\t%{ARCH}\t%{INSTALLTIME}\n"}},
 	} {
 		progs, ok := fromCommand(m.bin, m.parse, m.args...)
@@ -60,18 +60,37 @@ func fromCommand(bin string, parse func(string) (Program, bool), args ...string)
 // parseDpkgLine reads one tab-separated dpkg-query row. Split out from the
 // exec so the format is tested against a fixture, not against whatever this
 // machine has installed.
+//
+// The status field leads, and it is not decoration: `dpkg-query -W` lists
+// every package dpkg KNOWS, which includes ones apt removed without purging.
+// Those sit in "rc" -- desired remove, config files still present -- and
+// reporting them as installed means an uninstall never reaches FOG at all.
+// Found on the lab VM: apt-get remove left the package in the report and the
+// content hash never moved, so the host looked unchanged forever.
 func parseDpkgLine(line string) (Program, bool) {
 	f := strings.Split(strings.TrimRight(line, "\r"), "\t")
-	if len(f) < 4 || f[0] == "" {
+	if len(f) < 5 || f[1] == "" {
+		return Program{}, false
+	}
+	if !dpkgInstalled(f[0]) {
 		return Program{}, false
 	}
 	return Program{
-		Name:      f[0],
-		Version:   f[1],
-		Publisher: f[2],
+		Name:      f[1],
+		Version:   f[2],
+		Publisher: f[3],
 		Source:    "dpkg",
-		Arch:      f[3],
+		Arch:      f[4],
 	}, true
+}
+
+// dpkgInstalled reads dpkg's three-character status: desired action, current
+// status, error flag. Only the second matters here, and only 'i' -- fully
+// installed -- counts. "iU" (unpacked, never configured) and "rc" (removed,
+// config files left) are both things a person would say are not installed,
+// and "hi" (held at a version) is.
+func dpkgInstalled(status string) bool {
+	return len(status) >= 2 && status[1] == 'i'
 }
 
 // parseRPMLine reads one tab-separated rpm -qa row. rpm reports the install
