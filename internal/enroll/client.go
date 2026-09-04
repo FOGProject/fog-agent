@@ -168,6 +168,12 @@ type PollResponse struct {
 	WantInventory bool `json:"want_inventory,omitempty"`
 	WantSoftware  bool `json:"want_software,omitempty"`
 	WantDirectory bool `json:"want_directory,omitempty"`
+	// Error is the server's human sentence when Status is not "ok". FOG
+	// already sends one (Route's agent error path, and the schema-update
+	// answer), and without this field the agent read the status word and
+	// dropped the explanation -- so a log line said `status "error"` and
+	// nothing about what the error was.
+	Error string `json:"error,omitempty"`
 	// CollectFacts is the server's gate (FOG_AGENT_INVENTORY_ENABLED). A
 	// pointer because absent and false mean different things here: absent
 	// is a server too old to have the setting, and the agent keeps
@@ -228,6 +234,32 @@ type ResultItem struct {
 	Details          string `json:"details,omitempty"`
 }
 
+// refuseRedirect stops the HTTP client following a 3xx and reports where it
+// was being sent, because a redirect is never a valid answer to an API call
+// and following one destroys the evidence.
+//
+// Observed in the lab on 2026-09-04. While the server's schema was mid-
+// upgrade, FOG answered every poll with a redirect to its schema updater --
+// and a RELATIVE one, `../management/index.php?node=schema`. Go resolved
+// that against /fog/agent/v1/ into /fog/agent/management/index.php, PHP-FPM
+// said "Primary script unknown", and the agent logged
+//
+//	poll: HTTP 404, body is not JSON: File not found.
+//
+// every five minutes across the fleet. Nothing in that line points at a
+// schema upgrade, which is the actual and entirely ordinary cause.
+//
+// Now the agent reports the 3xx and its Location, so the next person reads
+// "server redirected to ...?node=schema" and knows to finish the upgrade.
+func refuseRedirect(req *http.Request, via []*http.Request) error {
+	return fmt.Errorf(
+		"server redirected the request to %s; the API never redirects, so "+
+			"this is a server that is not serving the agent routes right "+
+			"now (a pending schema update answers exactly like this)",
+		req.URL,
+	)
+}
+
 // NewClient builds a client that verifies the server against caPEM. An
 // empty bundle is refused: enrolling against an unverified server would let
 // anyone on the path hand the agent a certificate for a server they control.
@@ -240,8 +272,9 @@ func NewClient(serverURL string, caPEM []byte) (*Client, error) {
 	return &Client{
 		ServerURL: strings.TrimRight(serverURL, "/"),
 		HTTP: &http.Client{
-			Timeout:   30 * time.Second,
-			Transport: &http.Transport{TLSClientConfig: cfg},
+			Timeout:       30 * time.Second,
+			Transport:     &http.Transport{TLSClientConfig: cfg},
+			CheckRedirect: refuseRedirect,
 		},
 		tlsConfig: cfg,
 	}, nil
@@ -316,6 +349,10 @@ func (c *Client) Poll(ctx context.Context, req PollRequest) (*PollResponse, erro
 		return nil, fmt.Errorf("poll: HTTP %d, body is not JSON: %.200s", resp.StatusCode, raw)
 	}
 	if resp.StatusCode != http.StatusOK || out.Status != "ok" {
+		if out.Error != "" {
+			return nil, fmt.Errorf("poll: HTTP %d, %s (status %q)",
+				resp.StatusCode, out.Error, out.Status)
+		}
 		return nil, fmt.Errorf("poll: HTTP %d with status %q", resp.StatusCode, out.Status)
 	}
 	return &out, nil
