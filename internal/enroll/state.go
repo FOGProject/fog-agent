@@ -62,7 +62,7 @@ type Config struct {
 	// SoftwareChecked is when the software set was last converged. The
 	// drift check re-runs it after the server's interval even when the
 	// revision has not moved.
-	SoftwareChecked time.Time `json:"software_checked,omitempty"`
+	SoftwareChecked time.Time `json:"software_checked,omitzero"`
 	// SoftwareDrift is the server's drift interval in seconds as of the
 	// last reconcile; zero when the host has no software set.
 	SoftwareDrift int `json:"software_drift,omitempty"`
@@ -75,7 +75,7 @@ type Config struct {
 	PowerSchedules []power.Schedule `json:"power_schedules,omitempty"`
 	// PowerFired is the last scheduled firing acted on, kept so a machine
 	// that comes back within the same minute does not fire it again.
-	PowerFired time.Time `json:"power_fired,omitempty"`
+	PowerFired time.Time `json:"power_fired,omitzero"`
 	// InventoryHash and SoftwareHash are the content hashes of the fact
 	// blocks the server has accepted (design 0006 §2). The agent sends a
 	// block only when the hash it computes now differs from these, and
@@ -86,7 +86,7 @@ type Config struct {
 	// FactsChecked is when the collectors last ran. They are re-run on
 	// FactsInterval rather than every poll: enumerating a package-managed
 	// host's 2800 packages every five minutes buys nothing.
-	FactsChecked time.Time `json:"facts_checked,omitempty"`
+	FactsChecked time.Time `json:"facts_checked,omitzero"`
 	// WantInventory and WantSoftware are the server's request from the
 	// last poll answer, honored on the next poll regardless of whether
 	// anything changed locally.
@@ -98,7 +98,7 @@ type Config struct {
 	// UnauthorizedGrace -- the backstop for a 401 that never reaches the
 	// application and so carries no reason. Cleared by any poll that
 	// succeeds.
-	UnauthorizedSince time.Time `json:"unauthorized_since,omitempty"`
+	UnauthorizedSince time.Time `json:"unauthorized_since,omitzero"`
 	// FactsDisabled is set when the server said collect_facts was false.
 	// Stored rather than re-read each poll so a restart does not resume
 	// gathering on a site that turned it off.
