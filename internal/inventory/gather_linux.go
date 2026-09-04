@@ -148,27 +148,6 @@ func khzToMHz(khz string) string {
 	return strconv.FormatInt(v/1000, 10)
 }
 
-// chassisTypeName turns the SMBIOS chassis type number the kernel exposes
-// into the word the Inventory tab should show. An unmapped type stays the
-// raw number rather than becoming a lie; the mapping is SMBIOS 3.x table 17.
-func chassisTypeName(raw string) string {
-	names := map[string]string{
-		"1": "Other", "2": "Unknown", "3": "Desktop", "4": "Low Profile Desktop",
-		"5": "Pizza Box", "6": "Mini Tower", "7": "Tower", "8": "Portable",
-		"9": "Laptop", "10": "Notebook", "11": "Hand Held", "12": "Docking Station",
-		"13": "All In One", "14": "Sub Notebook", "15": "Space-saving",
-		"16": "Lunch Box", "17": "Main Server Chassis", "18": "Expansion Chassis",
-		"21": "Peripheral Chassis", "22": "RAID Chassis", "23": "Rack Mount Chassis",
-		"24": "Sealed-case PC", "25": "Multi-system Chassis", "28": "Blade",
-		"29": "Blade Enclosure", "30": "Tablet", "31": "Convertible",
-		"32": "Detachable", "34": "Embedded PC", "35": "Mini PC",
-	}
-	if name, ok := names[raw]; ok {
-		return name
-	}
-	return raw
-}
-
 // primaryDisk picks the machine's main block device and reports its model,
 // serial and firmware. The inventory table holds exactly one disk, so this
 // chooses rather than concatenating: the first real, non-removable device in

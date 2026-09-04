@@ -43,7 +43,7 @@ func Parse(table []byte, major, minor int) (Identity, error) {
 		typ := table[off]
 		length := int(table[off+1])
 		if length < 4 || off+length > len(table) {
-			return id, fmt.Errorf("smbios: bad structure length %d at offset %d", length, off)
+			return id, structureError(length, off)
 		}
 		formatted := table[off : off+length]
 		strs, next, err := stringSet(table, off+length)
@@ -101,6 +101,12 @@ func stringSet(table []byte, off int) ([]string, int, error) {
 			return strs, off + 1, nil
 		}
 	}
+}
+
+// structureError describes a structure header the walk cannot trust. Shared
+// by both views so they refuse the same tables for the same reason.
+func structureError(length, off int) error {
+	return fmt.Errorf("smbios: bad structure length %d at offset %d", length, off)
 }
 
 // str resolves the 1-based string index stored at formatted[at].

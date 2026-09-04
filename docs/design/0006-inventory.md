@@ -73,9 +73,24 @@ cpumax, mem, hdmodel, hdserial, hdfirmware, caseman, casever, caseserial,
 caseasset, gpuvendors, gpuproducts`.
 
 Sources: Linux `/sys/class/dmi/id` and `/proc/cpuinfo`, `/proc/meminfo`,
-`lsblk`/`/sys/block`; Windows the SMBIOS table already parsed plus WMI/CIM
-(`Win32_Processor`, `Win32_PhysicalMemory`, `Win32_DiskDrive`,
-`Win32_VideoController`); macOS `system_profiler`/IOKit.
+`lsblk`/`/sys/block`; macOS `system_profiler`/IOKit.
+
+**Windows uses no WMI.** The agent already pulls the raw SMBIOS structure
+table from `GetSystemFirmwareTable('RSMB')` to compute its identity, and
+that table carries almost the whole inventory row: types 0, 1, 2 and 3 for
+the firmware and enclosure strings, type 4 for the processor, type 17
+summed for memory. So `smbios.ParseHardware` is a second view over bytes
+the agent has already read, and only two facts need anything else --
+the boot disk (`IOCTL_STORAGE_QUERY_PROPERTY` on `\\.\PhysicalDrive0`)
+and the display adapters (`EnumDisplayDevices`).
+
+WMI or a PowerShell CIM query would work and would be less code. It is
+rejected on two grounds: it means spawning a process or initializing COM
+on every collection to read values this process can ask the kernel for
+directly, and WMI is the part of Windows most likely to already be broken
+on the machine an admin is trying to inventory -- exactly when the
+inventory matters. The identity path made the same call for the same
+reason (0002).
 
 **Known limit, kept on purpose.** The `inventory` table holds one disk and
 folds GPUs into two comma strings. The agent populates the primary disk and
@@ -116,17 +131,29 @@ truth is the `hsRemovedAt IS NULL` slice of the same table.
 
 ### 4.2 The reconcile
 
-A software block is the host's full current list. On receipt, per host:
+A software block is the host's full current list. On receipt, per host, in
+one transaction:
 
-- each incoming `(name, source, version)`: insert if new
-  (`hsFirstSeen = hsLastSeen = now`, `hsRemovedAt = NULL`); if it exists,
-  set `hsLastSeen = now` and clear `hsRemovedAt` if it had been removed;
-  refresh publisher/arch/installDate if they moved.
-- each row currently installed (`hsRemovedAt IS NULL`) for this host that is
-  **not** in the incoming list: set `hsRemovedAt = now`.
+1. Close every open row: `UPDATE hostSoftware SET hsRemovedAt = now WHERE
+   hsHostID = ? AND hsRemovedAt IS NULL`.
+2. Insert the reported list, `ON DUPLICATE KEY UPDATE` refreshing
+   publisher/arch/installDate and `hsLastSeen`, and setting `hsRemovedAt =
+   NULL` -- which reopens whatever step 1 just closed and is still there.
+   `hsFirstSeen` is deliberately not touched on update: it is when *this
+   version* was first seen, not last.
 
-One transaction, so a host is never seen half-updated. `Software.php`'s own
-`destroy()` cascade is the model for keeping the rows tied to the host's life.
+Close-then-reopen rather than the obvious "mark anything not in the list
+removed", because the obvious version needs a `NOT IN` carrying all 2800
+identities a package-managed Linux host reports, and the statement size then
+grows with the host. This way both statements are fixed size and the
+chunking is only on the insert. Nothing observes the intermediate
+"everything removed" state, because it never commits.
+
+Rows are closed, never deleted, so "which hosts had log4j in March" is
+answerable after the estate has been cleaned up. The rows do go with the
+host: `hostSoftware.hsHostID` is a declared `satellite` foreign key with
+`ON DELETE CASCADE` (schema-constraints.php), the same call FOG already
+makes for that host's `inventory` row.
 
 ### 4.3 Reporting
 
