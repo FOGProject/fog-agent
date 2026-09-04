@@ -448,3 +448,46 @@ Server files behind this: `Agent\Principal` (verification and fingerprint),
 the gate in `Route` before dispatch, and the installer publishing
 `management/other/agent-ca-bundle.pem` (agent CA + root) for both the vhost
 and PHP to verify against.
+
+## The route rule
+
+The agent surface is five routes, and the number is meant to stay small:
+
+| Route | Transport shape |
+|---|---|
+| `POST /agent/v1/enroll` | no certificate yet; the request is the claim |
+| `POST /agent/v1/poll` | JSON in, JSON out, conditional on a revision |
+| `POST /agent/v1/result` | JSON in, a one-word answer |
+| `GET /agent/v1/payload/{capability}/{id}` | bytes out, streamed |
+| `POST /agent/v1/renew` | a CSR in, a certificate out |
+
+**A new agent route is justified only by a new transport shape, never by a
+new subject**: a new verb, a binary payload, or a different trust boundary.
+A new capability, artifact type or report kind is a new value of
+`capability` in the existing routes and a new block in the desired state.
+The tell: if the proposed path contains a noun from the data model, it
+fails. `snapin/{id}/result` and `software/{id}/result` were that shape, and
+they are now one `item` on `result`; `snapin/{id}/file` is now
+`payload/{capability}/{id}`. The server gates the rule with
+`tests/agent-route-nouns.test.php`, which fails when a literal segment of
+an `/agent/v1/` path names a class in `Route::$validClasses`.
+
+**`/agent/v1/` is the agent surface; `/agent/` without `/v1/` is the admin
+surface, and the two have different trust boundaries.** The agent surface
+is gated by the client certificate (or, for enroll, by nothing but the
+claim itself) and answers only about the caller's own host. The admin
+surface (`/agent/enrollments`, `/agent/enrollment/{id}/{action}`,
+`/agent/tokens`, `/agent/token`) is gated by an API token and the host
+permissions, and acts on any host. A route that an admin calls "about
+agents" belongs under `/agent/`, never under `/agent/v1/`, however much it
+is about agents; the version segment marks the contract the agent binary
+is built against, and nothing else.
+
+**What the rule does not cover.** It is a rule about paths on the agent
+surface. It does not say anything about the shape of `state` in the poll
+answer, which grows a block per capability by design; about the admin
+surface, whose routes name nouns because they are about the model; or
+about a second protocol version, which is `/agent/v2/` and a new contract,
+not a new subject. And a new transport shape is still a decision, not a
+loophole: "it needs a different verb" is the start of a design note, not a
+license to add the route.
