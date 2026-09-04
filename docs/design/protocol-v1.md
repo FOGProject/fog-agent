@@ -102,6 +102,9 @@ own host, as opposed to what it has applied:
 {"agent_version": "1.2.3", "applied_revision": "3f1c9a0b…", "want_state": false,
  "inventory": {"sysman": "Dell Inc.", "…": "…"},
  "software": [{"name": "openssh-server", "version": "9.6p1", "source": "rpm", "…": "…"}],
+ "directory": {"joined": true, "kind": "ad", "domain": "corp.example.com", "netbios": "CORP",
+               "computer_dn": "CN=WS-014,OU=Sales,DC=corp,DC=example,DC=com",
+               "machine_account": "WS-014$", "site": "HQ"},
  "sessions": {"open": [{"key": "2", "user": "telliott", "domain": "LAB", "type": "console",
                         "state": "active", "started_at": "2026-09-04T09:12:03Z"}],
               "closed": [{"key": "3", "user": "tom", "type": "remote", "state": "active",
@@ -110,7 +113,8 @@ own host, as opposed to what it has applied:
 ```
 
 A fact block is present only when the agent's own content hash for it moved,
-or when the previous answer asked with `want_inventory` / `want_software`.
+or when the previous answer asked with `want_inventory` / `want_software` /
+`want_directory`.
 This is the conditional fetch above run in reverse, and it has the same
 consequence: **absent is "nothing new", never "nothing there"**. An agent
 whose collector cannot run on this platform sends no block rather than an
@@ -136,6 +140,7 @@ Response `200`:
   "state": {"revision": "3f1c9a0b2d4e5f60", "capabilities": ["hostname"], "hostname": {"name": "lab-01", "enforce": true}},
   "want_inventory": false,
   "want_software": false,
+  "want_directory": false,
   "collect_facts": true,
   "collect_sessions": true
 }
@@ -148,11 +153,24 @@ conditional fetch on a POST, the way an ETag works on a GET, done as a POST
 because the poll also writes: the server records `hostAgentCheckin` and
 `hostAgentVersion` on every one.
 
-`want_inventory` and `want_software` ask for a fact block the server holds
+`want_inventory`, `want_software` and `want_directory` ask for a fact block the server holds
 no current hash for -- a fresh enrollment, a restored database, an admin who
 cleared the row. They are the server's half of the same conditional: it can
 always force a resend, and the agent honors the request on its next poll
 whether or not anything changed locally.
+
+`directory` is design 0009: what directory the machine is actually a member
+of, and where its computer object actually sits. It follows the hash rule --
+membership moves when someone joins a machine to a domain, so the block is
+almost never sent. `joined: false` with `kind` of `workgroup` or `none` is a
+real answer meaning "asked, and it is in none"; a machine whose platform has
+no collector, or where the probe failed, sends **no block at all**, because a
+zero block would tell the server every host had left its domain.
+
+`computer_dn` is the field the server needs to move a computer object between
+OUs without the machine's involvement (0009 §5). Empty is normal -- no Linux
+join tool exposes it -- and the server falls back to searching for
+`machine_account`.
 
 `sessions` is design 0008 and does **not** follow the hash rule above. The
 open set is the server's evidence a session is still alive, so it is sent

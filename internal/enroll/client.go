@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FOGProject/fog-agent/internal/directory"
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/inventory"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
@@ -131,6 +132,11 @@ type PollRequest struct {
 	// "nothing new", never "nothing installed".
 	Inventory *inventory.Inventory    `json:"inventory,omitempty"`
 	Software  []softwarefacts.Program `json:"software,omitempty"`
+	// Directory is what directory the machine is actually a member of and
+	// where its computer object actually sits (design 0009). Same hash gate
+	// as the two above, and the same rule about absence: absent is "nothing
+	// new", never "this machine left its domain".
+	Directory *directory.Directory `json:"directory,omitempty"`
 	// Sessions is the user-session report (design 0008): who is logged on
 	// now, and which sessions the agent watched end. Absent when the host's
 	// usertracker module is off, or when this platform has no collector --
@@ -161,6 +167,7 @@ type PollResponse struct {
 	// locally (design 0006 §2).
 	WantInventory bool `json:"want_inventory,omitempty"`
 	WantSoftware  bool `json:"want_software,omitempty"`
+	WantDirectory bool `json:"want_directory,omitempty"`
 	// CollectFacts is the server's gate (FOG_AGENT_INVENTORY_ENABLED). A
 	// pointer because absent and false mean different things here: absent
 	// is a server too old to have the setting, and the agent keeps

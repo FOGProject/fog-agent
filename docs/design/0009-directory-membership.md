@@ -161,10 +161,14 @@ override rather than going up on every poll.
   "netbios": "CORP",
   "computer_dn": "CN=WS-014,OU=Sales,OU=Workstations,DC=corp,DC=example,DC=com",
   "machine_account": "WS-014$",
-  "site": "HQ",
-  "checked_at": "2026-09-04T16:43:40Z"
+  "site": "HQ"
 }
 ```
+
+No `checked_at` in the block. The server stamps `hdCheckedAt` when it
+receives one, because a timestamp inside a hash-gated block changes the hash
+every time the collector runs and would resend an unchanged answer forever —
+defeating the only thing the gate is for.
 
 `kind` is `ad`, `entra`, `workgroup` or `none`; a field the platform cannot
 answer is omitted rather than guessed, and `joined:false` with `kind:workgroup`

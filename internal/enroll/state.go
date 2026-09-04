@@ -84,6 +84,11 @@ type Config struct {
 	// poll resends rather than silently dropping the change.
 	InventoryHash string `json:"inventory_hash,omitempty"`
 	SoftwareHash  string `json:"software_hash,omitempty"`
+	// DirectoryHash is the same gate for the directory-membership block
+	// (design 0009 §3). Membership changes on the scale of someone joining
+	// a machine to a domain, so this hash almost never moves -- which is
+	// the point: an unchanged answer costs one comparison, not a row.
+	DirectoryHash string `json:"directory_hash,omitempty"`
 	// FactsChecked is when the collectors last ran. They are re-run on
 	// FactsInterval rather than every poll: enumerating a package-managed
 	// host's 2800 packages every five minutes buys nothing.
@@ -93,6 +98,7 @@ type Config struct {
 	// anything changed locally.
 	WantInventory bool `json:"want_inventory,omitempty"`
 	WantSoftware  bool `json:"want_software,omitempty"`
+	WantDirectory bool `json:"want_directory,omitempty"`
 	// UnauthorizedSince is when an unbroken run of 401s began that the
 	// server did NOT attribute to this agent's certificate. The identity
 	// is kept while it runs, and discarded only once it outlasts

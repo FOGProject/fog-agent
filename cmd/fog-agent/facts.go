@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/FOGProject/fog-agent/internal/directory"
 	"github.com/FOGProject/fog-agent/internal/enroll"
 	"github.com/FOGProject/fog-agent/internal/inventory"
 	"github.com/FOGProject/fog-agent/internal/software"
@@ -26,7 +27,8 @@ func factsDue(cfg enroll.Config, now time.Time) bool {
 		// would be pure cost on every host in the estate.
 		return false
 	}
-	return cfg.WantInventory || cfg.WantSoftware || now.Sub(cfg.FactsChecked) >= FactsInterval
+	return cfg.WantInventory || cfg.WantSoftware || cfg.WantDirectory ||
+		now.Sub(cfg.FactsChecked) >= FactsInterval
 }
 
 // sentFacts is the hashes of the blocks a poll actually carried, empty for
@@ -36,6 +38,7 @@ type sentFacts struct {
 	gathered  bool // the collectors ran this poll
 	inventory string
 	software  string
+	directory string
 }
 
 // attachFacts runs the collectors when due and hangs onto the request only
@@ -61,9 +64,15 @@ func attachFacts(st *enroll.State, req *enroll.PollRequest, now time.Time, out *
 			sent.software = h
 		}
 	}
-	if sent.inventory != "" || sent.software != "" {
-		out.say(fmt.Sprintf("facts: sending inventory=%t software=%d",
-			req.Inventory != nil, len(req.Software)))
+	if dir, ok := directory.Gather(); ok {
+		if h := dir.Hash(); h != st.Config.DirectoryHash || st.Config.WantDirectory {
+			req.Directory = &dir
+			sent.directory = h
+		}
+	}
+	if sent.inventory != "" || sent.software != "" || sent.directory != "" {
+		out.say(fmt.Sprintf("facts: sending inventory=%t software=%d directory=%t",
+			req.Inventory != nil, len(req.Software), req.Directory != nil))
 	}
 	return sent
 }
@@ -76,13 +85,13 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	// Config holds slices, so it is not comparable; the fields this
 	// function owns are, and they are the only ones that can have moved.
 	type owned struct {
-		inv, soft          string
-		checked            time.Time
-		wantI, wantS, offX bool
+		inv, soft, dir            string
+		checked                   time.Time
+		wantI, wantS, wantD, offX bool
 	}
 	before := owned{st.Config.InventoryHash, st.Config.SoftwareHash,
-		st.Config.FactsChecked, st.Config.WantInventory, st.Config.WantSoftware,
-		st.Config.FactsDisabled}
+		st.Config.DirectoryHash, st.Config.FactsChecked, st.Config.WantInventory,
+		st.Config.WantSoftware, st.Config.WantDirectory, st.Config.FactsDisabled}
 
 	if sent.gathered {
 		st.Config.FactsChecked = now
@@ -93,10 +102,14 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	if sent.software != "" {
 		st.Config.SoftwareHash = sent.software
 	}
+	if sent.directory != "" {
+		st.Config.DirectoryHash = sent.directory
+	}
 	// The answer is authoritative: the server stops asking once it holds
 	// a hash, so assigning rather than or-ing is what clears the flags.
 	st.Config.WantInventory = resp.WantInventory
 	st.Config.WantSoftware = resp.WantSoftware
+	st.Config.WantDirectory = resp.WantDirectory
 	// Absent leaves the setting alone: a server too old to send the gate
 	// must not read as one that turned it off.
 	if resp.CollectFacts != nil {
@@ -104,8 +117,8 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	}
 
 	after := owned{st.Config.InventoryHash, st.Config.SoftwareHash,
-		st.Config.FactsChecked, st.Config.WantInventory, st.Config.WantSoftware,
-		st.Config.FactsDisabled}
+		st.Config.DirectoryHash, st.Config.FactsChecked, st.Config.WantInventory,
+		st.Config.WantSoftware, st.Config.WantDirectory, st.Config.FactsDisabled}
 	if before == after {
 		return nil
 	}
