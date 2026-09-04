@@ -72,11 +72,46 @@ type Client struct {
 	tlsConfig *tls.Config
 }
 
-// ErrUnauthorized is returned by Poll when the server answers 401: it did
-// not get a certificate it trusts, or the one it got binds to no live host.
-// Either way the fix is the same -- drop the certificate and enroll again --
-// so the caller gets one sentinel rather than a reason to interpret.
-var ErrUnauthorized = errors.New("server does not recognize this agent's certificate")
+// ErrUnauthorized is returned by Poll when the server answers 401 for a
+// reason that is not about this agent's binding: no certificate reached the
+// application, the database was unreachable, a proxy answered, or the
+// webroot does not serve the agent routes at all. The certificate may well
+// still be good, so the caller must NOT throw it away on this.
+var ErrUnauthorized = errors.New("server refused this agent's request")
+
+// ErrCertificateUnknown is the one 401 that means what it says: the server
+// has this request's certificate and it binds to no live host. Only this
+// justifies discarding the identity and enrolling again.
+//
+// The split exists because the single sentinel cost a lab fleet its
+// identities on 2026-09-04. The webroot was rolled back to a build with no
+// agent routes, every poll answered 401 with an EMPTY body, and the agent
+// discarded a working certificate four minutes later -- having logged
+// "body is not JSON" first, so it had the evidence that this was not a
+// considered answer and dropped the certificate regardless. Re-enrolling
+// needs an admin to approve each host, so one rollback becomes fleet-wide
+// manual work.
+var ErrCertificateUnknown = errors.New("server does not recognize this agent's certificate")
+
+// unauthorizedReason is the 401 body the server sends (Route::$agentAuthReason).
+type unauthorizedReason struct {
+	Reason string `json:"reason"`
+}
+
+// classifyUnauthorized decides whether a 401 is about this agent's binding.
+// Anything the server does not explicitly call `unknown_certificate` --
+// including an unparseable or empty body, which is what a rolled-back or
+// proxied server sends -- is the safe answer: refuse, but keep the key.
+func classifyUnauthorized(raw []byte) error {
+	var r unauthorizedReason
+	if err := json.Unmarshal(raw, &r); err != nil {
+		return ErrUnauthorized
+	}
+	if r.Reason == "unknown_certificate" {
+		return ErrCertificateUnknown
+	}
+	return ErrUnauthorized
+}
 
 // PollRequest is the poll body (protocol-v1.md).
 type PollRequest struct {
@@ -255,7 +290,7 @@ func (c *Client) Poll(ctx context.Context, req PollRequest) (*PollResponse, erro
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, ErrUnauthorized
+		return nil, classifyUnauthorized(raw)
 	}
 	var out PollResponse
 	if err := json.Unmarshal(raw, &out); err != nil {
@@ -343,7 +378,7 @@ func (c *Client) Renew(ctx context.Context, csrPEM []byte) (*Response, error) {
 		return nil, err
 	}
 	if resp.StatusCode == http.StatusUnauthorized {
-		return nil, ErrUnauthorized
+		return nil, classifyUnauthorized(raw)
 	}
 	var out struct {
 		Response

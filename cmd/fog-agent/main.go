@@ -326,7 +326,9 @@ func runAgent(ctx context.Context, args []string) error {
 		sent := attachFacts(st, &req, now, out)
 		resp, err := client.Poll(ctx, req)
 		switch {
-		case errors.Is(err, enroll.ErrUnauthorized):
+		case errors.Is(err, enroll.ErrCertificateUnknown):
+			// The server has this certificate and says it binds to no
+			// host. That is the one 401 worth acting on.
 			out.say("server no longer recognizes this certificate; enrolling again")
 			if err := st.DropIssued(); err != nil {
 				return err
@@ -335,9 +337,42 @@ func runAgent(ctx context.Context, args []string) error {
 				return err
 			}
 			continue
+		case errors.Is(err, enroll.ErrUnauthorized):
+			// A 401 that is NOT about this binding: no certificate reached
+			// the application, the database was down, a proxy answered, or
+			// the webroot does not serve the agent routes. The certificate
+			// is probably fine and re-enrolling would need an admin to
+			// approve this host again, so keep it and keep asking.
+			drop, err := unauthorizedTooLong(st, now)
+			if err != nil {
+				return err
+			}
+			if !drop {
+				out.say("server refused this certificate (" + unauthorizedFor(st, now) +
+					"); keeping it and retrying")
+				if *once {
+					return enroll.ErrUnauthorized
+				}
+				continue
+			}
+			out.say("server has refused this certificate for " + unauthorizedFor(st, now) +
+				"; enrolling again")
+			if err := st.DropIssued(); err != nil {
+				return err
+			}
+			if *once {
+				return enroll.ErrUnauthorized
+			}
+			continue
 		case err != nil:
 			out.say("poll: " + err.Error())
 		default:
+			// A poll got through, so any run of refusals is over: it must
+			// not carry over toward the grace period of a later, unrelated
+			// outage.
+			if err := clearUnauthorized(st); err != nil {
+				out.say("state: " + err.Error())
+			}
 			if resp.State != nil {
 				out.say(fmt.Sprintf("host %d (%s), server capabilities: [%s]", resp.Host.ID, resp.Host.Name, strings.Join(resp.State.Capabilities, " ")))
 			}

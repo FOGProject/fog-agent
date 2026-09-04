@@ -111,3 +111,52 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	}
 	return st.SaveConfig()
 }
+
+// UnauthorizedGrace is how long a 401 that does not name this agent's
+// certificate must persist before the agent gives up and re-enrolls.
+//
+// It exists only for the 401 that never reaches the application at all --
+// a TLS-layer rejection, or a proxy answering on the server's behalf --
+// where there is no body to carry a reason and so no way to tell a real
+// revocation from an outage. When the server CAN answer, it says
+// `unknown_certificate` and the agent acts at once, so nothing legitimate
+// waits this long.
+//
+// A week, because the cost is asymmetric. Waiting too long leaves one host
+// unmanaged; re-enrolling too eagerly puts every host in the estate into a
+// queue an admin has to clear by hand, which is exactly the failure this
+// was written for. A weekend outage must not be enough.
+const UnauthorizedGrace = 7 * 24 * time.Hour
+
+// unauthorizedTooLong records when the run of refusals started and reports
+// whether it has now outlasted the grace period.
+func unauthorizedTooLong(st *enroll.State, now time.Time) (bool, error) {
+	if st.Config.UnauthorizedSince.IsZero() {
+		st.Config.UnauthorizedSince = now
+		if err := st.SaveConfig(); err != nil {
+			return false, err
+		}
+	}
+	return now.Sub(st.Config.UnauthorizedSince) >= UnauthorizedGrace, nil
+}
+
+// unauthorizedFor renders how long the refusals have been going on, for
+// the log line that is the only warning anyone gets before the grace
+// period expires.
+func unauthorizedFor(st *enroll.State, now time.Time) string {
+	if st.Config.UnauthorizedSince.IsZero() {
+		return "0s"
+	}
+	return now.Sub(st.Config.UnauthorizedSince).Round(time.Second).String()
+}
+
+// clearUnauthorized forgets the run of refusals after a poll succeeds, so
+// an outage followed by a recovery does not accumulate toward the grace
+// period across unrelated incidents.
+func clearUnauthorized(st *enroll.State) error {
+	if st.Config.UnauthorizedSince.IsZero() {
+		return nil
+	}
+	st.Config.UnauthorizedSince = time.Time{}
+	return st.SaveConfig()
+}

@@ -92,6 +92,13 @@ type Config struct {
 	// anything changed locally.
 	WantInventory bool `json:"want_inventory,omitempty"`
 	WantSoftware  bool `json:"want_software,omitempty"`
+	// UnauthorizedSince is when an unbroken run of 401s began that the
+	// server did NOT attribute to this agent's certificate. The identity
+	// is kept while it runs, and discarded only once it outlasts
+	// UnauthorizedGrace -- the backstop for a 401 that never reaches the
+	// application and so carries no reason. Cleared by any poll that
+	// succeeds.
+	UnauthorizedSince time.Time `json:"unauthorized_since,omitempty"`
 	// FactsDisabled is set when the server said collect_facts was false.
 	// Stored rather than re-read each poll so a restart does not resume
 	// gathering on a site that turned it off.
