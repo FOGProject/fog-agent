@@ -119,6 +119,13 @@ type PollResponse struct {
 	// locally (design 0006 §2).
 	WantInventory bool `json:"want_inventory,omitempty"`
 	WantSoftware  bool `json:"want_software,omitempty"`
+	// CollectFacts is the server's gate (FOG_AGENT_INVENTORY_ENABLED). A
+	// pointer because absent and false mean different things here: absent
+	// is a server too old to have the setting, and the agent keeps
+	// collecting; false is an admin who turned it off, and the agent
+	// stops. Collapsing them would make every pre-facts server silently
+	// switch inventory off.
+	CollectFacts *bool `json:"collect_facts,omitempty"`
 }
 
 // DesiredState is what the server wants this host to look like

@@ -55,8 +55,11 @@ an existing route, never a new path.
 
 A global setting `FOG_AGENT_INVENTORY_ENABLED` (default on). An installed
 program list is mildly sensitive; a site can turn collection off. When off,
-the server never sets `want_*` and ignores a block if one arrives, and the
-agent does not gather. Hardware inventory and software share the one gate for
+the server never sets `want_*` and ignores a block if one arrives, and it
+tells the agent so with `collect_facts: false` in the poll answer -- which
+is what makes "the agent does not gather" true rather than aspirational.
+The field is always sent, because absent and false are the same value to a
+JSON decoder and absent has to mean "a server that predates this". Hardware inventory and software share the one gate for
 v1; they can split later if a site wants one without the other.
 
 ## 3. Hardware inventory

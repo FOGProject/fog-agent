@@ -21,6 +21,12 @@ func TestFactsDue(t *testing.T) {
 		// needs the block now, not up to an hour from now.
 		{"server wants inventory", enroll.Config{FactsChecked: now, WantInventory: true}, true},
 		{"server wants software", enroll.Config{FactsChecked: now, WantSoftware: true}, true},
+		// The gate outranks everything, including a request the server
+		// made before the setting changed: an agent that kept gathering
+		// would burn CPU on every host for a block the server discards.
+		{"collection disabled", enroll.Config{FactsDisabled: true}, false},
+		{"disabled beats a pending request",
+			enroll.Config{FactsDisabled: true, WantInventory: true}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := factsDue(tc.cfg, now); got != tc.want {
@@ -77,5 +83,34 @@ func TestRecordFactsCarriesTheServersNewRequest(t *testing.T) {
 	// skipped gather must not push the next one an hour out.
 	if !st.Config.FactsChecked.IsZero() {
 		t.Error("FactsChecked was stamped without a gather")
+	}
+}
+
+func TestRecordFactsHonorsAndIgnoresTheGate(t *testing.T) {
+	on, off := true, false
+	for _, tc := range []struct {
+		name   string
+		before bool
+		gate   *bool
+		want   bool
+	}{
+		// An old server sends no gate at all. Absent must not read as
+		// "turned off", or every pre-facts server silently disables it.
+		{"absent leaves it alone", false, nil, false},
+		{"absent does not re-enable", true, nil, true},
+		{"false disables", false, &off, true},
+		{"true re-enables", true, &on, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &enroll.State{Dir: t.TempDir()}
+			st.Config.FactsDisabled = tc.before
+			resp := &enroll.PollResponse{CollectFacts: tc.gate}
+			if err := recordFacts(st, sentFacts{}, resp, time.Now()); err != nil {
+				t.Fatal(err)
+			}
+			if st.Config.FactsDisabled != tc.want {
+				t.Errorf("FactsDisabled = %t, want %t", st.Config.FactsDisabled, tc.want)
+			}
+		})
 	}
 }

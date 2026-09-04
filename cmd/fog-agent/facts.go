@@ -20,6 +20,12 @@ const FactsInterval = time.Hour
 // asked, or the interval elapsed. A zero FactsChecked -- a fresh agent --
 // is due, which is what makes the first poll after enrollment carry facts.
 func factsDue(cfg enroll.Config, now time.Time) bool {
+	if cfg.FactsDisabled {
+		// The site turned collection off. Not gathering is the point: the
+		// server would ignore the block anyway, so running the collectors
+		// would be pure cost on every host in the estate.
+		return false
+	}
 	return cfg.WantInventory || cfg.WantSoftware || now.Sub(cfg.FactsChecked) >= FactsInterval
 }
 
@@ -70,12 +76,13 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	// Config holds slices, so it is not comparable; the fields this
 	// function owns are, and they are the only ones that can have moved.
 	type owned struct {
-		inv, soft    string
-		checked      time.Time
-		wantI, wantS bool
+		inv, soft          string
+		checked            time.Time
+		wantI, wantS, offX bool
 	}
 	before := owned{st.Config.InventoryHash, st.Config.SoftwareHash,
-		st.Config.FactsChecked, st.Config.WantInventory, st.Config.WantSoftware}
+		st.Config.FactsChecked, st.Config.WantInventory, st.Config.WantSoftware,
+		st.Config.FactsDisabled}
 
 	if sent.gathered {
 		st.Config.FactsChecked = now
@@ -90,9 +97,15 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	// a hash, so assigning rather than or-ing is what clears the flags.
 	st.Config.WantInventory = resp.WantInventory
 	st.Config.WantSoftware = resp.WantSoftware
+	// Absent leaves the setting alone: a server too old to send the gate
+	// must not read as one that turned it off.
+	if resp.CollectFacts != nil {
+		st.Config.FactsDisabled = !*resp.CollectFacts
+	}
 
 	after := owned{st.Config.InventoryHash, st.Config.SoftwareHash,
-		st.Config.FactsChecked, st.Config.WantInventory, st.Config.WantSoftware}
+		st.Config.FactsChecked, st.Config.WantInventory, st.Config.WantSoftware,
+		st.Config.FactsDisabled}
 	if before == after {
 		return nil
 	}

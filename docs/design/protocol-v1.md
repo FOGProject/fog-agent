@@ -130,7 +130,8 @@ Response `200`:
   "server_time": "2026-09-03T12:43:21-05:00",
   "state": {"revision": "3f1c9a0b2d4e5f60", "capabilities": ["hostname"], "hostname": {"name": "lab-01", "enforce": true}},
   "want_inventory": false,
-  "want_software": false
+  "want_software": false,
+  "collect_facts": true
 }
 ```
 
@@ -146,6 +147,14 @@ no current hash for -- a fresh enrollment, a restored database, an admin who
 cleared the row. They are the server's half of the same conditional: it can
 always force a resend, and the agent honors the request on its next poll
 whether or not anything changed locally.
+
+`collect_facts` is the install's gate (`FOG_AGENT_INVENTORY_ENABLED`) and is
+always stated, never omitted. An agent stops running its collectors when it
+is `false` -- the server would discard the block anyway, so gathering would
+be pure cost on every host in the estate. **Absent is not `false`**: a server
+too old to carry the field must not read as one that turned collection off,
+so the agent leaves the setting alone when the key is missing and only
+changes it when the server actually says something.
 
 **The revision is opaque.** The agent compares it with the one it applied,
 for equality, and does nothing else with it: never parses it, never orders

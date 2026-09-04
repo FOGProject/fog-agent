@@ -92,6 +92,10 @@ type Config struct {
 	// anything changed locally.
 	WantInventory bool `json:"want_inventory,omitempty"`
 	WantSoftware  bool `json:"want_software,omitempty"`
+	// FactsDisabled is set when the server said collect_facts was false.
+	// Stored rather than re-read each poll so a restart does not resume
+	// gathering on a site that turned it off.
+	FactsDisabled bool `json:"facts_disabled,omitempty"`
 }
 
 // State is the on-disk material. Load never generates anything by itself;
