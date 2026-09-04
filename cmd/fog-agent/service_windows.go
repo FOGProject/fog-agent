@@ -150,39 +150,19 @@ func serviceInstall(args []string) error {
 		s.Close()
 		return errors.New("the service is already installed; `service uninstall` first")
 	}
-	// The state directory: server and CA settled, and the ACL cut down to
-	// SYSTEM and Administrators before the key is ever written into it,
-	// since ProgramData lets every user read what others create there.
-	st, caPEM, err := openState(f)
-	if err != nil {
+	// The state directory and the first enrollment attempt are the same
+	// work the MSI does through `setup`; only the service registration
+	// below is particular to a hand install.
+	out := &sayer{}
+	if _, _, err := prepareState(f, out); err != nil {
 		return err
 	}
-	if err := restrictDir(*f.dir); err != nil {
+	if err := postSetup(); err != nil {
 		return err
 	}
 	exe, err := installBinary()
 	if err != nil {
 		return err
-	}
-	out := &sayer{}
-	if len(st.Cert) == 0 {
-		client, err := enroll.NewClient(st.Config.ServerURL, caPEM)
-		if err != nil {
-			return err
-		}
-		req, err := enrollRequest(st, *f.token, out)
-		if err != nil {
-			return err
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		resp, err := enrollLoop(ctx, st, client, req, true, out)
-		cancel()
-		if err != nil {
-			return fmt.Errorf("the server did not answer the enrollment request: %w", err)
-		}
-		if resp.Status == enroll.StatusPending {
-			out.say("the service will keep asking until an admin approves this host in Host Management")
-		}
 	}
 	svcArgs := []string{"run"}
 	if *f.dir != enroll.DefaultDir {
@@ -205,13 +185,10 @@ func serviceInstall(args []string) error {
 	}, 86400); err != nil {
 		return fmt.Errorf("recovery actions: %w", err)
 	}
-	if err := eventlog.InstallAsEventCreate(serviceName, eventlog.Error|eventlog.Warning|eventlog.Info); err != nil && !strings.Contains(err.Error(), "already exists") {
-		return fmt.Errorf("event log source: %w", err)
-	}
 	if err := s.Start(); err != nil {
 		return fmt.Errorf("start: %w", err)
 	}
-	fmt.Fprintf(logOut, "installed and started %s from %s; log at %s\n", serviceName, exe, filepath.Join(*f.dir, logName))
+	fmt.Fprintf(logOut, "installed and started %s from %s; log at %s\n", serviceName, exe, logPath(*f.dir))
 	return nil
 }
 
@@ -375,3 +352,21 @@ func serviceStatus() error {
 	fmt.Fprintf(logOut, "%s: %s (pid %d)\n", serviceName, name, st.ProcessId)
 	return nil
 }
+
+// restrictStateDir is the ACL cut for the state directory, done before
+// the key is ever written into it, since ProgramData lets every user read
+// what others create there.
+func restrictStateDir(dir string) error { return restrictDir(dir) }
+
+// postSetup registers the event log source the service falls back to
+// when it cannot open its log file. Both install paths need it.
+func postSetup() error {
+	if err := eventlog.InstallAsEventCreate(serviceName, eventlog.Error|eventlog.Warning|eventlog.Info); err != nil && !strings.Contains(err.Error(), "already exists") {
+		return fmt.Errorf("event log source: %w", err)
+	}
+	return nil
+}
+
+// setupLog is the service log, opened for setup's own lines: under
+// msiexec nothing else shows them.
+func setupLog(dir string) (*os.File, error) { return openLog(dir) }

@@ -1,0 +1,94 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FOG Agent Windows installer, built on Linux with wixl (msitools).
+  build/msi.sh cross-compiles the exe and runs wixl with -D Version=x.y.z.
+
+  What the package owns: the exe under Program Files\FOG, the fog-agent
+  service (registered, started, stopped and removed by Windows Installer
+  itself), and retiring the legacy "FOG Service" client. What it hands to
+  the agent: `fog-agent setup`, run once as SYSTEM after the files land,
+  which settles the state directory and makes the first enrollment
+  request from SERVER, CA and TOKEN. A server that does not answer at
+  install time is not an install failure; the service keeps trying.
+
+  Properties, all optional on an upgrade because the state directory is
+  kept:
+    SERVER      base URL, e.g. https://fog.example.org/fog
+    CA          path to the PEM bundle to trust (the FOG CA, or the public
+                CA the web UI uses); the agent trusts only what it is given
+    TOKEN       enrollment token minted by an admin
+    WEBADDRESS, WEBROOT
+                the legacy client's names, honored when SERVER is absent:
+                SERVER becomes https://[WEBADDRESS][WEBROOT]
+
+  Logs: the agent's own at C:\ProgramData\FOG\fog-agent.log; the
+  installer's with msiexec /l*v.
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*" Name="FOG Agent" Language="1033" Version="$(var.Version)"
+           Manufacturer="FOG Project" UpgradeCode="7f0c4b3e-2f6a-4d1b-9c8e-5a1d2e3f4b6c">
+    <Package InstallerVersion="200" Compressed="yes" InstallScope="perMachine"
+             Description="FOG Agent" Comments="https://fogproject.org" />
+
+    <!-- A newer FOG Agent replaces an older one in place; the state
+         directory (key, certificate, server) is untouched, so no
+         re-enrollment. -->
+    <MajorUpgrade DowngradeErrorMessage="A newer FOG Agent is already installed." />
+
+    <!-- The legacy client ("FOG Service", fog-client 0.x) is removed as a
+         related product. Two agents on one host fight over the same rows:
+         its power module consumed an on-demand shutdown before the agent
+         saw it (design 0004). This is its MSI's UpgradeCode. -->
+    <Upgrade Id="1CCFDEAF-53E9-43AC-AE18-F9F86CEFA4EA">
+      <UpgradeVersion Minimum="0.0.0" IncludeMinimum="yes" Maximum="99.0.0"
+                      OnlyDetect="no" Property="LEGACYFOGCLIENT" />
+    </Upgrade>
+
+    <Media Id="1" Cabinet="fogagent.cab" EmbedCab="yes" />
+
+    <Property Id="SERVER" Secure="yes" />
+    <Property Id="CA" Secure="yes" />
+    <Property Id="TOKEN" Secure="yes" />
+    <Property Id="WEBADDRESS" Secure="yes" />
+    <Property Id="WEBROOT" Secure="yes" />
+    <Property Id="ARPNOMODIFY" Value="1" />
+    <Property Id="ARPURLINFOABOUT" Value="https://fogproject.org" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="ProgramFiles64Folder">
+        <Directory Id="INSTALLDIR" Name="FOG">
+          <Component Id="Agent" Guid="1b2c3d4e-5f60-4718-8a9b-0c1d2e3f4a5b" Win64="yes">
+            <File Id="AgentExe" Name="fog-agent.exe" Source="$(var.Exe)" KeyPath="yes" />
+            <ServiceInstall Id="AgentService" Name="fog-agent" DisplayName="FOG Agent"
+                            Description="Keeps this machine in the state its FOG server describes."
+                            Type="ownProcess" Start="auto" ErrorControl="normal"
+                            Arguments="run" Vital="yes" />
+            <ServiceControl Id="AgentServiceControl" Name="fog-agent"
+                            Start="install" Stop="both" Remove="uninstall" Wait="yes" />
+          </Component>
+        </Directory>
+      </Directory>
+    </Directory>
+
+    <!-- Legacy property names, for deployment scripts written for the old
+         client: only when SERVER was not given. -->
+    <CustomAction Id="ServerFromLegacyNames" Property="SERVER" Value="https://[WEBADDRESS][WEBROOT]" />
+
+    <!-- setup runs as SYSTEM (Impersonate no) once the exe is on disk and
+         before the service starts. Empty properties become empty flags,
+         which the agent reads as absent. Return check: a bad CA path or an
+         unwritable state directory must fail the install visibly. -->
+    <CustomAction Id="Setup" FileKey="AgentExe"
+                  ExeCommand="setup --server &quot;[SERVER]&quot; --ca &quot;[CA]&quot; --token &quot;[TOKEN]&quot;"
+                  Execute="deferred" Impersonate="no" Return="check" />
+
+    <InstallExecuteSequence>
+      <Custom Action="ServerFromLegacyNames" After="InstallInitialize">NOT SERVER AND WEBADDRESS</Custom>
+      <Custom Action="Setup" After="InstallFiles">NOT REMOVE</Custom>
+    </InstallExecuteSequence>
+
+    <Feature Id="Agent" Title="FOG Agent" Level="1">
+      <ComponentRef Id="Agent" />
+    </Feature>
+  </Product>
+</Wix>

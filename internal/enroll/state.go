@@ -38,6 +38,11 @@ type Config struct {
 	// AppliedRevision is the desired-state revision every capability last
 	// converged on without failing; a poll reporting a different one is
 	// what triggers a fetch. Empty until the first reconcile.
+	// PendingToken is an enrollment token setup kept for the service's
+	// first attempt, when the server did not answer at install time.
+	// Cleared once a certificate is issued.
+	PendingToken string `json:"pending_token,omitempty"`
+
 	AppliedRevision string `json:"applied_revision,omitempty"`
 	// AppliedWith is the capability list of the build that applied it; a
 	// build with a different list treats the revision as unapplied.

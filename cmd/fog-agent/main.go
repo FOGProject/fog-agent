@@ -52,6 +52,8 @@ func main() {
 		fmt.Printf("fog-agent %s %s/%s\n", Version, runtime.GOOS, runtime.GOARCH)
 	case "enroll":
 		err = cmdEnroll(os.Args[2:])
+	case "setup":
+		err = cmdSetup(os.Args[2:])
 	case "run":
 		err = cmdRun(os.Args[2:])
 	case "renew":
@@ -79,6 +81,7 @@ func usage() {
   fog-agent renew [--dir DIR]             renew the certificate now, whatever its expiry
   fog-agent status [--dir DIR]
   fog-agent service install --server URL --ca FILE [--token T] [--dir DIR]
+  fog-agent setup --server URL --ca FILE [--token T] [--dir DIR]
                                           Windows: install and start the service
   fog-agent service uninstall|start|stop|status
   fog-agent version`)
@@ -190,7 +193,12 @@ func enrollLoop(ctx context.Context, st *enroll.State, client *enroll.Client, re
 		case err != nil:
 			out.say("enroll: " + err.Error())
 		case resp.Status == enroll.StatusIssued:
+			// The token, if one was kept for this attempt, is spent.
+			st.Config.PendingToken = ""
 			if err := st.SaveIssued([]byte(resp.CertificatePEM), resp.HostID); err != nil {
+				return nil, err
+			}
+			if err := st.SaveConfig(); err != nil {
 				return nil, err
 			}
 			out.say(fmt.Sprintf("enrolled as host %d, certificate valid until %s", resp.HostID, resp.NotAfter))
@@ -282,7 +290,13 @@ func runAgent(ctx context.Context, args []string) error {
 	out := &sayer{}
 	for {
 		if len(st.Cert) == 0 {
-			req, err := enrollRequest(st, *f.token, out)
+			// A token setup kept for us outranks nothing on the command
+			// line: the service is registered with plain `run`.
+			token := *f.token
+			if token == "" {
+				token = st.Config.PendingToken
+			}
+			req, err := enrollRequest(st, token, out)
 			if err != nil {
 				return err
 			}
@@ -803,4 +817,72 @@ func cmdStatus(args []string) error {
 		out["key_identity"] = st.Identity.Identity
 	}
 	return printJSON(out)
+}
+
+// cmdSetup prepares the state directory for a service that something else
+// registers and starts: the MSI on Windows, a package's unit elsewhere. It
+// is the install-time half of `service install` without the service
+// control manager half.
+func cmdSetup(args []string) error {
+	fs := flag.NewFlagSet("setup", flag.ContinueOnError)
+	f := addCommonFlags(fs)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	// Under msiexec there is no console, so what setup says goes to the
+	// service log as well, where the person reading an install failure
+	// will look.
+	if lf, err := setupLog(*f.dir); err == nil && lf != nil {
+		defer lf.Close()
+		logOut = io.MultiWriter(logOut, lf)
+	}
+	out := &sayer{}
+	if _, _, err := prepareState(f, out); err != nil {
+		return err
+	}
+	return postSetup()
+}
+
+// prepareState settles the state directory: server and CA remembered, the
+// directory locked down before a key is written into it, and one
+// enrollment attempt. A server that does not answer is not an error here.
+// The token is kept for the service's first attempt instead, so an install
+// run by a deployment tool does not fail on a network blip and does not
+// lose the token. A fresh directory with no server or CA is an error.
+func prepareState(f commonFlags, out *sayer) (*enroll.State, []byte, error) {
+	st, caPEM, err := openState(f)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := restrictStateDir(*f.dir); err != nil {
+		return nil, nil, err
+	}
+	if len(st.Cert) > 0 {
+		out.say(fmt.Sprintf("already enrolled as host %d", st.Config.HostID))
+		return st, caPEM, nil
+	}
+	if *f.token != "" {
+		st.Config.PendingToken = *f.token
+		if err := st.SaveConfig(); err != nil {
+			return nil, nil, err
+		}
+	}
+	client, err := enroll.NewClient(st.Config.ServerURL, caPEM)
+	if err != nil {
+		return nil, nil, err
+	}
+	req, err := enrollRequest(st, st.Config.PendingToken, out)
+	if err != nil {
+		return nil, nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	resp, err := enrollLoop(ctx, st, client, req, true, out)
+	cancel()
+	switch {
+	case err != nil:
+		out.say("the server did not answer; the service will keep trying")
+	case resp.Status == enroll.StatusPending:
+		out.say("the service will keep asking until an admin approves this host in Host Management")
+	}
+	return st, caPEM, nil
 }

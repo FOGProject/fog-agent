@@ -28,8 +28,8 @@ func TestDirArg(t *testing.T) {
 }
 
 func TestOpenLogRollsPastKeep(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, logName)
+	dir := filepath.Join(t.TempDir(), "agent")
+	path := logPath(dir)
 	if err := os.WriteFile(path, []byte(strings.Repeat("x", logKeep+1)), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -51,5 +51,15 @@ func TestOpenLogRollsPastKeep(t *testing.T) {
 	f.Close()
 	if b, _ := os.ReadFile(path); string(b) != "new\nmore\n" {
 		t.Errorf("append lost lines: %q", b)
+	}
+}
+
+// The log sits beside the state directory, never inside it: the state
+// directory is locked down, the log must stay readable.
+func TestLogPathBesideStateDir(t *testing.T) {
+	got := logPath(filepath.Join("C:", "ProgramData", "FOG", "agent"))
+	want := filepath.Join("C:", "ProgramData", "FOG", logName)
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
 	}
 }
