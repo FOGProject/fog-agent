@@ -76,6 +76,13 @@ var ErrUnauthorized = errors.New("server does not recognize this agent's certifi
 // PollRequest is the poll body (protocol-v1.md).
 type PollRequest struct {
 	AgentVersion string `json:"agent_version"`
+	// AppliedRevision is the revision this agent last applied, compared
+	// by the server for equality only: the desired state rides the answer
+	// when it differs. Empty means "send it".
+	AppliedRevision string `json:"applied_revision"`
+	// WantState asks for the desired state even at the same revision (a
+	// software drift check needs the set without the revision moving).
+	WantState bool `json:"want_state,omitempty"`
 }
 
 // PollResponse is what the server can do for this host right now.
@@ -86,12 +93,14 @@ type PollResponse struct {
 		ID   int    `json:"id"`
 		Name string `json:"name"`
 	} `json:"host"`
-	Capabilities []string `json:"capabilities"`
-	// StateRevision is the digest of this host's desired state; the agent
-	// fetches the state only when it differs from the one it last applied.
-	StateRevision string `json:"state_revision"`
-	PollInterval  int    `json:"poll_interval"`
-	ServerTime    string `json:"server_time"`
+	// Revision is opaque: the agent compares it with the one it applied
+	// and never reads anything into it (protocol-v1.md).
+	Revision     string `json:"revision"`
+	PollInterval int    `json:"poll_interval"`
+	ServerTime   string `json:"server_time"`
+	// State is the desired state, present when Revision differs from the
+	// applied revision the agent sent, or when it asked for it.
+	State *DesiredState `json:"state,omitempty"`
 }
 
 // DesiredState is what the server wants this host to look like
@@ -309,19 +318,6 @@ func (c *Client) authed(ctx context.Context, method, path string, in any, out an
 		return resp.StatusCode, fmt.Errorf("%s: HTTP %d, body is not JSON: %.200s", path, resp.StatusCode, raw)
 	}
 	return resp.StatusCode, nil
-}
-
-// State fetches the desired state.
-func (c *Client) State(ctx context.Context) (*DesiredState, error) {
-	var out DesiredState
-	code, err := c.authed(ctx, http.MethodGet, "/agent/v1/state", nil, &out)
-	if err != nil {
-		return nil, err
-	}
-	if code != http.StatusOK {
-		return nil, fmt.Errorf("state: HTTP %d", code)
-	}
-	return &out, nil
 }
 
 // Result reports what one capability did at one revision.

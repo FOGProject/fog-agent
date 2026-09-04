@@ -312,7 +312,14 @@ func runAgent(ctx context.Context, args []string) error {
 			return err
 		}
 		wait := 5 * time.Minute
-		resp, err := client.Poll(ctx, enroll.PollRequest{AgentVersion: Version})
+		// The poll carries what this agent applied; the server answers
+		// with the state only when that is not current. A build that
+		// learned a capability sends nothing, so it gets the state once.
+		req := enroll.PollRequest{AgentVersion: Version, AppliedRevision: st.Config.AppliedRevision, WantState: driftMayBeDue(st)}
+		if st.Config.AppliedWith != supportedCapabilities {
+			req.AppliedRevision = ""
+		}
+		resp, err := client.Poll(ctx, req)
 		switch {
 		case errors.Is(err, enroll.ErrUnauthorized):
 			out.say("server no longer recognizes this certificate; enrolling again")
@@ -326,7 +333,9 @@ func runAgent(ctx context.Context, args []string) error {
 		case err != nil:
 			out.say("poll: " + err.Error())
 		default:
-			out.say(fmt.Sprintf("host %d (%s), server capabilities: [%s]", resp.Host.ID, resp.Host.Name, strings.Join(resp.Capabilities, " ")))
+			if resp.State != nil {
+				out.say(fmt.Sprintf("host %d (%s), server capabilities: [%s]", resp.Host.ID, resp.Host.Name, strings.Join(resp.State.Capabilities, " ")))
+			}
 			if resp.PollInterval > 0 {
 				wait = time.Duration(resp.PollInterval) * time.Second
 			}
@@ -341,15 +350,18 @@ func runAgent(ctx context.Context, args []string) error {
 			// Converge when the server's revision is not the one this
 			// agent last applied. A failure leaves the revision
 			// unapplied, so the next poll tries again.
-			if needsReconcile(st.Config, resp.StateRevision) {
-				if err := reconcile(ctx, st, client, out); err != nil {
+			switch {
+			case needsReconcile(st.Config, resp.Revision) && resp.State == nil:
+				out.say("poll: the revision moved but the server sent no state")
+			case needsReconcile(st.Config, resp.Revision):
+				if err := reconcile(ctx, st, client, resp.State, out); err != nil {
 					out.say("reconcile: " + err.Error())
 				}
-			} else if st.Config.SoftwareDrift > 0 && (time.Since(st.Config.SoftwareChecked) >= time.Duration(st.Config.SoftwareDrift)*time.Second || blockedCleared(st)) {
+			case resp.State != nil && driftMayBeDue(st):
 				// The drift check: the set has not changed, the host
 				// might have. The interval is the one the last
 				// reconcile saw, so this costs nothing until it is due.
-				if err := drift(ctx, st, client, out); err != nil {
+				if err := drift(ctx, st, client, resp.State, out); err != nil {
 					out.say("software drift: " + err.Error())
 				}
 			}
@@ -436,15 +448,11 @@ func renew(ctx context.Context, st *enroll.State, client *enroll.Client, out *sa
 	return nil
 }
 
-// reconcile fetches the desired state and runs every provider the server
-// listed, reporting each result. The revision is recorded as applied only
+// reconcile runs every provider the server listed in the desired state,
+// reporting each result. The revision is recorded as applied only
 // when nothing failed: a failed provider is retried on the next poll
 // rather than forgotten.
-func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, out *sayer) error {
-	desired, err := client.State(ctx)
-	if err != nil {
-		return err
-	}
+func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, desired *enroll.DesiredState, out *sayer) error {
 	if desired.Reboot != nil {
 		st.Config.RebootGrace = desired.Reboot.Grace
 	}
@@ -700,13 +708,16 @@ func firstLine(s string) string {
 	return s
 }
 
-// drift fetches the desired state for its software block only and
-// converges it, leaving the applied revision alone.
-func drift(ctx context.Context, st *enroll.State, client *enroll.Client, out *sayer) error {
-	desired, err := client.State(ctx)
-	if err != nil {
-		return err
-	}
+// driftMayBeDue is the cheap half of the drift decision, made before the
+// poll so the state can be asked for: the interval the last reconcile
+// saw has passed, or a blocked set may have become runnable.
+func driftMayBeDue(st *enroll.State) bool {
+	return st.Config.SoftwareDrift > 0 && (time.Since(st.Config.SoftwareChecked) >= time.Duration(st.Config.SoftwareDrift)*time.Second || blockedCleared(st))
+}
+
+// drift converges the software block of a state whose revision has not
+// moved, leaving the applied revision alone.
+func drift(ctx context.Context, st *enroll.State, client *enroll.Client, desired *enroll.DesiredState, out *sayer) error {
 	if !driftDue(st, desired.Software, time.Now()) {
 		return nil
 	}

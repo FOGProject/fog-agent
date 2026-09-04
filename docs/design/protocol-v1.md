@@ -74,8 +74,9 @@ server issued, so "pending" is enforced by TLS, not by application checks.
 
 ## POST /agent/v1/poll
 
-The first authenticated call, and the hard floor's heartbeat. Every route
-under `/agent/v1/` other than enroll is reachable only with the client
+The first authenticated call, the hard floor's heartbeat, and the one
+place the agent learns what it should look like. Every route under
+`/agent/v1/` other than enroll is reachable only with the client
 certificate enrollment issued: the web server verifies it against the agent
 CA bundle on the TLS handshake (`ssl_verify_client optional` /
 `SSLVerifyClient optional`, so a browser is never asked for one), and the
@@ -86,8 +87,13 @@ No token, no session, no `mac=`.
 Request:
 
 ```json
-{"agent_version": "1.2.3"}
+{"agent_version": "1.2.3", "applied_revision": "3f1c9a0b2d4e5f60", "want_state": false}
 ```
+
+`applied_revision` is the revision this agent last converged, empty on a
+fresh agent and on a build that has just learned a capability. `want_state`
+asks for the state even when that revision is current: the software drift
+check needs the set without anything having moved.
 
 Response `200`:
 
@@ -96,36 +102,46 @@ Response `200`:
   "status": "ok",
   "protocol": 1,
   "host": {"id": 231, "name": "7550precision"},
-  "capabilities": ["hostname"],
-  "state_revision": "3f1c9a0b2d4e5f60",
+  "revision": "3f1c9a0b2d4e5f60",
   "poll_interval": 300,
-  "server_time": "2026-09-03T12:43:21-05:00"
+  "server_time": "2026-09-03T12:43:21-05:00",
+  "state": {"revision": "3f1c9a0b2d4e5f60", "capabilities": ["hostname"], "hostname": {"name": "lab-01", "enforce": true}}
 }
 ```
 
-`capabilities` is the list from design 0001 5.1; empty is a valid answer and
-the agent idles on it. A capability is listed when its legacy module is on for
-the host (the global `FOG_CLIENT_*_ENABLED` setting and the host's resolved
-module set, the same two checks the old client's endpoints make), so existing
-per-host and per-group module choices carry over. `state_revision` is a
-digest of the desired state; the agent fetches it only when this differs from
-the revision it last applied. The server records `hostAgentCheckin` and
-`hostAgentVersion` on every poll.
+`state` is present when `revision` is not the `applied_revision` the agent
+sent, or when it asked for it; otherwise the answer stops at `server_time`
+and the agent has nothing to do but sleep `poll_interval`. This is a
+conditional fetch on a POST, the way an ETag works on a GET, done as a POST
+because the poll also writes: the server records `hostAgentCheckin` and
+`hostAgentVersion` on every one.
+
+**The revision is opaque.** The agent compares it with the one it applied,
+for equality, and does nothing else with it: never parses it, never orders
+two of them, never treats it as a version number or a time. Today it is a
+digest of the desired state; tomorrow it may be a cheaper thing the server
+can compute without building the state. An agent that reads anything into
+it closes that door for every server it will ever talk to.
 
 | Status | Meaning | Agent does |
 |---|---|---|
-| 200 | Bound host, answered | Sleep `poll_interval`, poll again |
+| 200 | Bound host, answered | Converge `state` if present, then sleep `poll_interval` and poll again |
 | 401 | No verified certificate, or one bound to no live host (deleted, re-enrolled elsewhere, still pending) | Drop the certificate, keep the key, enroll again |
 
 The 401 is the reimage/rebind path in practice: a host deleted from FOG and
 its agent left running comes back as `unknown-host` pending, with the same
 key, and waits for an admin like any new machine.
 
-## GET /agent/v1/state
+## The desired state
 
-The desired state, fetched when `state_revision` moved. Same gate as poll.
-Blocks appear only for the capabilities listed; a server that does not offer
-something never describes it.
+What the host should look like, carried in the poll answer as `state`.
+`capabilities` is the list from design 0001 5.1; empty is a valid answer and
+the agent idles on it. A capability is listed when its legacy module is on for
+the host (the global `FOG_CLIENT_*_ENABLED` setting and the host's resolved
+module set, the same two checks the old client's endpoints make), so existing
+per-host and per-group module choices carry over. Blocks appear only for the
+capabilities listed; a server that does not offer something never describes
+it.
 
 ```json
 {

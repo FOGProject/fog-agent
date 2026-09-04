@@ -192,7 +192,18 @@ func TestPollPresentsCertificateAndTreats401AsUnauthorized(t *testing.T) {
 			fmt.Fprint(w, `{"error":"client certificate required"}`)
 			return
 		}
-		fmt.Fprintf(w, `{"status":"ok","protocol":1,"host":{"id":7,"name":"%s"},"capabilities":["x"],"poll_interval":42}`, r.TLS.PeerCertificates[0].Subject.CommonName)
+		var req PollRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		// The state rides the answer only when what the agent applied
+		// is not current, or it asked for it.
+		state := ""
+		if req.AppliedRevision != "abcdef0123456789" || req.WantState {
+			state = `,"state":{"revision":"abcdef0123456789","capabilities":["x"],"hostname":{"name":"lab-01","enforce":true}}`
+		}
+		fmt.Fprintf(w, `{"status":"ok","protocol":1,"host":{"id":7,"name":"%s"},"revision":"abcdef0123456789","poll_interval":42%s}`, r.TLS.PeerCertificates[0].Subject.CommonName, state)
 	}))
 	srv.TLS = &tls.Config{
 		Certificates: []tls.Certificate{{Certificate: [][]byte{serverCert.Raw}, PrivateKey: serverKey}},
@@ -232,8 +243,19 @@ func TestPollPresentsCertificateAndTreats401AsUnauthorized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("poll with the certificate: %v", err)
 	}
-	if resp.Host.ID != 7 || resp.Host.Name != "fog-agent host 7" || resp.PollInterval != 42 || len(resp.Capabilities) != 1 {
+	if resp.Host.ID != 7 || resp.Host.Name != "fog-agent host 7" || resp.PollInterval != 42 || resp.Revision != "abcdef0123456789" {
 		t.Fatalf("unexpected poll answer: %+v", resp)
+	}
+	if resp.State == nil || resp.State.Hostname == nil || resp.State.Hostname.Name != "lab-01" || len(resp.State.Capabilities) != 1 {
+		t.Fatalf("an empty applied revision must bring the state: %+v", resp.State)
+	}
+	resp, err = client.Poll(context.Background(), PollRequest{AgentVersion: "t", AppliedRevision: "abcdef0123456789"})
+	if err != nil || resp.State != nil {
+		t.Fatalf("the applied revision must answer without the state: %+v, %v", resp.State, err)
+	}
+	resp, err = client.Poll(context.Background(), PollRequest{AgentVersion: "t", AppliedRevision: "abcdef0123456789", WantState: true})
+	if err != nil || resp.State == nil {
+		t.Fatalf("want_state must bring the state at the same revision: %v", err)
 	}
 }
 
@@ -365,7 +387,7 @@ func TestRenewSendsTheRequestOverTheCertificate(t *testing.T) {
 // TestStateAndResultRideTheCertificate pins the convergence exchange: the
 // desired state decodes with its hostname block, and a result goes back
 // as the server's State::result() expects it.
-func TestStateAndResultRideTheCertificate(t *testing.T) {
+func TestResultRidesTheCertificate(t *testing.T) {
 	caPEM, serverCert, serverKey, caCert, caKey := testCA(t)
 	pool := x509.NewCertPool()
 	pool.AddCert(caCert)
@@ -376,18 +398,15 @@ func TestStateAndResultRideTheCertificate(t *testing.T) {
 			fmt.Fprint(w, `{"error":"client certificate required"}`)
 			return
 		}
-		switch {
-		case r.URL.Path == "/agent/v1/state" && r.Method == http.MethodGet:
-			fmt.Fprint(w, `{"revision":"abcdef0123456789","capabilities":["hostname"],"hostname":{"name":"lab-01","enforce":true}}`)
-		case r.URL.Path == "/agent/v1/result" && r.Method == http.MethodPost:
-			if err := json.NewDecoder(r.Body).Decode(&gotResult); err != nil {
-				http.Error(w, err.Error(), 400)
-				return
-			}
-			fmt.Fprint(w, `{"status":"ok"}`)
-		default:
+		if r.URL.Path != "/agent/v1/result" || r.Method != http.MethodPost {
 			http.Error(w, "wrong route", 404)
+			return
 		}
+		if err := json.NewDecoder(r.Body).Decode(&gotResult); err != nil {
+			http.Error(w, err.Error(), 400)
+			return
+		}
+		fmt.Fprint(w, `{"status":"ok"}`)
 	}))
 	srv.TLS = &tls.Config{
 		Certificates: []tls.Certificate{{Certificate: [][]byte{serverCert.Raw}, PrivateKey: serverKey}},
@@ -401,8 +420,8 @@ func TestStateAndResultRideTheCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.State(context.Background()); !errors.Is(err, ErrUnauthorized) {
-		t.Fatalf("state without a certificate: want ErrUnauthorized, got %v", err)
+	if err := client.Result(context.Background(), ResultRequest{Revision: "abcdef0123456789", Capability: "hostname", Status: "applied"}); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("result without a certificate: want ErrUnauthorized, got %v", err)
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -420,18 +439,10 @@ func TestStateAndResultRideTheCertificate(t *testing.T) {
 	if err := client.UseCertificate(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), key); err != nil {
 		t.Fatal(err)
 	}
-	st, err := client.State(context.Background())
-	if err != nil {
-		t.Fatalf("state: %v", err)
-	}
-	if st.Revision != "abcdef0123456789" || len(st.Capabilities) != 1 || st.Hostname == nil || st.Hostname.Name != "lab-01" || !st.Hostname.Enforce {
-		t.Fatalf("unexpected state: %+v", st)
-	}
-	err = client.Result(context.Background(), ResultRequest{Revision: st.Revision, Capability: "hostname", Status: "applied", Detail: "old -> lab-01"})
-	if err != nil {
+	if err := client.Result(context.Background(), ResultRequest{Revision: "abcdef0123456789", Capability: "hostname", Status: "applied", Detail: "old -> lab-01"}); err != nil {
 		t.Fatalf("result: %v", err)
 	}
 	if gotResult["revision"] != "abcdef0123456789" || gotResult["capability"] != "hostname" || gotResult["status"] != "applied" || gotResult["detail"] != "old -> lab-01" {
-		t.Fatalf("server received %v", gotResult)
+		t.Fatalf("result body: %v", gotResult)
 	}
 }
