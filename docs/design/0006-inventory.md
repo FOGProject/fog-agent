@@ -85,7 +85,27 @@ the firmware and enclosure strings, type 4 for the processor, type 17
 summed for memory. So `smbios.ParseHardware` is a second view over bytes
 the agent has already read, and only two facts need anything else --
 the boot disk (`IOCTL_STORAGE_QUERY_PROPERTY` on `\\.\PhysicalDrive0`)
-and the display adapters (`EnumDisplayDevices`).
+and the display adapters.
+
+**Display adapters come from the registry, not `EnumDisplayDevices`.** That
+API was the obvious choice and does not work here: it enumerates the calling
+process's window station, and a Windows service has no interactive one, so it
+returns FALSE at index 0 with `GetLastError` set to `ERROR_SUCCESS` -- no
+error to log and no device to report. The first live Windows run reported no
+GPU at all because of it. Proven on the lab host 2026-09-04 rather than
+argued: the same probe returned zero devices both as SYSTEM in session 0 and
+over ssh in a user session, while the display setup class key
+(`{4d36e968-e325-11ce-bfc1-08002be10318}`) returned the adapter in both. The
+agent only ever runs as a service, so there was no context in which the API
+call would have worked. The class key also carries `ProviderName`, a better
+vendor than the leading word of the description.
+
+That key lists indirect display drivers beside real hardware -- the lab host
+had three "Microsoft Remote Display Adapter" entries, and every RDP-enabled
+machine in a fleet would carry the same noise -- so they are excluded by
+`MatchingDeviceId`. Deliberately an exclusion, not a "PCI only" allow-list:
+Hyper-V's synthetic video adapter sits on VMBUS and a dock's on USB, and a
+machine that looks like it has no GPU is the failure nobody notices.
 
 **Types 4 and 17 are optional, and a hypervisor may omit them.** VirtualBox
 does: the lab VM's table (captured 2026-09-04, now the fixture in
