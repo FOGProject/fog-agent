@@ -73,8 +73,10 @@ const (
 type storagePropertyQuery struct {
 	PropertyId uint32
 	QueryType  uint32
-	Reserved   [1]byte
-	_          [3]byte // explicit tail padding, so the struct is 12 bytes
+	// AdditionalParameters[1] in the Win32 header. Go pads the struct to
+	// 12 bytes on its own, which is what the C compiler does too; the size
+	// assertion below is what actually holds that.
+	AdditionalParameters [1]byte
 }
 
 // storageDeviceDescriptor is the output header. The strings it names live
@@ -93,6 +95,24 @@ type storageDeviceDescriptor struct {
 	SerialNumberOffset    uint32
 	// The bus type and ID fields follow; unread.
 }
+
+// The two structs above are ABI, not Go's to lay out: a wrong size means
+// DeviceIoControl reads past the input buffer or the offsets land on the
+// wrong words, and the symptom is a plausible-looking wrong serial rather
+// than a crash. These make that a compile error instead. An index into a
+// one-element array is only legal at 0, so a size that is not the expected
+// one fails to build -- on every GOOS=windows build, including CI's.
+//
+// STORAGE_PROPERTY_QUERY is 4 + 4 + 1, padded to 12. The descriptor is read
+// as a prefix: 8 bytes of version and size, four single-byte fields, then
+// the four DWORD offsets this code actually uses, which is 28. The real
+// struct continues past that and is deliberately not declared, because
+// nothing here reads the bus type or the raw properties.
+var (
+	_ = [1]struct{}{}[unsafe.Sizeof(storagePropertyQuery{})-12]
+	_ = [1]struct{}{}[unsafe.Sizeof(storageDeviceDescriptor{})-28]
+	_ = [1]struct{}{}[unsafe.Sizeof(displayDevice{})-840]
+)
 
 // primaryDisk reports the boot disk's model, serial and firmware.
 //
