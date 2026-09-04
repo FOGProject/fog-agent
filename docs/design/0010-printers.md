@@ -236,8 +236,24 @@ table behind every poll.
 
 ## 4. The tables
 
-`hostPrinter`, one row per printer observed on a host — the mirror of
+Two tables, not one. `hostSpooler` is the per-host anchor — the mirror of
 `hostDirectory` in design 0009:
+
+| Column | Type | Note |
+|---|---|---|
+| `hspID` | int | |
+| `hspHostID` | int | FK → `hosts`, CASCADE, unique |
+| `hspSubsystem` | varchar(16) | `cups` or `winspool`, empty if the host said something else |
+| `hspObservedAt` | datetime | when the machine last answered |
+
+It exists because a machine with CUPS and no queues has **answered**, and a
+report that could only see `hostPrinter` rows would show that host as never
+having reported — the host most worth looking at being the one that vanishes
+from the page. `hostFactState` already records "when did this host last
+report kind X", but that table is the poll's hash cache; an admin-facing
+report built on it would break the next time the gate changes.
+
+`hostPrinter` is one row per printer observed on a host:
 
 | Column | Type | Note |
 |---|---|---|
@@ -247,7 +263,14 @@ table behind every poll.
 | `hpURI` | varchar(1024) | as reported |
 | `hpDriver` | varchar(255) | empty for driverless |
 | `hpDefault` | tinyint(1) | the machine's default |
+| `hpShared` | tinyint(1) | the machine re-shares this queue |
 | `hpObservedAt` | datetime | when the machine last said so |
+
+The default is reported at the block level as a **name** and resolved to this
+flag on the way in, so the stored flag and the reported name cannot disagree
+— and a default naming a queue that is not installed (left behind by a
+removal that did not clear the setting) drops out for free, since no action
+could resolve it anyway.
 
 Named for the observation, not the attempt — the `hdObservedAt` rule from 0009.
 
@@ -264,10 +287,25 @@ that will not install produces nothing an admin can see.
 
 **The dead columns go.** `pAnon2`–`pAnon5` (`varchar(10)`) and
 `paAnon1`–`paAnon5` (`varchar(2)`) are dropped, and `paIsDefault` becomes
-`tinyint(1)` to match `gpaIsDefault`. Both are mechanical, both are covered by
-the schema-manifest gates, and leaving them would mean writing new code beside
-columns that have never held anything. The `plugins` precedent in §1.5 is the
-same cleanup reached from the other direction.
+`tinyint(1)` to match `gpaIsDefault`. Leaving them would mean writing new code
+beside columns that have never held anything. The `plugins` precedent in §1.5
+is the same cleanup reached from the other direction.
+
+Neither turned out to be as mechanical as this paragraph first claimed, and
+both are worth writing down:
+
+- `paIsDefault` holds `''` on every row nobody ever set, and MariaDB in strict
+  mode refuses to convert `''` to an integer. A bare `MODIFY` fails the
+  upgrade on essentially every existing install rather than on none of them,
+  so a normalizing `UPDATE` has to come first.
+- `schema-manifest` could declare a retired **table** and had no way to
+  declare a retired **column**, so the nine drops read as permanent
+  `MISSING COLUMN` lines in the 1.5 comparison. That is worse than it sounds:
+  a report with permanent known differences trains whoever reads it to skim,
+  and the next real difference goes with them. `retired` now takes an optional
+  `column`, reported rather than silenced exactly as a retired table is. It
+  will be needed again the moment design 0007 normalizes the inventory
+  columns.
 
 `pConfig` is not dropped in the same step — see §7.
 
