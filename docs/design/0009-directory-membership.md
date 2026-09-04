@@ -1,6 +1,8 @@
 # 0009: Directory membership — placement is a directory operation
 
-Status: PROPOSED 2026-09-04.
+Status: §3, §4, §5, §7 SHIPPED 2026-09-04. §6 SHIPPED 2026-09-04 (agent
+`internal/provider/directoryjoin`, server `FOG\Agent\DirectoryJoin`, schema
+428). §6's v2 — offline domain join — remains deferred.
 
 FOG's Active Directory support is the `hostname` capability's other half: the
 same legacy module renames the machine and joins it to a domain, and design

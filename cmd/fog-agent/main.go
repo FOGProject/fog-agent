@@ -17,10 +17,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FOGProject/fog-agent/internal/directory"
 	"github.com/FOGProject/fog-agent/internal/enroll"
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/printers"
 	"github.com/FOGProject/fog-agent/internal/provider"
+	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
 	"github.com/FOGProject/fog-agent/internal/provider/power"
 	"github.com/FOGProject/fog-agent/internal/provider/printerset"
@@ -578,6 +580,19 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 				allOK = false
 			}
 			continue
+		case "directory":
+			// Design 0009 §6: join the machine to the domain the host
+			// record asks for. The block is absent for nearly every
+			// host -- the server sends it only to one it believes is
+			// unjoined -- and absent means there is nothing to do, not
+			// that the machine should leave anything.
+			if desired.Directory == nil {
+				continue
+			}
+			if !runDirectory(ctx, st, client, desired.Revision, desired.Directory, out) {
+				allOK = false
+			}
+			continue
 		case "printers":
 			// The assigned print queues, converged and reported one by
 			// one. Like software and unlike a snapin, nothing here is a
@@ -638,7 +653,7 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 // the Windows lab upgrade to the power build sat on an on-demand shutdown
 // for ten minutes because the old binary had already marked that revision
 // applied, and nothing moved it until an unrelated task did.
-const supportedCapabilities = "hostname,taskreboot,power,software,printers,snapin"
+const supportedCapabilities = "hostname,taskreboot,power,software,printers,directory,snapin"
 
 // needsReconcile says whether the server's revision must be converged: it
 // is not the one applied, or it was applied by a build that handled a
@@ -807,6 +822,62 @@ func runPrinters(ctx context.Context, st *enroll.State, client *enroll.Client, r
 	}
 	st.Config.PrintersChecked = time.Now()
 	return ok
+}
+
+// runDirectory joins the machine to its domain if it should be, and reports
+// what happened either way. It returns false only when the report did not
+// land.
+//
+// The credential never reaches this function's log line, its state file or
+// its error path: it lives inside a secret.Secret, which redacts itself
+// under every printer and marshaler in the process, and Converge zeroes it
+// on the way out.
+func runDirectory(ctx context.Context, st *enroll.State, client *enroll.Client, revision string, policy *directoryjoin.Policy, out *sayer) bool {
+	observed, read := directory.Gather()
+	if !read {
+		// Nothing is known about this machine's membership, so nothing can
+		// be decided about it -- and a join attempted on no information is
+		// a join attempted against a machine that may already be in the
+		// domain. Reported so it is visible rather than silent.
+		observed = directory.Directory{}
+		out.say("directory: this platform cannot report its membership; not joining")
+		r := directoryjoin.Report{Status: directoryjoin.StatusUnsupported,
+			Error: "the machine's directory membership could not be read; nothing was attempted"}
+		return reportDirectory(ctx, st, client, revision, r, out)
+	}
+
+	r := directoryjoin.Converge(ctx, directoryjoin.Native(), policy, observed)
+	return reportDirectory(ctx, st, client, revision, r, out)
+}
+
+// reportDirectory sends one join outcome and acts on the reboot it asks for.
+func reportDirectory(ctx context.Context, st *enroll.State, client *enroll.Client, revision string, r directoryjoin.Report, out *sayer) bool {
+	why := r.Detail
+	if r.Error != "" {
+		why = r.Error
+	}
+	out.say(fmt.Sprintf("directory: %s (%s)", r.Status, firstLine(why)))
+	// An ITEM report, addressed by this agent's own host id: the join's
+	// status vocabulary (joined, refused, unsupported) does not fit in the
+	// capability's applied/failed, and `failed` would mean two different
+	// things in one field.
+	if _, err := client.Result(ctx, enroll.ResultRequest{
+		Revision: revision, Capability: "directory", Status: provider.StatusApplied,
+		Item: &enroll.ResultItem{ID: st.Config.HostID, Status: r.Status, Details: r.Error},
+	}); err != nil {
+		out.say("directory result: " + err.Error())
+		return false
+	}
+	if r.Reboot {
+		// Not forced. A domain join is not urgent the way an imaging task
+		// is, and the machine works exactly as it did until it restarts --
+		// so a logged-in user gets the grace the coordinator gives them.
+		st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{
+			Source: "directory", Detail: "joined a domain; a restart finishes it",
+			Mode: reboot.ModeReboot,
+		})
+	}
+	return true
 }
 
 // printersDriftDue says whether the assigned printers should be re-converged

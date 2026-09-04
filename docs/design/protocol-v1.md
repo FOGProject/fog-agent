@@ -509,6 +509,69 @@ The set is re-converged when the revision moves, and otherwise once an hour
 on the facts cadence, so a queue somebody deleted comes back without an
 admin having to touch the assignment.
 
+### Directory
+
+Capability `directory` (module short name `hostnamechanger`), design 0009 §6.
+The block is present **only** for a host the server believes is not joined
+and has a domain configured, so a joined estate — most of an estate, most of
+the time — carries no join credential at all:
+
+```json
+"directory": {
+  "domain": "corp.example.com",
+  "netbios": "CORP",
+  "ou": "OU=Workstations,DC=corp,DC=example,DC=com",
+  "username": "CORP\\fogjoin",
+  "password": "…",
+  "reboot": true
+}
+```
+
+The contrast is with the legacy client, which is sent `ADUser` and `ADPass`
+in the answer to **every** check-in of **every** host with `useAD` set,
+joined or not, forever. The server here omits the block entirely when the
+host has never reported its membership (it does not know), when the host is
+already in the right domain, when it is joined to a different one (the agent
+would refuse), and for an hour after any attempt. That last one is not
+politeness: a join that fails on a bad password is a failed authentication
+against a domain controller, and one per host per poll is how a service
+account with a lockout policy gets locked out.
+
+The agent holds the credential in memory only. It is never written to the
+state directory and never logged — it redacts itself under every printer and
+marshaler in the process, so `run --once` output shows `[redacted]`, and it
+is zeroed after the attempt.
+
+`ou` is the container the computer object is **created** in, which saves a
+move that would otherwise follow every first join. Moving an
+*already-joined* machine between OUs is not on this side at all: that is a
+property of an object in a directory, so the server does it with one LDAP
+Modify DN and the machine is not involved (design 0009 §5).
+
+| Step | Route | Notes |
+|---|---|---|
+| report | `POST /agent/v1/result` with `item: {id, status, details}` | `id` is the agent's own host id — the row is its own membership; `status` is `joined`, `already_joined`, `failed`, `unsupported` or `refused`; `details` is the tool's message, kept only for the three that did not settle |
+
+An item report and not a plain one because the join has its own vocabulary
+and the outer `status` already carries the capability's
+`applied`/`failed` — and `failed` means two different things in the two
+places.
+
+**The agent only ever joins.** It never unjoins, and a machine already in a
+*different* domain is `refused`, not moved: getting it to the right one
+means leaving the wrong one, which resets the computer account's password
+and, where the object is recreated, costs it its SID, its group
+memberships, its escrowed BitLocker keys and any certificate issued to it.
+None of that may be a side effect of an admin editing a field.
+
+Windows joins through `netapi32!NetJoinDomain` rather than `Add-Computer` or
+`netdom`, and the reason is the credential: a command line is visible to
+every process on the machine through the process table, and a PowerShell
+script is captured verbatim by script block logging. The direct call takes
+the password as a pointer in this process's own memory. Linux uses `adcli`,
+or `realm` where adcli is absent, both of which take the password on stdin —
+which is what picks them.
+
 ## POST /agent/v1/result
 
 What one provider did at one revision, or what happened to one thing

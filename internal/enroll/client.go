@@ -20,6 +20,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/inventory"
 	"github.com/FOGProject/fog-agent/internal/printers"
+	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
 	"github.com/FOGProject/fog-agent/internal/provider/power"
 	"github.com/FOGProject/fog-agent/internal/provider/printerset"
@@ -219,6 +220,14 @@ type DesiredState struct {
 	// Printers is the host's assigned print queues and how far FOG is to
 	// go in enforcing them (capability printers).
 	Printers *printerset.Policy `json:"printers,omitempty"`
+	// Directory is the domain the host should be joined to, with the
+	// credential to do it (capability directory). Present ONLY for a host
+	// the server believes is not joined and has a domain configured, so a
+	// joined estate carries no join credential at all (design 0009 §6).
+	// The credential inside redacts itself under every printer and
+	// marshaler in this process, which is what keeps it out of `--once`
+	// output and out of the state directory.
+	Directory *directoryjoin.Policy `json:"directory,omitempty"`
 }
 
 // ResultRequest is what the agent reports for one capability.
