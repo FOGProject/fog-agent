@@ -391,7 +391,7 @@ func TestResultRidesTheCertificate(t *testing.T) {
 	caPEM, serverCert, serverKey, caCert, caKey := testCA(t)
 	pool := x509.NewCertPool()
 	pool.AddCert(caCert)
-	var gotResult map[string]string
+	var gotResult map[string]any
 	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
 			w.WriteHeader(401)
@@ -404,6 +404,12 @@ func TestResultRidesTheCertificate(t *testing.T) {
 		}
 		if err := json.NewDecoder(r.Body).Decode(&gotResult); err != nil {
 			http.Error(w, err.Error(), 400)
+			return
+		}
+		// An item report is answered with the server's outcome; a plain
+		// one is not.
+		if _, ok := gotResult["item"]; ok {
+			fmt.Fprint(w, `{"status":"ok","outcome":"reboot"}`)
 			return
 		}
 		fmt.Fprint(w, `{"status":"ok"}`)
@@ -420,7 +426,7 @@ func TestResultRidesTheCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Result(context.Background(), ResultRequest{Revision: "abcdef0123456789", Capability: "hostname", Status: "applied"}); !errors.Is(err, ErrUnauthorized) {
+	if _, err := client.Result(context.Background(), ResultRequest{Revision: "abcdef0123456789", Capability: "hostname", Status: "applied"}); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("result without a certificate: want ErrUnauthorized, got %v", err)
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -439,10 +445,21 @@ func TestResultRidesTheCertificate(t *testing.T) {
 	if err := client.UseCertificate(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), key); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Result(context.Background(), ResultRequest{Revision: "abcdef0123456789", Capability: "hostname", Status: "applied", Detail: "old -> lab-01"}); err != nil {
-		t.Fatalf("result: %v", err)
+	outcome, err := client.Result(context.Background(), ResultRequest{Revision: "abcdef0123456789", Capability: "hostname", Status: "applied", Detail: "old -> lab-01"})
+	if err != nil || outcome != "" {
+		t.Fatalf("result: outcome %q, %v", outcome, err)
 	}
 	if gotResult["revision"] != "abcdef0123456789" || gotResult["capability"] != "hostname" || gotResult["status"] != "applied" || gotResult["detail"] != "old -> lab-01" {
 		t.Fatalf("result body: %v", gotResult)
+	}
+	// One route for every kind of report: an item rides the same body and
+	// brings the outcome back.
+	outcome, err = client.Result(context.Background(), ResultRequest{Revision: "abcdef0123456789", Capability: "snapin", Status: "applied", Item: &ResultItem{ID: 41, Status: "ran", ExitCode: 3010, Details: "tail"}})
+	if err != nil || outcome != "reboot" {
+		t.Fatalf("item result: outcome %q, %v", outcome, err)
+	}
+	item, _ := gotResult["item"].(map[string]any)
+	if item["id"] != float64(41) || item["status"] != "ran" || item["exit_code"] != float64(3010) {
+		t.Fatalf("item body: %v", gotResult)
 	}
 }

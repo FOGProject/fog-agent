@@ -116,7 +116,7 @@ One new capability, `software`, alongside `hostname`, `taskreboot` and
 }
 ```
 
-Results go to `POST /agent/v1/software/{id}/result` with
+Results go to `POST /agent/v1/result` with an `item` carrying
 `{status, installed_version, exit_code, details}`. The server reads the exit
 code against the entry's return-code table exactly as `Snapins::outcome()`
 does for snapins (Intune defaults plus Chocolatey's `350` pending-reboot

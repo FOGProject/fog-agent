@@ -130,6 +130,23 @@ type ResultRequest struct {
 	Capability string `json:"capability"`
 	Status     string `json:"status"`
 	Detail     string `json:"detail,omitempty"`
+	// Item is a report about one server-owned thing under the capability
+	// (a snapin task, a software entry): the server keeps the row, reads
+	// the exit code against its return-code table and answers an outcome
+	// the agent acts on. Without an item the report is one audit line.
+	Item *ResultItem `json:"item,omitempty"`
+}
+
+// ResultItem identifies the thing reported on and carries what the
+// server's report class for the capability reads: the item's own status
+// vocabulary, the raw exit code, the output tail, and for software the
+// version the host has now.
+type ResultItem struct {
+	ID               int    `json:"id"`
+	Status           string `json:"status"`
+	ExitCode         int    `json:"exit_code"`
+	InstalledVersion string `json:"installed_version,omitempty"`
+	Details          string `json:"details,omitempty"`
 }
 
 // NewClient builds a client that verifies the server against caPEM. An
@@ -320,20 +337,23 @@ func (c *Client) authed(ctx context.Context, method, path string, in any, out an
 	return resp.StatusCode, nil
 }
 
-// Result reports what one capability did at one revision.
-func (c *Client) Result(ctx context.Context, r ResultRequest) error {
+// Result reports what one capability did at one revision, or with an
+// item what happened to one thing under it. The outcome is the server's
+// reading of an item's exit code; empty for a report without an item.
+func (c *Client) Result(ctx context.Context, r ResultRequest) (string, error) {
 	var out struct {
-		Status string `json:"status"`
-		Error  string `json:"error"`
+		Status  string `json:"status"`
+		Outcome string `json:"outcome"`
+		Error   string `json:"error"`
 	}
 	code, err := c.authed(ctx, http.MethodPost, "/agent/v1/result", r, &out)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if code != http.StatusOK || out.Status != "ok" {
-		return fmt.Errorf("result: HTTP %d with status %q: %s", code, out.Status, out.Error)
+		return "", fmt.Errorf("result: HTTP %d with status %q: %s", code, out.Status, out.Error)
 	}
-	return nil
+	return out.Outcome, nil
 }
 
 // SnapinFile streams the payload of one snapin task into w. Fetching it
@@ -367,55 +387,6 @@ const (
 	OutcomeRetry   = "retry"
 	OutcomeFailed  = "failed"
 )
-
-// SnapinResult reports one task: whether the payload ran, its raw exit
-// code when it did, and the output tail. The server answers with the
-// outcome it decided, which is what the agent acts on.
-func (c *Client) SnapinResult(ctx context.Context, taskID int, status string, exitCode int, details string) (string, error) {
-	var out struct {
-		Status  string `json:"status"`
-		Outcome string `json:"outcome"`
-		Error   string `json:"error"`
-	}
-	in := struct {
-		Status   string `json:"status"`
-		ExitCode int    `json:"exit_code"`
-		Details  string `json:"details"`
-	}{status, exitCode, details}
-	code, err := c.authed(ctx, http.MethodPost, fmt.Sprintf("/agent/v1/snapin/%d/result", taskID), in, &out)
-	if err != nil {
-		return "", err
-	}
-	if code != http.StatusOK || out.Status != "ok" {
-		return "", fmt.Errorf("snapin result: HTTP %d with status %q: %s", code, out.Status, out.Error)
-	}
-	return out.Outcome, nil
-}
-
-// SoftwareResult reports one software entry: what convergence did, the
-// version the host has now, the backend's exit code and its output tail.
-// The server answers its reading of the code as an outcome.
-func (c *Client) SoftwareResult(ctx context.Context, softwareID int, status, installedVersion string, exitCode int, details string) (string, error) {
-	var out struct {
-		Status  string `json:"status"`
-		Outcome string `json:"outcome"`
-		Error   string `json:"error"`
-	}
-	in := struct {
-		Status           string `json:"status"`
-		InstalledVersion string `json:"installed_version"`
-		ExitCode         int    `json:"exit_code"`
-		Details          string `json:"details"`
-	}{status, installedVersion, exitCode, details}
-	code, err := c.authed(ctx, http.MethodPost, fmt.Sprintf("/agent/v1/software/%d/result", softwareID), in, &out)
-	if err != nil {
-		return "", err
-	}
-	if code != http.StatusOK || out.Status != "ok" {
-		return "", fmt.Errorf("software result: HTTP %d with status %q: %s", code, out.Status, out.Error)
-	}
-	return out.Outcome, nil
-}
 
 // Enroll sends one request and decodes the reply. Non-JSON or unexpected
 // HTTP statuses are errors; the four protocol statuses are returned as data

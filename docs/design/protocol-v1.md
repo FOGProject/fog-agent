@@ -242,7 +242,7 @@ For each task, in order:
 | fetch | `GET /agent/v1/snapin/{task}/file` | the task must belong to this host's own job (404 otherwise, the same message as "no such task"); marks the task, the job and the host's task in progress; streams the bytes from the storage node over the web tier's own FTP session, so the agent trusts only the server's certificate |
 | verify | | the agent hashes as it downloads and refuses a sha512 that is not the one declared. That refusal is reported as status `hash_mismatch`, not retried: the file the server has is not the file it described, and the admin needs to see it |
 | run | | `run_with run_with_args file args`, or the file itself when `run_with` is empty (made executable on Unix); `timeout` seconds then the whole process group is killed, status `timeout`; a payload that could not start is `cannot_run` |
-| report | `POST /agent/v1/snapin/{task}/result` `{status, exit_code, details}` | `status` is `ran` or one of the three above; `exit_code` is the program's own, untouched, meaningful only for `ran`; `details` the last 4 KB of output. The server answers `{"status":"ok","outcome":…}` |
+| report | `POST /agent/v1/result` with `item: {id: task, status, exit_code, details}` | `status` is `ran` or one of the three above; `exit_code` is the program's own, untouched, meaningful only for `ran`; `details` the last 4 KB of output. The server answers `{"status":"ok","outcome":…}` |
 
 **Outcome, decided by the server.** A raw exit code says nothing by
 itself: an MSI answers 3010 for "installed, reboot to finish" and 1618
@@ -354,7 +354,7 @@ unapplied.
 
 | Step | Route | Notes |
 |---|---|---|
-| report | `POST /agent/v1/software/{id}/result` `{status, installed_version, exit_code, details}` | `status` is `converged`, `installed`, `upgraded`, `removed`, `timeout` or `cannot_run`; `exit_code` is the package manager's own, meaningful for the three action statuses; `details` the last 4 KB of output. The server answers `{"status":"ok","outcome":…}` |
+| report | `POST /agent/v1/result` with `item: {id, status, installed_version, exit_code, details}` | `status` is `converged`, `installed`, `upgraded`, `removed`, `timeout` or `cannot_run`; `exit_code` is the package manager's own, meaningful for the three action statuses; `details` the last 4 KB of output. The server answers `{"status":"ok","outcome":…}` |
 
 The outcome is read the way a snapin's is, against the entry's return-code
 table, with the snapin defaults plus Chocolatey's `350` (pending reboot
@@ -375,9 +375,8 @@ binary reports `cannot_run` for every entry.
 
 ## POST /agent/v1/result
 
-What one provider did at one revision. Same gate as poll. Recorded on the
-host as an `agent.result` audit row, which is where FOG already shows what
-happened to a host; no table until inventory needs one.
+What one provider did at one revision, or what happened to one thing
+under it. Same gate as poll. One route for every kind of report.
 
 ```json
 {"revision": "3f1c9a0b2d4e5f60", "capability": "hostname", "status": "applied", "detail": "old-name -> lab-01"}
@@ -385,7 +384,33 @@ happened to a host; no table until inventory needs one.
 
 `status` is one of `applied`, `unchanged`, `pending_reboot`, `failed`. The
 agent records the revision as applied only when no provider failed, so a
-failure is retried on the next poll rather than forgotten.
+failure is retried on the next poll rather than forgotten. A report without
+an item is recorded on the host as an `agent.result` audit row, which is
+where FOG already shows what happened to a host, and answered `{"status":
+"ok"}`.
+
+A report **with an item** is about one server-owned row under the
+capability, and the server answers with an outcome the agent acts on:
+
+```json
+{"revision": "3f1c9a0b2d4e5f60", "capability": "snapin", "status": "applied",
+ "item": {"id": 41, "status": "ran", "exit_code": 3010, "details": "…"}}
+```
+
+```json
+{"status": "ok", "outcome": "reboot"}
+```
+
+`item.id` names the row (a snapin task, a software entry); the rest of
+`item` is what that capability's report class reads, in its own status
+vocabulary (Snapins, Software above). The server dispatches on
+`capability` to the report class, which keeps the row, reads the exit code
+against its return-code table and decides the outcome. The per-item
+identity and the two-way answer are real; a route per artifact type is
+not, so a capability that gains item reports gains an entry in the
+server's dispatch map and nothing on the path. A capability with no item
+reports answers 400 to an item; the report classes' own codes (404 for a
+row that is not this host's, 409, 503) pass through.
 
 ## POST /agent/v1/renew
 

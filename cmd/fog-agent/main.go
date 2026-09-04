@@ -497,7 +497,7 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 					Source: "power", Detail: fmt.Sprintf("on-demand %s", od.Action), Force: true, Mode: od.Action,
 				})
 				out.say(fmt.Sprintf("power: on-demand %s accepted", od.Action))
-				if err := client.Result(ctx, enroll.ResultRequest{
+				if _, err := client.Result(ctx, enroll.ResultRequest{
 					Revision: desired.Revision, Capability: capability, Status: provider.StatusApplied,
 					Detail: fmt.Sprintf("on-demand %s accepted (id %d)", od.Action, od.ID),
 				}); err != nil {
@@ -536,7 +536,7 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 			continue
 		}
 		out.say(fmt.Sprintf("%s: %s (%s)", capability, r.Status, r.Detail))
-		if err := client.Result(ctx, enroll.ResultRequest{
+		if _, err := client.Result(ctx, enroll.ResultRequest{
 			Revision: desired.Revision, Capability: capability, Status: r.Status, Detail: r.Detail,
 		}); err != nil {
 			out.say("result: " + err.Error())
@@ -588,7 +588,10 @@ func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, qu
 			out.say(fmt.Sprintf("snapin %q (task %d): %s; will retry next poll", t.Name, t.ID, r.Details))
 			return false
 		}
-		outcome, err := client.SnapinResult(ctx, t.ID, r.Status, r.ExitCode, r.Details)
+		outcome, err := client.Result(ctx, enroll.ResultRequest{
+			Revision: st.Config.AppliedRevision, Capability: "snapin", Status: provider.StatusApplied,
+			Item: &enroll.ResultItem{ID: t.ID, Status: r.Status, ExitCode: r.ExitCode, Details: r.Details},
+		})
 		if err != nil {
 			out.say("snapin result: " + err.Error())
 			return false
@@ -641,14 +644,17 @@ func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, r
 			status, detail = provider.StatusFailed, "Chocolatey bootstrap failed: "+err.Error()+"\n"+tail
 		}
 		out.say(firstLine(detail))
-		if err := client.Result(ctx, enroll.ResultRequest{Revision: revision, Capability: "software", Status: status, Detail: detail}); err != nil {
+		if _, err := client.Result(ctx, enroll.ResultRequest{Revision: revision, Capability: "software", Status: status, Detail: detail}); err != nil {
 			out.say("result: " + err.Error())
 		}
 	}
 	reports := software.Converge(ctx, backend, policy.Entries)
 	ok := true
 	for _, r := range reports {
-		outcome, err := client.SoftwareResult(ctx, r.Entry.ID, r.Status, r.InstalledVersion, r.ExitCode, r.Details)
+		outcome, err := client.Result(ctx, enroll.ResultRequest{
+			Revision: revision, Capability: "software", Status: provider.StatusApplied,
+			Item: &enroll.ResultItem{ID: r.Entry.ID, Status: r.Status, ExitCode: r.ExitCode, InstalledVersion: r.InstalledVersion, Details: r.Details},
+		})
 		if err != nil {
 			out.say(fmt.Sprintf("software %q: %s", r.Entry.Package, err))
 			ok = false
@@ -743,7 +749,7 @@ func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, ou
 		status = provider.StatusApplied
 	}
 	out.say(fmt.Sprintf("reboot: %s (%s%s)", status, d.Why, map[bool]string{true: ", mode " + d.Mode, false: ""}[d.Reboot]))
-	if err := client.Result(ctx, enroll.ResultRequest{
+	if _, err := client.Result(ctx, enroll.ResultRequest{
 		Revision: st.Config.AppliedRevision, Capability: "reboot", Status: status, Detail: d.Why,
 	}); err != nil {
 		out.say("result: " + err.Error())
