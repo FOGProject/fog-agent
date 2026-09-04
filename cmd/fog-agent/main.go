@@ -582,7 +582,7 @@ func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, qu
 	dir := filepath.Join(st.Dir, "snapins")
 	for _, t := range queue {
 		r := snapin.Run(ctx, t, dir, func(ctx context.Context, w io.Writer) error {
-			return client.SnapinFile(ctx, t.ID, w)
+			return client.Payload(ctx, "snapin", t.ID, w)
 		})
 		if !r.Fetched {
 			out.say(fmt.Sprintf("snapin %q (task %d): %s; will retry next poll", t.Name, t.ID, r.Details))

@@ -356,10 +356,11 @@ func (c *Client) Result(ctx context.Context, r ResultRequest) (string, error) {
 	return out.Outcome, nil
 }
 
-// SnapinFile streams the payload of one snapin task into w. Fetching it
-// is what marks the task in progress on the server.
-func (c *Client) SnapinFile(ctx context.Context, taskID int, w io.Writer) error {
-	hr, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/agent/v1/snapin/%d/file", c.ServerURL, taskID), nil)
+// Payload streams the bytes behind one thing under a capability into w:
+// for "snapin", the file of one task, and fetching it is what marks the
+// task in progress on the server. One route for every kind of payload.
+func (c *Client) Payload(ctx context.Context, capability string, id int, w io.Writer) error {
+	hr, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/agent/v1/payload/%s/%d", c.ServerURL, capability, id), nil)
 	if err != nil {
 		return err
 	}
