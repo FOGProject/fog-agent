@@ -39,6 +39,9 @@ type Config struct {
 	// converged on without failing; a poll reporting a different one is
 	// what triggers a fetch. Empty until the first reconcile.
 	AppliedRevision string `json:"applied_revision,omitempty"`
+	// AppliedWith is the capability list of the build that applied it; a
+	// build with a different list treats the revision as unapplied.
+	AppliedWith string `json:"applied_with,omitempty"`
 	// PendingReboot is what the reboot coordinator still owes: reasons
 	// recorded by providers and the task poll that policy has not yet
 	// let it act on. Persisted so a restart does not forget them.

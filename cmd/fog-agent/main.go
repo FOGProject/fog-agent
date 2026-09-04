@@ -327,7 +327,7 @@ func runAgent(ctx context.Context, args []string) error {
 			// Converge when the server's revision is not the one this
 			// agent last applied. A failure leaves the revision
 			// unapplied, so the next poll tries again.
-			if resp.StateRevision != st.Config.AppliedRevision {
+			if needsReconcile(st.Config, resp.StateRevision) {
 				if err := reconcile(ctx, st, client, out); err != nil {
 					out.say("reconcile: " + err.Error())
 				}
@@ -534,7 +534,23 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, out
 		return errors.New("a provider failed; will retry next poll")
 	}
 	st.Config.AppliedRevision = desired.Revision
+	st.Config.AppliedWith = supportedCapabilities
 	return st.SaveConfig()
+}
+
+// supportedCapabilities names what this build's reconcile handles, in the
+// order of its switch. It is stored next to the applied revision so an
+// upgrade that learns a capability re-runs the revision it inherited:
+// the Windows lab upgrade to the power build sat on an on-demand shutdown
+// for ten minutes because the old binary had already marked that revision
+// applied, and nothing moved it until an unrelated task did.
+const supportedCapabilities = "hostname,taskreboot,power,software,snapin"
+
+// needsReconcile says whether the server's revision must be converged: it
+// is not the one applied, or it was applied by a build that handled a
+// different set of capabilities.
+func needsReconcile(cfg enroll.Config, revision string) bool {
+	return revision != cfg.AppliedRevision || cfg.AppliedWith != supportedCapabilities
 }
 
 // runSnapins runs the queue in order and reports each task. It returns
