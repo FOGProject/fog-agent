@@ -183,8 +183,18 @@ never an empty struct.
   `distinguishedName` via ADSI/LDAP over the machine's own secure channel (no
   credential needed — the machine account can read its own object),
   `dsregcmd /status` to distinguish Entra-joined from AD-joined.
-- **Linux**: `realm list` where realmd is present, else `adcli info` or the
-  sssd domain configuration; `net ads info` where Samba is the join.
+- **Linux**: `realm list` where realmd is present, then the host keytab
+  (`/etc/krb5.keytab`), then the sssd domain configuration. The keytab is
+  second because it is the only one of the three that is *evidence*: a
+  machine account principal (`WS-014$@CORP.EXAMPLE.COM`) is a key only a
+  domain controller could have issued, where sssd.conf records what someone
+  configured and might never have completed. It is also the only probe that
+  sees the agent's OWN join — §6 joins with `adcli`, and adcli configures no
+  name-service stack at all, so a machine this agent joined has no realmd
+  entry and no sssd.conf. Proven the hard way in the lab on 2026-09-04: the
+  join succeeded, `adcli testjoin` validated it, and the agent reported
+  `joined=false`, which would have had the server re-send the join
+  credential every hour for ever — the exact behavior §6 exists to prevent.
 - **macOS**: `dsconfigad -show`. Lower priority.
 
 This block alone makes drift reportable and requires no new credential

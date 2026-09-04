@@ -2,7 +2,12 @@
 
 package directory
 
-import "testing"
+import (
+	"encoding/binary"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // realmJoined is `realm list` on an AD-joined machine.
 //
@@ -144,12 +149,123 @@ id_provider = ad
 	}
 }
 
+// isolate points every probe at nothing, so a test says what it means on a
+// machine that is itself joined to something. Without it these tests read
+// this build box's /etc and pass or fail for reasons of their own.
+func isolate(t *testing.T) {
+	t.Helper()
+	realm, keytab, conf := runRealmList, hostKeytab, sssdConf
+	t.Cleanup(func() { runRealmList, hostKeytab, sssdConf = realm, keytab, conf })
+	runRealmList = func() (string, bool) { return "", false }
+	hostKeytab = filepath.Join(t.TempDir(), "no-such-keytab")
+	sssdConf = filepath.Join(t.TempDir(), "no-such-sssd.conf")
+}
+
+// keytabEntry builds one 0x0502 entry for a principal, with a one-byte key
+// standing in for the key material the parser never reads.
+func keytabEntry(realm string, components ...string) []byte {
+	counted := func(s string) []byte {
+		b := make([]byte, 2+len(s))
+		binary.BigEndian.PutUint16(b, uint16(len(s)))
+		copy(b[2:], s)
+		return b
+	}
+	body := make([]byte, 2)
+	binary.BigEndian.PutUint16(body, uint16(len(components)))
+	body = append(body, counted(realm)...)
+	for _, c := range components {
+		body = append(body, counted(c)...)
+	}
+	body = append(body, 0, 0, 0, 1) // name type
+	body = append(body, 0, 0, 0, 0) // timestamp
+	body = append(body, 3)          // key version
+	body = append(body, 0, 18)      // enctype aes256-cts-hmac-sha1-96
+	body = append(body, counted("k")...)
+
+	out := make([]byte, 4)
+	binary.BigEndian.PutUint32(out, uint32(len(body)))
+	return append(out, body...)
+}
+
+func keytab(entries ...[]byte) []byte {
+	out := []byte{0x05, 0x02}
+	for _, e := range entries {
+		out = append(out, e...)
+	}
+	return out
+}
+
+func TestKeytabMachineAccountIsAJoin(t *testing.T) {
+	// The shape adcli writes: host principals plus the computer object's
+	// own sAMAccountName. Confirmed against the real /etc/krb5.keytab an
+	// adcli join left on the lab VM, 2026-09-04.
+	d, ok := parseKeytab(keytab(
+		keytabEntry("FOGAD.LAB", "host", "fogagent-vm.fogad.lab"),
+		keytabEntry("FOGAD.LAB", "FOGAGENT-VM$"),
+	))
+	if !ok {
+		t.Fatal("a machine account keytab did not read as a join")
+	}
+	if !d.Joined || d.Kind != KindAD {
+		t.Errorf("got joined=%v kind=%q, want an AD membership", d.Joined, d.Kind)
+	}
+	if d.Domain != "fogad.lab" {
+		t.Errorf("domain %q: the realm should be reported lowercased", d.Domain)
+	}
+	if d.MachineAccount != "FOGAGENT-VM$" {
+		t.Errorf("machine account %q, want FOGAGENT-VM$", d.MachineAccount)
+	}
+}
+
+func TestKeytabWithoutAMachineAccountIsNotAJoin(t *testing.T) {
+	// A plain MIT host keytab, and a one-component principal that is not a
+	// machine account -- what `ktutil add` writes for a user or a service.
+	// The dollar is the only thing separating these from a domain join, so
+	// both have to be rejected: claiming membership here would send the
+	// server looking for a computer object that does not exist.
+	for _, tc := range []struct {
+		name       string
+		components []string
+	}{
+		{"a host principal", []string{"host", "web01.example.com"}},
+		{"a one-component principal with no dollar", []string{"admin"}},
+	} {
+		if d, ok := parseKeytab(keytab(
+			keytabEntry("EXAMPLE.COM", tc.components...),
+		)); ok {
+			t.Errorf("%s: got %+v, read as a domain join", tc.name, d)
+		}
+	}
+}
+
+func TestKeytabDeletedEntryIsSkipped(t *testing.T) {
+	// A removed entry keeps its slot with a negative length -- which is how
+	// a keytab records a machine account superseded by a re-join. Reading
+	// the hole as live reports the OLD account, so the entry left behind
+	// has to differ from the live one for this to prove anything.
+	stale := keytabEntry("OLD.EXAMPLE.COM", "GONE-VM$")
+	binary.BigEndian.PutUint32(stale, uint32(-int32(len(stale)-4)))
+	live := keytabEntry("FOGAD.LAB", "FOGAGENT-VM$")
+	d, ok := parseKeytab(keytab(stale, live))
+	if !ok || d.MachineAccount != "FOGAGENT-VM$" || d.Domain != "fogad.lab" {
+		t.Errorf("got %+v ok=%v, want the live entry, not the hole", d, ok)
+	}
+}
+
+func TestKeytabTruncatedIsNotAJoin(t *testing.T) {
+	full := keytab(keytabEntry("FOGAD.LAB", "FOGAGENT-VM$"))
+	for _, n := range []int{0, 1, 2, 5, len(full) - 3} {
+		if d, ok := parseKeytab(full[:n]); ok {
+			t.Errorf("%d bytes: got %+v, want no answer", n, d)
+		}
+	}
+}
+
 func TestGatherUsesRealmBeforeSSSD(t *testing.T) {
 	// realmd knows whether a join completed; sssd.conf only records what
 	// someone configured. A machine configured for a domain it never
 	// joined must report unjoined.
-	orig := runRealmList
-	defer func() { runRealmList = orig }()
+	isolate(t)
 	runRealmList = func() (string, bool) { return realmDiscoveredOnly, true }
 
 	d, ok := gather()
@@ -158,5 +274,54 @@ func TestGatherUsesRealmBeforeSSSD(t *testing.T) {
 	}
 	if d.Joined {
 		t.Error("a discovered-but-unjoined realm reported as joined")
+	}
+}
+
+func TestGatherReadsTheKeytabWhenRealmdKnowsNothing(t *testing.T) {
+	// The case the lab found: the agent's own adcli join leaves realmd
+	// with nothing to list and writes no sssd.conf, so without the keytab
+	// the machine reports unjoined and the server re-sends the credential
+	// for ever.
+	isolate(t)
+	runRealmList = func() (string, bool) { return realmDiscoveredOnly, true }
+	path := filepath.Join(t.TempDir(), "krb5.keytab")
+	if err := os.WriteFile(path, keytab(keytabEntry("FOGAD.LAB", "FOGAGENT-VM$")), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hostKeytab = path
+
+	d, ok := gather()
+	if !ok {
+		t.Fatal("gather reported no collector ran")
+	}
+	if !d.Joined || d.Domain != "fogad.lab" {
+		t.Errorf("got %+v, want a join to fogad.lab from the keytab", d)
+	}
+}
+
+func TestGatherPrefersSSSDOverNothing(t *testing.T) {
+	// The keytab is missing but sssd is configured: still an answer, and
+	// the ordering must not have broken the fallback.
+	isolate(t)
+	path := filepath.Join(t.TempDir(), "sssd.conf")
+	if err := os.WriteFile(path, []byte("[domain/corp.example.com]\nid_provider = ad\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	sssdConf = path
+
+	d, ok := gather()
+	if !ok || !d.Joined || d.Domain != "corp.example.com" {
+		t.Errorf("got %+v ok=%v, want the sssd domain", d, ok)
+	}
+}
+
+func TestGatherWithNoEvidenceIsAPositiveNotJoined(t *testing.T) {
+	isolate(t)
+	d, ok := gather()
+	if !ok {
+		t.Fatal("gather reported no collector ran; it should answer")
+	}
+	if d.Joined || d.Kind != KindNone {
+		t.Errorf("got %+v, want a positive not-joined", d)
 	}
 }
