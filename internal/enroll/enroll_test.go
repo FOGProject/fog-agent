@@ -1,6 +1,8 @@
 package enroll
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -12,6 +14,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -461,5 +464,42 @@ func TestResultRidesTheCertificate(t *testing.T) {
 	item, _ := gotResult["item"].(map[string]any)
 	if item["id"] != float64(41) || item["status"] != "ran" || item["exit_code"] != float64(3010) {
 		t.Fatalf("item body: %v", gotResult)
+	}
+}
+
+func TestMaybeGzipLeavesSmallBodiesAlone(t *testing.T) {
+	// A poll carrying no facts is a few hundred bytes; compressing it
+	// would cost the server a decode for nothing.
+	body := []byte(`{"agent_version":"1.0.0","applied_revision":"abc"}`)
+	got, encoding := maybeGzip(body)
+	if encoding != "" {
+		t.Errorf("encoding = %q, want none", encoding)
+	}
+	if !bytes.Equal(got, body) {
+		t.Error("a small body must be sent unchanged")
+	}
+}
+
+func TestMaybeGzipCompressesAndRoundTrips(t *testing.T) {
+	// A software list is highly repetitive JSON, which is why this is
+	// worth doing at all: 388 KB measured down to 37 KB on a real host.
+	body := bytes.Repeat([]byte(`{"name":"libfoo","version":"1.2.3","source":"rpm"},`), 2000)
+	got, encoding := maybeGzip(body)
+	if encoding != "gzip" {
+		t.Fatalf("encoding = %q, want gzip", encoding)
+	}
+	if len(got) >= len(body) {
+		t.Errorf("compressed to %d bytes from %d, no saving", len(got), len(body))
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(got))
+	if err != nil {
+		t.Fatal(err)
+	}
+	back, err := io.ReadAll(zr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(back, body) {
+		t.Error("the server would decode something other than what was sent")
 	}
 }

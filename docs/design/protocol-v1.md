@@ -95,6 +95,29 @@ fresh agent and on a build that has just learned a capability. `want_state`
 asks for the state even when that revision is current: the software drift
 check needs the set without anything having moved.
 
+The request also carries **facts** -- what the agent has observed about its
+own host, as opposed to what it has applied:
+
+```json
+{"agent_version": "1.2.3", "applied_revision": "3f1c9a0b…", "want_state": false,
+ "inventory": {"sysman": "Dell Inc.", "…": "…"},
+ "software": [{"name": "openssh-server", "version": "9.6p1", "source": "rpm", "…": "…"}]}
+```
+
+A fact block is present only when the agent's own content hash for it moved,
+or when the previous answer asked with `want_inventory` / `want_software`.
+This is the conditional fetch above run in reverse, and it has the same
+consequence: **absent is "nothing new", never "nothing there"**. An agent
+whose collector cannot run on this platform sends no block rather than an
+empty one, because the server treats a reported list as complete.
+
+**The poll request may be gzipped.** When the body exceeds 16 KB the agent
+compresses it and sets `Content-Encoding: gzip`; the server decodes on that
+header alone. A measured Linux host's software list is 388 KB of JSON and
+37 KB gzipped, which is the difference between fitting the 1 MB body limit
+nginx and Apache ship with and not. No other route compresses: nothing else
+the agent sends is big enough to be worth a decode.
+
 Response `200`:
 
 ```json
@@ -105,7 +128,9 @@ Response `200`:
   "revision": "3f1c9a0b2d4e5f60",
   "poll_interval": 300,
   "server_time": "2026-09-03T12:43:21-05:00",
-  "state": {"revision": "3f1c9a0b2d4e5f60", "capabilities": ["hostname"], "hostname": {"name": "lab-01", "enforce": true}}
+  "state": {"revision": "3f1c9a0b2d4e5f60", "capabilities": ["hostname"], "hostname": {"name": "lab-01", "enforce": true}},
+  "want_inventory": false,
+  "want_software": false
 }
 ```
 
@@ -115,6 +140,12 @@ and the agent has nothing to do but sleep `poll_interval`. This is a
 conditional fetch on a POST, the way an ETag works on a GET, done as a POST
 because the poll also writes: the server records `hostAgentCheckin` and
 `hostAgentVersion` on every one.
+
+`want_inventory` and `want_software` ask for a fact block the server holds
+no current hash for -- a fresh enrollment, a restored database, an admin who
+cleared the row. They are the server's half of the same conditional: it can
+always force a resend, and the agent honors the request on its next poll
+whether or not anything changed locally.
 
 **The revision is opaque.** The agent compares it with the one it applied,
 for equality, and does nothing else with it: never parses it, never orders

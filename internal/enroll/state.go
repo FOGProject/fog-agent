@@ -76,6 +76,22 @@ type Config struct {
 	// PowerFired is the last scheduled firing acted on, kept so a machine
 	// that comes back within the same minute does not fire it again.
 	PowerFired time.Time `json:"power_fired,omitempty"`
+	// InventoryHash and SoftwareHash are the content hashes of the fact
+	// blocks the server has accepted (design 0006 §2). The agent sends a
+	// block only when the hash it computes now differs from these, and
+	// records the new one only after the poll returns 200 -- so a lost
+	// poll resends rather than silently dropping the change.
+	InventoryHash string `json:"inventory_hash,omitempty"`
+	SoftwareHash  string `json:"software_hash,omitempty"`
+	// FactsChecked is when the collectors last ran. They are re-run on
+	// FactsInterval rather than every poll: enumerating a package-managed
+	// host's 2800 packages every five minutes buys nothing.
+	FactsChecked time.Time `json:"facts_checked,omitempty"`
+	// WantInventory and WantSoftware are the server's request from the
+	// last poll answer, honored on the next poll regardless of whether
+	// anything changed locally.
+	WantInventory bool `json:"want_inventory,omitempty"`
+	WantSoftware  bool `json:"want_software,omitempty"`
 }
 
 // State is the on-disk material. Load never generates anything by itself;

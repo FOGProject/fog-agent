@@ -2,6 +2,7 @@ package enroll
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ecdsa"
 	"crypto/tls"
@@ -16,11 +17,15 @@ import (
 	"time"
 
 	"github.com/FOGProject/fog-agent/internal/identity"
+	"github.com/FOGProject/fog-agent/internal/inventory"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
 	"github.com/FOGProject/fog-agent/internal/provider/power"
 	"github.com/FOGProject/fog-agent/internal/provider/snapin"
 	"github.com/FOGProject/fog-agent/internal/provider/software"
 	"github.com/FOGProject/fog-agent/internal/reboot"
+	// The observed program list, aliased because `software` above is the
+	// desired-state install capability: two different things (design 0006).
+	softwarefacts "github.com/FOGProject/fog-agent/internal/software"
 )
 
 // Protocol is the agent protocol version this build speaks.
@@ -83,6 +88,13 @@ type PollRequest struct {
 	// WantState asks for the desired state even at the same revision (a
 	// software drift check needs the set without the revision moving).
 	WantState bool `json:"want_state,omitempty"`
+	// Inventory and Software are facts about the host, carried up the same
+	// route as the desired state comes down (design 0006). They are the
+	// desired-state mechanism in reverse: present only when the agent's own
+	// content hash moved, or when the server asked with want_*. Absent is
+	// "nothing new", never "nothing installed".
+	Inventory *inventory.Inventory    `json:"inventory,omitempty"`
+	Software  []softwarefacts.Program `json:"software,omitempty"`
 }
 
 // PollResponse is what the server can do for this host right now.
@@ -101,6 +113,12 @@ type PollResponse struct {
 	// State is the desired state, present when Revision differs from the
 	// applied revision the agent sent, or when it asked for it.
 	State *DesiredState `json:"state,omitempty"`
+	// WantInventory and WantSoftware ask for a fact block the server has
+	// no current hash for -- a fresh enrollment, a restored database, a
+	// cleared row -- so the agent sends it even though nothing changed
+	// locally (design 0006 §2).
+	WantInventory bool `json:"want_inventory,omitempty"`
+	WantSoftware  bool `json:"want_software,omitempty"`
 }
 
 // DesiredState is what the server wants this host to look like
@@ -210,12 +228,16 @@ func (c *Client) Poll(ctx context.Context, req PollRequest) (*PollResponse, erro
 	if err != nil {
 		return nil, err
 	}
+	body, encoding := maybeGzip(body)
 	hr, err := http.NewRequestWithContext(ctx, http.MethodPost, c.ServerURL+"/agent/v1/poll", bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	hr.Header.Set("Content-Type", "application/json")
 	hr.Header.Set("Accept", "application/json")
+	if encoding != "" {
+		hr.Header.Set("Content-Encoding", encoding)
+	}
 	resp, err := c.HTTP.Do(hr)
 	if err != nil {
 		return nil, err
@@ -236,6 +258,36 @@ func (c *Client) Poll(ctx context.Context, req PollRequest) (*PollResponse, erro
 		return nil, fmt.Errorf("poll: HTTP %d with status %q", resp.StatusCode, out.Status)
 	}
 	return &out, nil
+}
+
+// pollGzipThreshold is the body size above which the poll is compressed.
+// A poll carrying no facts is a few hundred bytes and gains nothing from
+// compression; one carrying a package-managed host's software list measured
+// 388 KB, and 37 KB gzipped (2833 packages, 2026-09-04). Above the
+// threshold the saving is an order of magnitude, and it keeps the body
+// under the 1 MB nginx and Apache accept by default.
+const pollGzipThreshold = 16 << 10
+
+// maybeGzip compresses a request body once it is worth it, returning the
+// bytes to send and the Content-Encoding to declare (empty for none). Any
+// compression failure returns the original body: a larger request is
+// always better than a failed poll.
+func maybeGzip(body []byte) ([]byte, string) {
+	if len(body) <= pollGzipThreshold {
+		return body, ""
+	}
+	var buf bytes.Buffer
+	zw, err := gzip.NewWriterLevel(&buf, gzip.BestSpeed)
+	if err != nil {
+		return body, ""
+	}
+	if _, err := zw.Write(body); err != nil {
+		return body, ""
+	}
+	if err := zw.Close(); err != nil {
+		return body, ""
+	}
+	return buf.Bytes(), "gzip"
 }
 
 // RenewLead is how long before expiry the agent renews. A third of the

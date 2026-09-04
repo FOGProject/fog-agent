@@ -176,10 +176,22 @@ system's "installed software" is every library, not just the things a user
 would call programs. That is the right answer for reporting -- "which hosts
 still run openssl 3.0.x" is exactly the question a fleet admin has -- but it
 makes the software block far larger than Windows' few hundred registry
-entries. The block only moves on change, so the cost is bounded, but the
-poll body must be measured and compressed (Content-Encoding: gzip) rather
-than shipping a few hundred KB uncompressed. Decided at wiring time against a
-real measurement, not a guess.
+entries.
+
+The full poll body for that host measured **397,856 bytes**, and **38,301
+bytes** gzipped at `BestSpeed` -- 10.4x. Two decisions follow:
+
+- **The agent gzips a poll body over 16 KB** and sets `Content-Encoding:
+  gzip`; the server decodes on that header. 388 KB is uncomfortably close to
+  the 1 MB body limit nginx and Apache ship with, and a server with more
+  packages than this one would cross it. A poll with no facts is a few
+  hundred bytes and is left alone: compressing it would cost a decode for
+  nothing. Any compression error falls back to the raw body -- a larger
+  request beats a failed poll.
+- **The collectors run on an interval, not every poll** (`FactsInterval`,
+  one hour). Enumerating 2833 packages every five minutes buys nothing:
+  facts move when someone installs a program, not when the poll fires. The
+  server can always ask sooner with `want_*`, which outranks the interval.
 
 ## 7. What this is not
 

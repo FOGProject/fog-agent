@@ -319,6 +319,11 @@ func runAgent(ctx context.Context, args []string) error {
 		if st.Config.AppliedWith != supportedCapabilities {
 			req.AppliedRevision = ""
 		}
+		// Facts ride up the same request the desired state comes down
+		// (design 0006): sent only when their hash moved or the server
+		// asked, and recorded only once the poll has succeeded.
+		now := time.Now()
+		sent := attachFacts(st, &req, now, out)
 		resp, err := client.Poll(ctx, req)
 		switch {
 		case errors.Is(err, enroll.ErrUnauthorized):
@@ -338,6 +343,9 @@ func runAgent(ctx context.Context, args []string) error {
 			}
 			if resp.PollInterval > 0 {
 				wait = time.Duration(resp.PollInterval) * time.Second
+			}
+			if err := recordFacts(st, sent, resp, now); err != nil {
+				out.say("facts: " + err.Error())
 			}
 			// Renewal rides the same session, once the poll has proved
 			// it. A failed renewal is reported and retried next poll;
