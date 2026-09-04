@@ -355,7 +355,19 @@ func runAgent(ctx context.Context, args []string) error {
 				if *once {
 					return enroll.ErrUnauthorized
 				}
-				continue
+				// NOT continue. This branch changes nothing -- the
+				// certificate is kept and the next poll is byte for byte
+				// the same request -- so skipping the wait at the bottom
+				// of the loop retries the identical failing call as fast
+				// as the network answers. Observed on telliottwin11 over a
+				// six-minute window while the webroot was mid-deploy:
+				// 15,100 identical lines, 1.37 MB of log, every one of
+				// them stamped the same second.
+				//
+				// break leaves the switch, not the loop, so control
+				// reaches waitOrFire like any other poll outcome. Falling
+				// out of this if would run the drop path below instead.
+				break
 			}
 			out.say("server has refused this certificate for " + unauthorizedFor(st, now) +
 				"; enrolling again")
