@@ -81,8 +81,6 @@ var (
 	procCloseHandle          = kernel32.NewProc("CloseHandle")
 	procGlobalMemoryStatusEx = kernel32.NewProc("GlobalMemoryStatusEx")
 	kernel32                 = syscall.NewLazyDLL("kernel32.dll")
-	user32                   = syscall.NewLazyDLL("user32.dll")
-	procEnumDisplayD         = user32.NewProc("EnumDisplayDevicesW")
 )
 
 // IOCTL_STORAGE_QUERY_PROPERTY, and the StorageDeviceProperty query that
@@ -135,7 +133,6 @@ type storageDeviceDescriptor struct {
 var (
 	_ = [1]struct{}{}[unsafe.Sizeof(storagePropertyQuery{})-12]
 	_ = [1]struct{}{}[unsafe.Sizeof(storageDeviceDescriptor{})-28]
-	_ = [1]struct{}{}[unsafe.Sizeof(displayDevice{})-840]
 )
 
 // primaryDisk reports the boot disk's model, serial and firmware.
@@ -235,45 +232,65 @@ func openDevice(path string) (uintptr, error) {
 
 // ---------------------------------------------------------------- the GPUs
 
-// displayDevice is DISPLAY_DEVICEW. The two 128-rune arrays are the reason
-// this is declared rather than read field by field: their sizes are part of
-// the ABI and cb must be the whole struct.
-type displayDevice struct {
-	cb           uint32
-	DeviceName   [32]uint16
-	DeviceString [128]uint16
-	StateFlags   uint32
-	DeviceID     [128]uint16
-	DeviceKey    [128]uint16
-}
+// The display adapter setup class. Every installed adapter has a numbered
+// subkey here carrying the driver's own description and provider.
+const displayClassKey = `SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}`
 
 // gpus reports display adapters as the two comma-joined strings the
 // inventory table keeps.
 //
-// EnumDisplayDevices gives one adapter name per index; it does not split
-// vendor from product the way lspci does, so the whole name goes in
-// products and vendors carries the leading word -- "NVIDIA" out of "NVIDIA
-// Quadro T2000". Guessing further would be inventing structure the API
-// does not provide.
+// This reads the registry rather than calling EnumDisplayDevices, which was
+// the obvious API and does not work here. EnumDisplayDevices enumerates the
+// calling process's window station, and a Windows service has no
+// interactive one -- so it returns FALSE at index 0 with no error set, and
+// the agent silently reported no GPU at all. Proven on the lab host
+// 2026-09-04: the same probe returned zero devices both as SYSTEM in
+// session 0 and over ssh, while the registry returned the adapter in both.
+// The agent only ever runs as a service, so there is no context in which
+// the API call would have worked.
+//
+// The name is not split into vendor and product because the driver does not
+// provide that split: products carries the full description and vendors the
+// driver's ProviderName, falling back to the leading word. Guessing further
+// would be inventing structure that is not there.
 func gpus() (vendors, products string) {
+	k, err := registry.OpenKey(registry.LOCAL_MACHINE, displayClassKey, registry.ENUMERATE_SUB_KEYS)
+	if err != nil {
+		return "", ""
+	}
+	defer k.Close()
+	subs, err := k.ReadSubKeyNames(-1)
+	if err != nil {
+		return "", ""
+	}
+
 	var v, p []string
 	seen := map[string]bool{}
-	for i := 0; i < 16; i++ {
-		var d displayDevice
-		d.cb = uint32(unsafe.Sizeof(d))
-		ok, _, _ := procEnumDisplayD.Call(0, uintptr(i), uintptr(unsafe.Pointer(&d)), 0)
-		if ok == 0 {
-			break
-		}
-		// One adapter reports once per attached monitor, so the same name
-		// arrives several times on a docked laptop.
-		name := strings.TrimSpace(syscall.UTF16ToString(d.DeviceString[:]))
-		if name == "" || seen[name] {
+	for _, sub := range subs {
+		// Adapters are the four-digit instance keys; anything else here is
+		// class-wide configuration.
+		if len(sub) != 4 {
 			continue
 		}
-		seen[name] = true
-		p = append(p, name)
-		v = append(v, strings.Fields(name)[0])
+		sk, err := registry.OpenKey(registry.LOCAL_MACHINE, displayClassKey+`\`+sub, registry.QUERY_VALUE)
+		if err != nil {
+			continue
+		}
+		desc, _, _ := sk.GetStringValue("DriverDesc")
+		prov, _, _ := sk.GetStringValue("ProviderName")
+		match, _, _ := sk.GetStringValue("MatchingDeviceId")
+		sk.Close()
+
+		desc = strings.TrimSpace(desc)
+		if desc == "" || seen[desc] || !physicalAdapter(match) {
+			continue
+		}
+		seen[desc] = true
+		p = append(p, desc)
+		if prov = strings.TrimSpace(prov); prov == "" {
+			prov = strings.Fields(desc)[0]
+		}
+		v = append(v, prov)
 	}
 	return strings.Join(v, ","), strings.Join(p, ",")
 }
@@ -318,7 +335,7 @@ type memoryStatusEx struct {
 }
 
 // A wrong layout here reads garbage rather than failing, so pin the size the
-// same way the disk and display structs in this file are pinned.
+// same way the disk struct in this file is pinned.
 var _ = [1]struct{}{}[unsafe.Sizeof(memoryStatusEx{})-64]
 
 // physicalMemoryMB reports RAM the OS can address, in MB, matching what the

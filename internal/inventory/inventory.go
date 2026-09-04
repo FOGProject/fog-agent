@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // Inventory is a complete hardware snapshot. Every field is always sent (no
@@ -100,4 +101,23 @@ func chassisTypeName(raw string) string {
 		return name
 	}
 	return raw
+}
+
+// physicalAdapter excludes indirect display drivers, which share the Windows
+// display setup class with real hardware but are not adapters anyone wants in
+// an inventory: the lab host reported three "Microsoft Remote Display
+// Adapter" entries (MatchingDeviceId "RdpIdd_IndirectDisplay") beside its one
+// real GPU, and every RDP-enabled machine in a fleet would carry the same
+// noise.
+//
+// Deliberately an exclusion and not a "PCI only" allow-list. Hyper-V's
+// synthetic video adapter sits on VMBUS and a USB dock's on USB, so an
+// allow-list keyed to PCI would silently drop real adapters -- the failure
+// that is hard to notice, because a missing GPU looks like a machine that has
+// none. An unrecognized id is kept.
+//
+// Untagged, next to chassisTypeName, so it can be tested off Windows.
+func physicalAdapter(matchingDeviceID string) bool {
+	id := strings.ToLower(strings.TrimSpace(matchingDeviceID))
+	return !strings.Contains(id, "indirectdisplay") && !strings.HasPrefix(id, `root\`)
 }
