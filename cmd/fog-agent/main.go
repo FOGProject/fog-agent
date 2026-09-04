@@ -28,6 +28,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/provider/printerset"
 	"github.com/FOGProject/fog-agent/internal/provider/snapin"
 	"github.com/FOGProject/fog-agent/internal/provider/software"
+	"github.com/FOGProject/fog-agent/internal/provider/wake"
 	"github.com/FOGProject/fog-agent/internal/reboot"
 )
 
@@ -593,6 +594,20 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 				allOK = false
 			}
 			continue
+		case "wake":
+			// Design 0011: send a magic packet for a FOG host on this
+			// machine's own link, because FOG owns no machine there.
+			// The block names hosts and their MACs and NEVER a
+			// destination -- the agent broadcasts on its own
+			// interfaces, and there is no field in which it could be
+			// aimed anywhere else.
+			if desired.Wake == nil {
+				continue
+			}
+			if !runWake(ctx, client, desired.Revision, desired.Wake, out) {
+				allOK = false
+			}
+			continue
 		case "printers":
 			// The assigned print queues, converged and reported one by
 			// one. Like software and unlike a snapin, nothing here is a
@@ -653,7 +668,7 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 // the Windows lab upgrade to the power build sat on an on-demand shutdown
 // for ten minutes because the old binary had already marked that revision
 // applied, and nothing moved it until an unrelated task did.
-const supportedCapabilities = "hostname,taskreboot,power,software,printers,directory,snapin"
+const supportedCapabilities = "hostname,taskreboot,power,software,printers,directory,wake,snapin"
 
 // needsReconcile says whether the server's revision must be converged: it
 // is not the one applied, or it was applied by a build that handled a
@@ -821,6 +836,45 @@ func runPrinters(ctx context.Context, st *enroll.State, client *enroll.Client, r
 		out.say(fmt.Sprintf("printer %q: %s, outcome %s (%s)", r.Printer.Name, r.Status, outcome, firstLine(why)))
 	}
 	st.Config.PrintersChecked = time.Now()
+	return ok
+}
+
+// runWake broadcasts a magic packet for each FOG host the server named,
+// and reports what went out.
+//
+// Nothing here is stateful and nothing is a task: the block is a list of
+// wakes pending right now, and an outcome closes the server's request
+// rather than moving a revision. An agent that fails to relay has cost the
+// wake nothing that the current path -- fire and forget from a node that
+// cannot reach the link at all -- was not already costing it.
+func runWake(ctx context.Context, client *enroll.Client, revision string, policy *wake.Policy, out *sayer) bool {
+	sender, err := wake.NewUDPSender(ctx)
+	if err != nil {
+		out.say("wake: " + err.Error())
+		return false
+	}
+	defer sender.Close()
+
+	ok := true
+	for _, r := range wake.Run(sender, *policy) {
+		outcome, err := client.Result(ctx, enroll.ResultRequest{
+			Revision: revision, Capability: "wake", Status: provider.StatusApplied,
+			Item: &enroll.ResultItem{ID: r.Target.ID, Status: r.Status,
+				Packets: r.Packets, Details: r.Detail},
+		})
+		if err != nil {
+			out.say(fmt.Sprintf("wake host %d: %s", r.Target.ID, err))
+			ok = false
+			continue
+		}
+		why := r.Detail
+		if r.Error != "" {
+			why = r.Error
+		}
+		out.say(fmt.Sprintf("wake host %d: %s, outcome %s (%s)",
+			r.Target.ID, r.Status, outcome, firstLine(why)))
+	}
+
 	return ok
 }
 

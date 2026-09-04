@@ -19,6 +19,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/directory"
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/inventory"
+	"github.com/FOGProject/fog-agent/internal/network"
 	"github.com/FOGProject/fog-agent/internal/printers"
 	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
@@ -26,6 +27,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/provider/printerset"
 	"github.com/FOGProject/fog-agent/internal/provider/snapin"
 	"github.com/FOGProject/fog-agent/internal/provider/software"
+	"github.com/FOGProject/fog-agent/internal/provider/wake"
 	"github.com/FOGProject/fog-agent/internal/reboot"
 	// The observed program list, aliased because `software` above is the
 	// desired-state install capability: two different things (design 0006).
@@ -146,6 +148,11 @@ type PollRequest struct {
 	// treats a reported list as complete, so a false empty would mark
 	// every assigned printer as missing.
 	Printers *printers.Printers `json:"printers,omitempty"`
+	// Network is which links the machine is on (design 0011 §3). Same
+	// hash gate, and the same rule about absence. This is the fact that
+	// lets the server answer "which awake machine shares a link with the
+	// sleeping one", which is the whole basis of the wake relay.
+	Network *network.Network `json:"network,omitempty"`
 	// Sessions is the user-session report (design 0008): who is logged on
 	// now, and which sessions the agent watched end. Absent when the host's
 	// usertracker module is off, or when this platform has no collector --
@@ -178,6 +185,7 @@ type PollResponse struct {
 	WantSoftware  bool `json:"want_software,omitempty"`
 	WantDirectory bool `json:"want_directory,omitempty"`
 	WantPrinters  bool `json:"want_printers,omitempty"`
+	WantNetwork   bool `json:"want_network,omitempty"`
 	// Error is the server's human sentence when Status is not "ok". FOG
 	// already sends one (Route's agent error path, and the schema-update
 	// answer), and without this field the agent read the status word and
@@ -228,6 +236,12 @@ type DesiredState struct {
 	// marshaler in this process, which is what keeps it out of `--once`
 	// output and out of the state directory.
 	Directory *directoryjoin.Policy `json:"directory,omitempty"`
+	// Wake is the FOG hosts on this machine's own links that the server
+	// wants woken (capability wake, design 0011). Present only when there
+	// is a wake pending for a neighbor, which is almost never. There is
+	// deliberately no destination in it: the agent broadcasts on its own
+	// interfaces, so an agent cannot be aimed.
+	Wake *wake.Policy `json:"wake,omitempty"`
 }
 
 // ResultRequest is what the agent reports for one capability.
@@ -252,7 +266,13 @@ type ResultItem struct {
 	Status           string `json:"status"`
 	ExitCode         int    `json:"exit_code"`
 	InstalledVersion string `json:"installed_version,omitempty"`
-	Details          string `json:"details,omitempty"`
+	// Packets is how many datagrams a wake relay actually put on the wire
+	// (capability wake). Carried as its own field and not left to the
+	// detail sentence because the server stores it as a number an admin
+	// sorts a report by -- and because "sent" with a count of zero is a
+	// lie the existing wake path has no way to catch.
+	Packets int    `json:"packets,omitempty"`
+	Details string `json:"details,omitempty"`
 }
 
 // refuseRedirect stops the HTTP client following a 3xx and reports where it

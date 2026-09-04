@@ -105,6 +105,10 @@ own host, as opposed to what it has applied:
  "directory": {"joined": true, "kind": "ad", "domain": "corp.example.com", "netbios": "CORP",
                "computer_dn": "CN=WS-014,OU=Sales,DC=corp,DC=example,DC=com",
                "machine_account": "WS-014$", "site": "HQ"},
+ "network": {"interfaces": [{"name": "eno1", "mac": "cc:48:3a:5e:11:aa",
+                            "ipv4": "10.20.30.14", "prefix": 24,
+                            "network": "10.20.30.0", "broadcast": "10.20.30.255",
+                            "up": true, "wireless": false}]},
  "sessions": {"open": [{"key": "2", "user": "telliott", "domain": "LAB", "type": "console",
                         "state": "active", "started_at": "2026-09-04T09:12:03Z"}],
               "closed": [{"key": "3", "user": "tom", "type": "remote", "state": "active",
@@ -114,7 +118,17 @@ own host, as opposed to what it has applied:
 
 A fact block is present only when the agent's own content hash for it moved,
 or when the previous answer asked with `want_inventory` / `want_software` /
-`want_directory`.
+`want_directory` / `want_printers` / `want_network`.
+
+`network` is the one collected on **every** poll rather than on the agent's
+hourly fact interval: it is a single `net.Interfaces()` call, where
+enumerating a package-managed host's packages is the most expensive thing
+the agent does, and it is what the server picks wake relays from — so an
+hour of staleness is an hour of asking a laptop that has gone home to
+broadcast on a subnet it left. It still only goes on the wire when its hash
+moves. The server recomputes `network` and `broadcast` from the address and
+prefix and discards the reported values: a host that could claim a network
+it is not on could join any link's relay group it liked.
 This is the conditional fetch above run in reverse, and it has the same
 consequence: **absent is "nothing new", never "nothing there"**. An agent
 whose collector cannot run on this platform sends no block rather than an
@@ -508,6 +522,42 @@ installed list (design 0010 §3).
 The set is re-converged when the revision moves, and otherwise once an hour
 on the facts cadence, so a queue somebody deleted comes back without an
 admin having to touch the assignment.
+
+### Wake
+
+Capability `wake` (module short name `powermanagement`), design 0011. FOG
+hosts on this machine's own links that the server wants woken:
+
+```json
+"wake": {"targets": [{"id": 41, "macs": ["00:11:22:33:44:55"]}]}
+```
+
+**There is no destination in it, and there must never be one.** The agent
+broadcasts on its own interfaces' broadcast addresses and on
+`255.255.255.255`, exactly as a storage node's `WakeOnLan::send()` does,
+and there is no field in which a caller could name anywhere else. An agent
+that accepted a destination would be a UDP reflector for whoever could
+feed it one, and "only the server can feed it one today" is not a property
+worth relying on.
+
+Everything the agent enforces itself rather than trusting the server to
+have got right: the payload is always exactly the 102-byte magic packet;
+the MACs are re-parsed and re-serialized here, so a malformed one becomes
+a refusal rather than a datagram; and at most `MaxTargets` (32) are acted
+on per poll — a constant in the agent, not a number the server supplies,
+because an agent whose traffic ceiling is set by whatever answers its poll
+has no ceiling.
+
+| Step | Route | Notes |
+|---|---|---|
+| report | `POST /agent/v1/result` with `item: {id, status, packets, details}` | `id` is the host that was woken — the only item report whose id is not the reporting host's own; `status` is `sent` or `failed`; `packets` is how many datagrams actually went out |
+
+The server refuses a result for which there is no pending request naming
+this sender and that target (404). That pending row is the authorization:
+without it any enrolled agent could write a result against any host.
+
+The block is absent for essentially every host on essentially every poll,
+and absent is not an empty instruction.
 
 ### Directory
 

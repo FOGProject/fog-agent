@@ -7,6 +7,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/directory"
 	"github.com/FOGProject/fog-agent/internal/enroll"
 	"github.com/FOGProject/fog-agent/internal/inventory"
+	"github.com/FOGProject/fog-agent/internal/network"
 	"github.com/FOGProject/fog-agent/internal/printers"
 	"github.com/FOGProject/fog-agent/internal/software"
 )
@@ -41,6 +42,7 @@ type sentFacts struct {
 	software  string
 	directory string
 	printers  string
+	network   string
 }
 
 // attachFacts runs the collectors when due and hangs onto the request only
@@ -50,6 +52,24 @@ type sentFacts struct {
 // as removed, so a false empty would wipe a host's history (design 0006 §6).
 func attachFacts(st *enroll.State, req *enroll.PollRequest, now time.Time, out *sayer) sentFacts {
 	var sent sentFacts
+	if st.Config.FactsDisabled {
+		return sent
+	}
+	// The interfaces are gathered on EVERY poll, not on FactsInterval.
+	// The others are expensive -- enumerating a package-managed host is
+	// the most costly thing this agent does -- and this one is a single
+	// syscall the runtime already caches nothing for. The accuracy is
+	// worth it: this is the fact the wake relay picks senders from, so an
+	// hour of staleness is an hour of the server asking a laptop that has
+	// gone home to broadcast on a subnet it left (design 0011 section 3).
+	// It still only goes on the wire when the hash moves.
+	if n, ok := network.Gather(); ok {
+		if h := n.Hash(); h != st.Config.NetworkHash || st.Config.WantNetwork {
+			req.Network = &n
+			sent.network = h
+		}
+	}
+
 	if !factsDue(st.Config, now) {
 		return sent
 	}
@@ -79,13 +99,19 @@ func attachFacts(st *enroll.State, req *enroll.PollRequest, now time.Time, out *
 		}
 	}
 	if sent.inventory != "" || sent.software != "" || sent.directory != "" ||
-		sent.printers != "" {
+		sent.printers != "" || sent.network != "" {
 		queues := 0
 		if req.Printers != nil {
 			queues = len(req.Printers.Installed)
 		}
-		out.say(fmt.Sprintf("facts: sending inventory=%t software=%d directory=%t printers=%d",
-			req.Inventory != nil, len(req.Software), req.Directory != nil, queues))
+		links := 0
+		if req.Network != nil {
+			links = len(req.Network.Interfaces)
+		}
+		out.say(fmt.Sprintf(
+			"facts: sending inventory=%t software=%d directory=%t printers=%d network=%d",
+			req.Inventory != nil, len(req.Software), req.Directory != nil,
+			queues, links))
 	}
 	return sent
 }
@@ -98,18 +124,20 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	// Config holds slices, so it is not comparable; the fields this
 	// function owns are, and they are the only ones that can have moved.
 	type owned struct {
-		inv, soft, dir, print            string
-		checked                          time.Time
-		wantI, wantS, wantD, wantP, offX bool
+		inv, soft, dir, print, net              string
+		checked                                 time.Time
+		wantI, wantS, wantD, wantP, wantN, offX bool
 	}
 	// One snapshot function rather than two literals: the pair only means
 	// anything if both sides list the same fields in the same order, and a
 	// field added to one and not the other silently stops persisting.
 	snapshot := func() owned {
 		return owned{st.Config.InventoryHash, st.Config.SoftwareHash,
-			st.Config.DirectoryHash, st.Config.PrintersHash, st.Config.FactsChecked,
+			st.Config.DirectoryHash, st.Config.PrintersHash, st.Config.NetworkHash,
+			st.Config.FactsChecked,
 			st.Config.WantInventory, st.Config.WantSoftware,
-			st.Config.WantDirectory, st.Config.WantPrinters, st.Config.FactsDisabled}
+			st.Config.WantDirectory, st.Config.WantPrinters, st.Config.WantNetwork,
+			st.Config.FactsDisabled}
 	}
 	before := snapshot()
 
@@ -128,12 +156,16 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	if sent.printers != "" {
 		st.Config.PrintersHash = sent.printers
 	}
+	if sent.network != "" {
+		st.Config.NetworkHash = sent.network
+	}
 	// The answer is authoritative: the server stops asking once it holds
 	// a hash, so assigning rather than or-ing is what clears the flags.
 	st.Config.WantInventory = resp.WantInventory
 	st.Config.WantSoftware = resp.WantSoftware
 	st.Config.WantDirectory = resp.WantDirectory
 	st.Config.WantPrinters = resp.WantPrinters
+	st.Config.WantNetwork = resp.WantNetwork
 	// Absent leaves the setting alone: a server too old to send the gate
 	// must not read as one that turned it off.
 	if resp.CollectFacts != nil {
