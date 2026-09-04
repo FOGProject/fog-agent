@@ -198,16 +198,23 @@ observation.
 
 ```
 hdID  hdHostID  hdJoined  hdKind  hdDomain  hdNetbios  hdComputerDN
-hdMachineAccount  hdSite  hdCheckedAt  hdMovedAt  hdMoveError
+hdMachineAccount  hdSite  hdObservedAt
 ```
 
 `hdComputerDN` is the load-bearing column: it is what a server-side Modify DN
 needs, and having the agent report it means the server does not have to search
 the directory for the object by name and guess between duplicates.
 
-`hdMovedAt`/`hdMoveError` record the last placement attempt, because a Modify
-DN that failed (no rights, object moved by someone else, OU does not exist)
-must be visible in the UI rather than retried silently forever.
+`hdObservedAt` is when this membership was last **reported**, not when it was
+last confirmed true. The agent hash-gates the block, so an unchanged
+membership is never sent and a column called `hdCheckedAt` would be claiming a
+freshness nobody checked. *Is this still true* is answered by the host's own
+`hostAgentCheckin`, which the report shows in its own column beside it.
+
+Placement columns (`hdMovedAt`, `hdMoveError`, recording a Modify DN that
+failed for want of rights or a missing OU) belong with §5 and are not in the
+v1 table. Adding them is one more schema step when §5 is decided; carrying
+them now would be shipping the shape of a feature nobody has approved.
 
 ## 5. Placement, server side
 
