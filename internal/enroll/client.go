@@ -22,6 +22,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/printers"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
 	"github.com/FOGProject/fog-agent/internal/provider/power"
+	"github.com/FOGProject/fog-agent/internal/provider/printerset"
 	"github.com/FOGProject/fog-agent/internal/provider/snapin"
 	"github.com/FOGProject/fog-agent/internal/provider/software"
 	"github.com/FOGProject/fog-agent/internal/reboot"
@@ -215,6 +216,9 @@ type DesiredState struct {
 	// Power is the host's shutdown and reboot schedules plus any
 	// on-demand action waiting (capability power).
 	Power *power.Policy `json:"power,omitempty"`
+	// Printers is the host's assigned print queues and how far FOG is to
+	// go in enforcing them (capability printers).
+	Printers *printerset.Policy `json:"printers,omitempty"`
 }
 
 // ResultRequest is what the agent reports for one capability.

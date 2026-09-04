@@ -349,12 +349,52 @@ Providers, in the shape design 0001 already uses:
 
 | Platform | Add | Remove | Default | List |
 |---|---|---|---|---|
-| CUPS | `lpadmin -p <name> -E -v <uri> -m <model>` or `-P <ppd>` | `lpadmin -x <name>` | `lpoptions -d <name>` | `lpstat -v` |
+| CUPS | `lpadmin -p <name> -E -v <uri>` plus `-m <model>`, `-P <ppd>`, `-m everywhere` or nothing | `lpadmin -x <name>` | `lpadmin -d <name>` | `lpstat -v` |
 | Windows | `Add-Printer` / `Add-PrinterPort` + `Add-PrinterDriver` | `Remove-Printer` | `(Get-CimInstance Win32_Printer).SetDefaultPrinter()` | `Get-Printer` |
 
 `lpstat -v` rather than `lpstat -p`, because `-v` prints the device URI
 alongside the queue name and `-p` does not — and the URI is what the report
 needs to compare.
+
+`lpadmin -d` rather than `lpoptions -d` for the default: `lpoptions` writes a
+per-user default into that user's `~/.cups/lpoptions`, and the agent runs as
+root, so it would set the default for nobody who actually prints.
+
+An empty driver means two different things depending on where the queue points,
+and getting that wrong stops the queue being created at all. Over IPP it means
+driverless — `-m everywhere`, the printer describing its own capabilities, which
+FOG's `pDefFile`/`pModel` pair has never been able to express. Over `socket://`,
+`lpd://` or `smb://` it means a **raw** queue, which is what a `Local` or
+`Network` printer with no model has always been, and `lpadmin` makes one when
+given no `-m` at all. Asking for `everywhere` at a socket device is refused —
+`lpadmin: IPP Everywhere driver requires an IPP connection` — and that is the
+common case, a printer defined the oldest way FOG allows.
+
+Two things the agent does not do, both deliberate:
+
+- **It never compares the driver.** The driver string the collector observes
+  is the spooler's own (`printer-make-and-model` reads `Canon MF650C Series
+  UFR II`) and not the string passed to `lpadmin -m`. Comparing them finds a
+  difference on every poll, orders an update that changes nothing, and finds
+  the same difference again forever — `lpadmin` against every printer in the
+  estate every five minutes. The URI is the identity; the driver is applied
+  at creation and left alone.
+- **It changes nothing when it cannot read what is installed.** An unreadable
+  installed set would decide "not installed" for every assigned printer and
+  reinstall the lot. It reports `unsupported` against each one instead, with
+  the reason, which is a thing an admin can see and the legacy client's
+  answer to the same situation was silence.
+
+Reading is deliberately not a provider method: the observed set comes from
+the same collector that reports the facts in §3. One reader means the
+convergence and the report cannot disagree about what is on the machine,
+which is the disagreement that would make both untrustworthy.
+
+The set is re-converged when the revision moves, and otherwise once an hour on
+the same cadence the facts collectors run — because looking at the printer set
+is the act the collector already performs on that schedule. Without it
+`assigned` would not actually mean *maintains*: a user who deletes a queue
+would keep it deleted until an admin happened to edit the assignment.
 
 ## 6. Reporting
 

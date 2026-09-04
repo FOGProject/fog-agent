@@ -19,9 +19,11 @@ import (
 
 	"github.com/FOGProject/fog-agent/internal/enroll"
 	"github.com/FOGProject/fog-agent/internal/identity"
+	"github.com/FOGProject/fog-agent/internal/printers"
 	"github.com/FOGProject/fog-agent/internal/provider"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
 	"github.com/FOGProject/fog-agent/internal/provider/power"
+	"github.com/FOGProject/fog-agent/internal/provider/printerset"
 	"github.com/FOGProject/fog-agent/internal/provider/snapin"
 	"github.com/FOGProject/fog-agent/internal/provider/software"
 	"github.com/FOGProject/fog-agent/internal/reboot"
@@ -576,6 +578,20 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 				allOK = false
 			}
 			continue
+		case "printers":
+			// The assigned print queues, converged and reported one by
+			// one. Like software and unlike a snapin, nothing here is a
+			// task: the set is read fresh every time and an outcome
+			// refreshes a row rather than closing one.
+			if desired.Printers == nil {
+				st.Config.PrintersManaged = false
+				continue
+			}
+			st.Config.PrintersManaged = desired.Printers.Manage != printerset.ManageOff && desired.Printers.Manage != ""
+			if !runPrinters(ctx, st, client, desired.Revision, desired.Printers, out) {
+				allOK = false
+			}
+			continue
 		case "snapin":
 			// The queue in the server's run order, one at a time. A
 			// task that could not be fetched stays open for the next
@@ -622,7 +638,7 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 // the Windows lab upgrade to the power build sat on an on-demand shutdown
 // for ten minutes because the old binary had already marked that revision
 // applied, and nothing moved it until an unrelated task did.
-const supportedCapabilities = "hostname,taskreboot,power,software,snapin"
+const supportedCapabilities = "hostname,taskreboot,power,software,printers,snapin"
 
 // needsReconcile says whether the server's revision must be converged: it
 // is not the one applied, or it was applied by a build that handled a
@@ -743,6 +759,63 @@ func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, r
 	return ok
 }
 
+// runPrinters converges the assigned print queues and reports every one of
+// them, including the ones that needed nothing. It returns false only when a
+// report did not land.
+//
+// The two ways nothing can be attempted are reported rather than swallowed:
+// no lpadmin, and an installed set that could not be read. The second is the
+// one worth spelling out -- converging against an unknown installed set would
+// decide "not installed" for every printer and run lpadmin against the whole
+// estate every poll, which is the hot loop this design keeps avoiding.
+func runPrinters(ctx context.Context, st *enroll.State, client *enroll.Client, revision string, policy *printerset.Policy, out *sayer) bool {
+	if !st.Config.PrintersManaged {
+		return true
+	}
+	backend := printerset.Native()
+	var reports []printerset.Report
+	switch observed, read := printers.Gather(); {
+	case !read:
+		reports = printerset.Unsupported(*policy, "the installed printers could not be read; nothing was changed")
+	default:
+		if ok, why := backend.Available(); !ok {
+			reports = printerset.Unsupported(*policy, why)
+			break
+		}
+		reports = printerset.Converge(ctx, backend, *policy, observed)
+	}
+
+	ok := true
+	for _, r := range reports {
+		outcome, err := client.Result(ctx, enroll.ResultRequest{
+			Revision: revision, Capability: "printers", Status: provider.StatusApplied,
+			Item: &enroll.ResultItem{ID: r.Printer.ID, Status: r.Status, Details: r.Error},
+		})
+		if err != nil {
+			out.say(fmt.Sprintf("printer %q: %s", r.Printer.Name, err))
+			ok = false
+			continue
+		}
+		// The provider's own words when there are any: a printer that
+		// would not install is the whole reason this capability exists,
+		// and the reason it did not is the useful half of the line.
+		why := r.Detail
+		if r.Error != "" {
+			why = r.Error
+		}
+		out.say(fmt.Sprintf("printer %q: %s, outcome %s (%s)", r.Printer.Name, r.Status, outcome, firstLine(why)))
+	}
+	st.Config.PrintersChecked = time.Now()
+	return ok
+}
+
+// printersDriftDue says whether the assigned printers should be re-converged
+// without the revision having moved. FactsInterval, because that is the
+// cadence at which the agent looks at the printer set anyway.
+func printersDriftDue(cfg enroll.Config, now time.Time) bool {
+	return cfg.PrintersManaged && now.Sub(cfg.PrintersChecked) >= FactsInterval
+}
+
 // blockedCleared says whether a backend that was missing at the last run
 // is there now; a stat, so it costs nothing per poll.
 func blockedCleared(st *enroll.State) bool {
@@ -772,18 +845,27 @@ func firstLine(s string) string {
 
 // driftMayBeDue is the cheap half of the drift decision, made before the
 // poll so the state can be asked for: the interval the last reconcile
-// saw has passed, or a blocked set may have become runnable.
+// saw has passed, a blocked set may have become runnable, or the printers
+// are due another look.
 func driftMayBeDue(st *enroll.State) bool {
+	return softwareDriftMayBeDue(st) || printersDriftDue(st.Config, time.Now())
+}
+
+// softwareDriftMayBeDue is that decision for the software set alone.
+func softwareDriftMayBeDue(st *enroll.State) bool {
 	return st.Config.SoftwareDrift > 0 && (time.Since(st.Config.SoftwareChecked) >= time.Duration(st.Config.SoftwareDrift)*time.Second || blockedCleared(st))
 }
 
-// drift converges the software block of a state whose revision has not
-// moved, leaving the applied revision alone.
+// drift converges the parts of a state whose revision has not moved,
+// leaving the applied revision alone. Each subsystem decides for itself
+// whether it is due; the poll asked for the state because at least one was.
 func drift(ctx context.Context, st *enroll.State, client *enroll.Client, desired *enroll.DesiredState, out *sayer) error {
-	if !driftDue(st, desired.Software, time.Now()) {
-		return nil
+	if driftDue(st, desired.Software, time.Now()) {
+		runSoftware(ctx, st, client, desired.Revision, desired.Software, out)
 	}
-	runSoftware(ctx, st, client, desired.Revision, desired.Software, out)
+	if desired.Printers != nil && printersDriftDue(st.Config, time.Now()) {
+		runPrinters(ctx, st, client, desired.Revision, desired.Printers, out)
+	}
 	return st.SaveConfig()
 }
 

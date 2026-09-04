@@ -71,6 +71,16 @@ type Config struct {
 	// at all (Chocolatey missing); the binary is then looked for every
 	// poll so installing it converges the host at once.
 	SoftwareBlocked bool `json:"software_blocked,omitempty"`
+	// PrintersManaged is set when the last reconcile saw a printers mode
+	// other than off, and PrintersChecked is when the set was last
+	// converged. Together they are the printers drift check: a user who
+	// deletes an assigned queue gets it back without an admin having to
+	// touch the assignment to move the revision. There is no server-sent
+	// interval for this the way software has one -- the cadence is
+	// FactsInterval, because looking at the printer set is the same act
+	// the facts collector already performs on that schedule.
+	PrintersManaged bool      `json:"printers_managed,omitempty"`
+	PrintersChecked time.Time `json:"printers_checked,omitzero"`
 	// PowerSchedules is the host's resolved shutdown and reboot schedules
 	// as of the last reconcile, fired by the run loop between polls.
 	PowerSchedules []power.Schedule `json:"power_schedules,omitempty"`

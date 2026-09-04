@@ -451,6 +451,64 @@ pipeline can be proven with a shim on Linux. Detection is `choco list -r`
 (`--local-only` added on 1.x, which 2.x rejects). A host without the
 binary reports `cannot_run` for every entry.
 
+### Printers
+
+Capability `printers` (module short name `printermanager`), design 0010.
+The block is the host's resolved printer assignments plus how far FOG is to
+go in enforcing them:
+
+```json
+"printers": {
+  "manage": "assigned",
+  "default": "Accounts-HP4550",
+  "printers": [
+    {"id": 12, "name": "Accounts-HP4550",
+     "uri": "socket://10.0.4.20:9100",
+     "driver": "HP Universal Printing PCL 6"}
+  ]
+}
+```
+
+`manage` is `off`, `assigned` or `exclusive` — words rather than the
+`0`/`a`/`ar` the legacy client is sent, which are not written down anywhere
+an admin can see. `off` touches nothing; `assigned` installs and maintains
+what FOG assigned and leaves everything else alone; `exclusive` also removes
+what FOG did not assign.
+
+`uri` is the device URI, derived on the server from the printer's type and
+address when nothing was set explicitly, so a printer created years ago
+still works. An empty `uri` is a configuration gap, not an instruction: the
+agent attempts nothing and reports it against that printer, which is the
+only way it becomes visible. An empty `driver` is a value — driverless, IPP
+Everywhere — and not a missing field.
+
+| Step | Route | Notes |
+|---|---|---|
+| report | `POST /agent/v1/result` with `item: {id, status, details}` | `status` is `converged`, `installed`, `updated`, `removed`, `failed` or `unsupported`; `details` is the provider's message, kept only for the two that did not settle. The server answers `{"status":"ok","outcome":…}` |
+
+Every assigned printer is reported on every run, including the ones that
+needed nothing: the server reads `converged` as "still true" and silence as
+unknown. The four settled statuses clear any error recorded against the
+printer, so a report never shows a stale message against a queue that is
+now installed.
+
+The **driver is never compared**. What the collector observes is the
+spooler's own vocabulary (`printer-make-and-model` reads
+`Canon MF650C Series UFR II`) and not the string that was passed to
+`lpadmin -m`; comparing them would order an update on every poll that
+changed nothing and found the same difference again forever. The URI is the
+identity — it is what the spooler reports back verbatim and what decides
+where the job goes — and the driver is applied at creation and left alone.
+
+Removals under `exclusive` are performed but not reported per printer:
+they are queues FOG never assigned, so there is no row to hang a result on.
+They reach the server as the next facts report, simply gone from the
+installed list (design 0010 §3).
+
+The set is re-converged when the revision moves, and otherwise once an hour
+on the facts cadence, so a queue somebody deleted comes back without an
+admin having to touch the assignment.
+
 ## POST /agent/v1/result
 
 What one provider did at one revision, or what happened to one thing
