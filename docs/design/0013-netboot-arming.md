@@ -14,10 +14,18 @@ come first and preferring the active IPv4 NIC entry to the active IPv6 one
 that follows it. The parser's test fixtures are that machine's own
 `Boot####` bytes.
 
-What is **not** yet proven is `Arm()` end to end: writing `BootNext` and
-watching a machine come up in FOS because of it. The lab's Windows guest is
-the VirtualBox case described in section 3 — it has no network `Boot####` to
-point at — so it exercises the refusal path and not the success path.
+`Arm()` and `Disarm()` are verified against real efivarfs too — writing
+`BootNext` produced `07 00 00 00 03 00` on disk (the NV|BS|RT attribute word
+then the option number little-endian), read back correctly, and deleted
+cleanly including the immutable-flag handling. No reboot happened between the
+write and the delete, so the firmware never acted on it.
+
+What is **not** proven is the last step: a machine actually coming up in FOS
+because `BootNext` was set. That is a UEFI guarantee rather than anything in
+this package, and testing it means rebooting a real machine into PXE. Both
+VirtualBox guests in the lab are the case section 3 describes — no network
+`Boot####` to point at — so they exercise the refusal path and not the
+success path.
 
 ---
 

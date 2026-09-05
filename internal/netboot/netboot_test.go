@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"unicode/utf16"
 )
@@ -40,6 +41,16 @@ const (
 		"d01b4ce650005800450020004900500076003400200049006e00740065006c0028005200290020004500740068006500" +
 		"72006e0065007400200043006f006e006e0065006300740069006f006e00200028003100310029002000490032003100" +
 		"39002d004c004d0000007fff04000000424f"
+
+	// "UEFI VBOX HARDDISK ...": a VirtualBox EFI guest's disk entry, read
+	// from that VM's NVRAM on 2026-09-05. Its device path contains a
+	// MESSAGING node -- type 0x03, subtype 0x12, SATA -- which is exactly
+	// the case that separates "this path has a messaging node" from "this
+	// path is a network boot". A check written the lazy way would arm the
+	// hard disk.
+	fixtureVBoxSATA = "01000000200055004500460049002000560042004f005800200048004100520044004400490053004b002000560042006" +
+		"30065003000380030003800340061002d00340039003100360062003700310038002000000002010c00d041030a00000000010106000" +
+		"00d03120a000000ffff00007fff04004eac0881119f594d850ee21a522c59b2"
 
 	// "Onboard NIC(IPV6)": a network path exactly like the one above, but
 	// its attributes are 00000000 -- LOAD_OPTION_ACTIVE is CLEAR. The
@@ -177,6 +188,22 @@ func TestNodesAfterTheEndOfPathNodeAreNotPartOfTheDevicePath(t *testing.T) {
 	dp := append(append(append([]byte{}, acpi...), end...), macNode()...)
 	if network, _ := devicePathIsNetwork(dp); network {
 		t.Error("a MAC node in the padding after the end-of-path node was treated as part of the path")
+	}
+}
+
+// Not every messaging node is a network node. A SATA disk hangs off one
+// too, and arming it would boot the machine to the very disk this whole
+// design exists to avoid.
+func TestAMessagingNodeThatIsNotANetworkNodeDoesNotCount(t *testing.T) {
+	lo, err := parseLoadOption(mustHex(t, fixtureVBoxSATA))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if !strings.HasPrefix(lo.description, "UEFI VBOX HARDDISK") {
+		t.Errorf("description = %q", lo.description)
+	}
+	if lo.network {
+		t.Error("a SATA messaging node was treated as a network boot")
 	}
 }
 
