@@ -36,12 +36,52 @@ func TestATaskRebootIsWithheldWhenNothingCanBeArmed(t *testing.T) {
 	}
 }
 
+// A BIOS machine must still reboot for a task.
+//
+// This is the regression the withholding policy nearly shipped. Most of
+// FOG's fleet has always reached FOS on a BIOS machine whose firmware boot
+// order is network-first -- no arming, nothing for the agent to do. There
+// are no EFI variables there, so Find() returns ErrUnsupported, and holding
+// the task back on that would stop every one of those machines imaging.
+//
+// The distinction: ErrNoOption says the firmware HAS a boot manager holding
+// no network entry, which is evidence. ErrUnsupported says only that there
+// is no boot manager to ask, which is not.
+func TestABiosMachineStillRebootsForATask(t *testing.T) {
+	pending := []reboot.Reason{taskReason(42), namedReason("hostname")}
+	act, withheld, refusal := planReboot(pending, netboot.ErrUnsupported)
+
+	if len(act) != 2 {
+		t.Errorf("acting on %d reason(s), want both: a BIOS machine images "+
+			"today by its own boot order and must keep doing so", len(act))
+	}
+	if withheld != nil {
+		t.Errorf("withheld %+v, want nothing held back on a machine with no "+
+			"boot manager to consult", withheld)
+	}
+	if refusal != "" {
+		t.Errorf("refusal %q, want none: the task is not being refused", refusal)
+	}
+}
+
+// The same for a failure that is a failed measurement rather than a
+// finding. "I could not look" is not "there is nothing there".
+func TestAnUnreadableFirmwareDoesNotHoldTheTask(t *testing.T) {
+	pending := []reboot.Reason{taskReason(9)}
+	act, withheld, refusal := planReboot(pending, errors.New("efivarfs is read-only"))
+
+	if len(act) != 1 || withheld != nil || refusal != "" {
+		t.Errorf("act=%d withheld=%+v refusal=%q, want the reboot to proceed unarmed",
+			len(act), withheld, refusal)
+	}
+}
+
 // A machine must not be held hostage by a task it cannot serve: everything
 // that is not a task still gets its reboot, because those want the machine
 // back in its own OS, which a plain reboot delivers.
 func TestOnlyTheTaskReasonIsWithheld(t *testing.T) {
 	pending := []reboot.Reason{taskReason(42), namedReason("hostname"), namedReason("software")}
-	act, withheld, refusal := planReboot(pending, netboot.ErrUnsupported)
+	act, withheld, refusal := planReboot(pending, netboot.ErrNoOption)
 
 	if len(withheld) != 1 || withheld[0].Source != reboot.SourceTask {
 		t.Errorf("withheld = %+v, want only the task reason", withheld)
@@ -83,30 +123,53 @@ func TestAFirmwareFailureWithNoTaskHoldsNothing(t *testing.T) {
 	}
 }
 
-// The two failures need different fixes -- a BIOS machine needs its boot
-// order changed, a UEFI machine needs PXE switched on in setup -- so the
-// sentences an admin reads must not be interchangeable.
-func TestTheTwoRefusalsReadDifferently(t *testing.T) {
-	noUEFI := netbootRefusal(netboot.ErrUnsupported)
+// The two failures need different sentences, and now they also mean
+// different things: one refuses the task, the other explains why the reboot
+// is going ahead unarmed. Reading alike would be worse than before, because
+// an admin would not be able to tell a held task from a running one.
+func TestARefusalAndANoteAreNotInterchangeable(t *testing.T) {
 	noEntry := netbootRefusal(netboot.ErrNoOption)
+	noUEFI := netbootNote(netboot.ErrUnsupported)
 
 	if noUEFI == noEntry {
 		t.Fatal("both firmware failures produce the same sentence")
 	}
-	for _, c := range []struct {
-		got, want string
-	}{
-		{noUEFI, "boot from the network"},
-		{noEntry, "firmware setup"},
-	} {
-		if !strings.Contains(c.got, c.want) {
-			t.Errorf("%q does not tell the admin what to do (looking for %q)", c.got, c.want)
+	if !strings.Contains(noEntry, "firmware setup") {
+		t.Errorf("%q does not tell the admin what to change", noEntry)
+	}
+	// The note must not read as a refusal: the task IS proceeding.
+	for _, word := range []string{"cannot be armed", "withheld", "will not"} {
+		if strings.Contains(noUEFI, word) {
+			t.Errorf("the BIOS note reads like a refusal (%q): %q", word, noUEFI)
 		}
+	}
+	if !strings.Contains(noUEFI, "as it always has") {
+		t.Errorf("the BIOS note does not say the machine behaves as before: %q", noUEFI)
 	}
 
 	other := netbootRefusal(errors.New("efivarfs is read-only"))
 	if !strings.Contains(other, "efivarfs is read-only") {
 		t.Errorf("an unexpected failure lost its cause: %q", other)
+	}
+	if !strings.Contains(netbootNote(errors.New("boom")), "boom") {
+		t.Error("the note lost the cause of an unexpected failure")
+	}
+}
+
+// The policy itself, stated once so it cannot drift by accident.
+func TestOnlyAMissingBootEntryHoldsATask(t *testing.T) {
+	for _, c := range []struct {
+		err  error
+		want bool
+		why  string
+	}{
+		{netboot.ErrNoOption, true, "a boot manager with no network entry is evidence"},
+		{netboot.ErrUnsupported, false, "no boot manager to ask is not evidence"},
+		{errors.New("efivarfs is read-only"), false, "a failed read is not evidence"},
+	} {
+		if got := withholdsTask(c.err); got != c.want {
+			t.Errorf("withholdsTask(%v) = %v, want %v: %s", c.err, got, c.want, c.why)
+		}
 	}
 }
 

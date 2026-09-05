@@ -82,13 +82,34 @@ If the firmware has no network boot option, arming is impossible. Rebooting
 anyway takes the machine away from whoever is using it and achieves exactly
 nothing. So:
 
-> When a task reason is pending and the agent cannot arm a network boot, it
-> does not reboot for that task. It reports why, and the task stays queued.
+> When a task reason is pending and the firmware **has a boot manager that
+> holds no network entry**, the agent does not reboot for that task. It
+> reports why, and the task stays queued.
 
 This turns the worst failure mode FOG has here — "I queued an image and
 nothing ever happened" — into a sentence on the host: *this machine has no
 network boot entry in its firmware*. That is a thing an admin can act on. A
 reboot loop is not.
+
+**Only that one failure withholds, and the distinction is the whole rule.**
+`ErrNoOption` is a fact about the machine: there is a boot manager, and it
+lists no network entry, so a reboot provably lands on the local disk.
+`ErrUnsupported` is not a fact about where the machine will boot — only that
+there is no boot manager to ask. That is a BIOS/CSM machine, which is how
+most of FOG's fleet has always reached FOS: by a firmware boot order set to
+network-first that the agent cannot see and never could. Withholding there
+would stop every one of those machines imaging, in order to prevent a reboot
+that in all likelihood works — a worse failure than the one this document
+set out to fix, and exactly the behavior change section 7 promises not to
+make. Any other error is a failed measurement rather than a finding, and
+gets the same benefit of the doubt: "I could not look" is not "there is
+nothing there".
+
+An unarmed reboot still says so in the log, because a task reboot that went
+ahead without arming is otherwise indistinguishable from one that was armed.
+
+This was very nearly shipped the other way round. The first implementation
+withheld on any `Find()` failure, which reads as cautious and is not.
 
 Measured, and the reason this case is not hypothetical: VirtualBox's EDK2
 firmware offers `UEFI PXEv4 (MAC:...)` in its interactive Boot Manager menu
@@ -168,6 +189,19 @@ finding in 0012 section 5: reading these variables needed no privilege at all.
 
 macOS is unsupported rather than best-effort. Apple's platforms do not netboot
 into FOS and there is no honest thing to do here.
+
+**BIOS/CSM is unsupported in the same sense, and that is not the same as
+blocked.** There is no `BootNext` on a BIOS machine, so the agent arms
+nothing — and then reboots anyway, exactly as it does today, letting the
+firmware's own boot order carry the machine to the network. See section 3:
+unsupported is the absence of a measurement, not a finding that the task
+cannot be reached.
+
+Verified on VirtualBox 7.2 (`telliottwin11`, 2026-09-05), which does accept
+a runtime variable write from inside the guest as `NT AUTHORITY\SYSTEM` —
+`SetFirmwareEnvironmentVariableW("BootNext", …)` succeeds and reads back —
+so the write half of this design works on the lab's own VMs even though
+their firmware persists no network entry to point it at.
 
 ## 6. Where it hooks in
 

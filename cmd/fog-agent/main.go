@@ -1052,6 +1052,11 @@ func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, ou
 	reasons, withheld, refusal := planReboot(st.Config.PendingReboot, findErr)
 	if refusal != "" {
 		out.say("netboot: " + refusal)
+	} else if findErr != nil && hasTaskReason(st.Config.PendingReboot) {
+		// Not armed, but not held back either. Said out loud because an
+		// unarmed task reboot is otherwise indistinguishable in the log
+		// from an armed one.
+		out.say("netboot: " + netbootNote(findErr))
 	}
 
 	if len(reasons) == 0 {
@@ -1140,7 +1145,7 @@ var findNetboot = netboot.Find
 // reboot delivers, so those are unaffected by there being nowhere to
 // netboot to.
 func planReboot(pending []reboot.Reason, findErr error) (act, withheld []reboot.Reason, refusal string) {
-	if findErr == nil {
+	if findErr == nil || !withholdsTask(findErr) {
 		return pending, nil, ""
 	}
 	for _, r := range pending {
@@ -1165,19 +1170,47 @@ func hasTaskReason(reasons []reboot.Reason) bool {
 	return false
 }
 
-// netbootRefusal turns a netboot failure into something an admin can act
-// on. The two cases need different fixes and must not read alike: one is a
-// machine that has no UEFI at all, the other a UEFI machine whose network
-// boot entry is missing or switched off.
+// withholdsTask reports whether a Find() failure is positive evidence that
+// a reboot cannot reach the task.
+//
+// ONLY ErrNoOption is. It is a fact about the machine: the firmware has a
+// boot manager, and that boot manager holds no network entry. A reboot
+// provably lands on the local disk, so it must not happen.
+//
+// ErrUnsupported is not a fact about where the machine will boot, only that
+// there is no boot manager to ask -- a BIOS/CSM machine, which is how most
+// of FOG's fleet has always reached FOS: by a firmware boot order set to
+// network-first that the agent cannot see and never could. Withholding
+// there would strand machines that image perfectly today in order to
+// prevent a reboot that in all likelihood works. That is a worse failure
+// than the one design 0013 set out to fix, and it is the behavior change
+// section 7 of that document promised not to make.
+//
+// Any other error is a failed measurement rather than a finding -- a
+// malformed BootOrder, an unreadable variable -- and gets the same benefit
+// of the doubt, because "I could not look" is not "there is nothing there".
+func withholdsTask(err error) bool {
+	return errors.Is(err, netboot.ErrNoOption)
+}
+
+// netbootRefusal is the sentence an admin reads on a task that is being
+// held back. Only withholdsTask failures reach it.
 func netbootRefusal(err error) string {
-	switch {
-	case errors.Is(err, netboot.ErrUnsupported):
-		return "this machine exposes no UEFI boot manager, so a one-shot network boot cannot be armed; set its firmware to boot from the network ahead of the local disk"
-	case errors.Is(err, netboot.ErrNoOption):
+	if errors.Is(err, netboot.ErrNoOption) {
 		return "the firmware lists no network boot entry to arm; enable PXE or network boot in firmware setup"
-	default:
-		return "could not arm a network boot: " + err.Error()
 	}
+	return "could not arm a network boot: " + err.Error()
+}
+
+// netbootNote is the sentence for a failure that does NOT hold the task
+// back. The reboot is going ahead unarmed and will land wherever the
+// firmware's own boot order sends it, so saying nothing would make a task
+// that quietly did not run look like one that never tried.
+func netbootNote(err error) string {
+	if errors.Is(err, netboot.ErrUnsupported) {
+		return "no UEFI boot manager here, so there is nothing to arm; the task reboot relies on this machine's firmware boot order reaching the network, as it always has"
+	}
+	return "could not look for a network boot entry (" + err.Error() + "); rebooting unarmed"
 }
 
 // cmdRenew renews now, regardless of expiry: an operator's rotation, and
