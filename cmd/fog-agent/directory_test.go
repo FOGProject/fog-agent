@@ -1,9 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"encoding/pem"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/FOGProject/fog-agent/internal/enroll"
 	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
@@ -54,5 +60,65 @@ func TestSupportedCapabilitiesNamesDirectory(t *testing.T) {
 		AppliedWith:     "hostname,taskreboot,power,software,printers,snapin",
 	}, "abc") {
 		t.Fatal("an upgrade that learned directory treated the revision as applied")
+	}
+}
+
+// joinTestClient is a client pointed at a server that accepts any result.
+func joinTestClient(t *testing.T) *enroll.Client {
+	t.Helper()
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"ok","outcome":"joined"}`)
+	}))
+	t.Cleanup(srv.Close)
+	ca := pem.EncodeToMemory(&pem.Block{
+		Type: "CERTIFICATE", Bytes: srv.Certificate().Raw,
+	})
+	c, err := enroll.NewClient(srv.URL, ca)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// A join changes the machine's membership, which makes the directory fact
+// this agent already sent wrong. The server cannot ask for a fresh one --
+// `want_directory` is true only while it holds no hash at all -- so the
+// agent has to volunteer it, or the server keeps believing the host
+// unjoined until FactsInterval elapses. That interval is an hour and
+// DirectoryJoin's retry cooldown is an hour, so the two line up and the
+// join credential is sent once more to a machine already in the domain.
+//
+// The gate is factsDue rather than the field, because setting the field is
+// only useful if it actually reopens the collection.
+func TestASettledJoinMakesTheFactsDueAgain(t *testing.T) {
+	client := joinTestClient(t)
+	now := time.Now()
+	for _, tc := range []struct {
+		status string
+		due    bool
+	}{
+		{directoryjoin.StatusJoined, true},
+		{directoryjoin.StatusAlreadyJoined, true},
+		// Nothing changed on the machine, so nothing is stale: a failed or
+		// refused join must not cost every host a full re-collection.
+		{directoryjoin.StatusFailed, false},
+		{directoryjoin.StatusRefused, false},
+		{directoryjoin.StatusUnsupported, false},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			st := &enroll.State{Config: enroll.Config{
+				HostID: 105, FactsChecked: now,
+			}}
+			ok := reportDirectory(context.Background(), st, client,
+				"3f1c9a0b2d4e5f60",
+				directoryjoin.Report{Status: tc.status}, &sayer{})
+			if !ok {
+				t.Fatal("the result did not land")
+			}
+			if got := factsDue(st.Config, now); got != tc.due {
+				t.Errorf("factsDue = %t, want %t", got, tc.due)
+			}
+		})
 	}
 }

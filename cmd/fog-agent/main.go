@@ -922,6 +922,29 @@ func reportDirectory(ctx context.Context, st *enroll.State, client *enroll.Clien
 		out.say("directory result: " + err.Error())
 		return false
 	}
+	// The machine just changed its own membership, so the facts this agent
+	// last sent are stale by its own doing. Marking them due re-collects on
+	// the next poll instead of waiting out FactsInterval.
+	//
+	// Not a tidy-up. The server decides whether to send the join credential
+	// from the FACT, not from this result, and it cannot ask for a refresh
+	// -- `want_directory` is true only while it has no hash at all. So
+	// without this the server can believe a freshly joined host unjoined
+	// for up to an hour, and DirectoryJoin's own cooldown is exactly an
+	// hour: the two line up, and the credential goes out once more to a
+	// machine that is already in the domain. Measured on the Windows lab
+	// host 2026-09-04, where the join landed moments after that poll's
+	// facts had been gathered and the polls after it reported nothing.
+	//
+	// FactsChecked and not DirectoryHash: the hash is compared only AFTER
+	// factsDue has already let the collection run, so clearing it changes
+	// nothing on its own -- and the hash will differ anyway, because the
+	// membership did. Re-collecting the other facts once after a join is
+	// the price, and a join is rare.
+	if r.Status == directoryjoin.StatusJoined ||
+		r.Status == directoryjoin.StatusAlreadyJoined {
+		st.Config.FactsChecked = time.Time{}
+	}
 	if r.Reboot {
 		// Not forced. A domain join is not urgent the way an imaging task
 		// is, and the machine works exactly as it did until it restarts --

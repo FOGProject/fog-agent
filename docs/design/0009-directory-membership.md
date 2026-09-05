@@ -4,6 +4,24 @@ Status: §3, §4, §5, §7 SHIPPED 2026-09-04. §6 SHIPPED 2026-09-04 (agent
 `internal/provider/directoryjoin`, server `FOG\Agent\DirectoryJoin`, schema
 428). §6's v2 — offline domain join — remains deferred.
 
+Proven against a real domain controller on 2026-09-04, both platforms, on
+throwaway lab machines: a Linux host joined `fogad.lab` with adcli and a
+Windows 11 host with `NetJoinDomain`, each using the credential the server
+sent and a service account delegated on one OU rather than a domain admin;
+each then reported its membership, the server stopped sending the credential,
+and §5 placed the object it had just created. The Windows report carries
+every field — NetBIOS name, computer DN from the machine's own secure channel,
+machine account, site — where Linux carries the domain and machine account
+only, exactly as §3 predicted.
+
+One measurement worth keeping: on the freshly joined Windows host, the first
+`Gather()` after the join took five minutes to return, because the DN and site
+lookups are network calls to a domain controller and the lab reaches its DC
+through a NAT hop. They are not slow on a healthy LAN, but they are unbounded,
+and they run inside the poll. Not fixed here — Go cannot cancel a blocked
+syscall, so a timeout would leak the goroutine rather than free it — but it is
+the reason a fact collector should never be assumed cheap.
+
 FOG's Active Directory support is the `hostname` capability's other half: the
 same legacy module renames the machine and joins it to a domain, and design
 0001 §7 carried the rename across to the agent while leaving the join behind.
