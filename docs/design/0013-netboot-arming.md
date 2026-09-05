@@ -208,6 +208,24 @@ firmware's own boot order carry the machine to the network. See section 3:
 unsupported is the absence of a measurement, not a finding that the task
 cannot be reached.
 
+Proven on `fog-agent-test` (Debian 13, VirtualBox BIOS firmware, no
+`/sys/firmware/efi` at all) on 2026-09-05:
+
+```
+16:11:02  taskreboot: task 202 (Hardware Inventory) waiting
+16:11:02  netboot: no UEFI boot manager here, so there is nothing to arm;
+          the task reboot relies on this machine's firmware boot order
+          reaching the network, as it always has
+16:11:02  reboot: applied (60s warning (task: task 202 ...), mode reboot)
+16:12:09  (new boot)
+16:12:14  agent back up -- and no second reboot
+```
+
+The note, the reboot going ahead, and then `RebootedForTask` suppressing a
+repeat when the machine came back on its own disk. That last line matters as
+much as the first: withholding is not the only thing standing between this
+design and a reboot loop.
+
 Verified on VirtualBox 7.2 (`telliottwin11`, 2026-09-05), which does accept
 a runtime variable write from inside the guest as `NT AUTHORITY\SYSTEM` —
 `SetFirmwareEnvironmentVariableW("BootNext", …)` succeeds and reads back —
