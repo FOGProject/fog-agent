@@ -1,11 +1,10 @@
 # 0013: A task reboot has to land in the network
 
-Status: BUILT 2026-09-05, arming not yet proven on a live task. Agent
-`internal/netboot` (the firmware half) and `planReboot` in
-`cmd/fog-agent/main.go` (the withholding policy). Fixes the hole in the task
-reboot of [0001](0001-architecture.md) section 6: the agent reboots a machine
-for a queued FOG task and the firmware boots the local disk, so the task is
-still queued and nothing happened.
+Status: BUILT and PROVEN END TO END 2026-09-05. Agent `internal/netboot` (the
+firmware half) and `planReboot` in `cmd/fog-agent/main.go` (the withholding
+policy). Fixes the hole in the task reboot of [0001](0001-architecture.md)
+section 6: the agent reboots a machine for a queued FOG task and the firmware
+boots the local disk, so the task is still queued and nothing happened.
 
 `Find()` is verified against real firmware — on a Dell Precision 7550 whose
 `BootOrder` is `0001,0000,0003,0008,0002` it returns
@@ -20,12 +19,9 @@ then the option number little-endian), read back correctly, and deleted
 cleanly including the immutable-flag handling. No reboot happened between the
 write and the delete, so the firmware never acted on it.
 
-What is **not** proven is the last step: a machine actually coming up in FOS
-because `BootNext` was set. That is a UEFI guarantee rather than anything in
-this package, and testing it means rebooting a real machine into PXE. Both
-VirtualBox guests in the lab are the case section 3 describes — no network
-`Boot####` to point at — so they exercise the refusal path and not the
-success path.
+The last step — a machine actually going to the network **because**
+`BootNext` was set — is proven too, and it took building a firmware to prove
+it. See section 9.
 
 ---
 
@@ -117,6 +113,21 @@ but persists **no `Boot####` entry for it**. A VirtualBox guest is therefore a
 machine where `BootNext` has nothing to point at, and it is what the lab runs.
 Real firmware from major vendors does persist these entries, but "PXE is
 disabled in firmware setup" produces the same absence on real hardware.
+
+Confirmed on `telliottwin11` on 2026-09-05, with its firmware in exactly that
+state and a Hardware Inventory task queued:
+
+```
+10:49:04  taskreboot: task 201 (Hardware Inventory) waiting
+10:49:08  netboot: the firmware lists no network boot entry to arm;
+          enable PXE or network boot in firmware setup
+```
+
+No `reboot: applied` line, `LastBootUpTime` unmoved at 10:38:18, and the task
+still queued — the machine was not taken away from its user for a reboot that
+could not have served it. The same sentence reached the server's own audit log
+(`agent.result`, "reboot failed"), so it is visible to an admin who never sees
+the client log.
 
 ### When other reasons are also pending
 
@@ -233,6 +244,76 @@ decides that; this is only about the machine arriving where FOG is waiting.
 It does not replace `hostBiosExit`/`hostEfiExit`. Those govern what iPXE does
 when it finds no task, which is the other half of the same journey and is
 unchanged.
+
+## 9. Proving it, and what it cost
+
+The claim that needed proving is the one this package does not implement:
+**the firmware boots the armed entry, once, ahead of its own boot order.**
+Everything else — parsing `Boot####`, writing `BootNext` — is the agent's code
+and has unit tests over real firmware bytes.
+
+**It is provable on a VM, but not on any VM.** The first answer this
+investigation reached was that no virtual firmware persists a network
+`Boot####`, which was wrong, and wrong for two compounding reasons:
+
+- QEMU ships an iPXE **option ROM** that shadows OVMF's own UEFI network
+  drivers, so what looked like a PXE boot was a legacy one and no UEFI boot
+  option was ever created. `romfile=` (empty) disables it.
+- Every distro OVMF package checked — Fedora, Debian, openSUSE — is built
+  **without NetworkPkg**. There is no UEFI network stack in them to enumerate.
+
+So the rig is an OVMF built from edk2 at `edk2-stable202608` with
+`NETWORK_PXE_BOOT_ENABLE`. One more trap there: `DxeNetLib` carries a
+`[Depex]` on `gEfiRngProtocolGuid`, and `RngDxe` fails on QEMU's default CPU,
+so the network stack compiles in and never starts. It needs
+`-device virtio-rng-pci`.
+
+**The result**, on one QEMU run with the disk first in `BootOrder`:
+
+```
+BdsDxe: loading Boot0002 "UEFI QEMU HARDDISK QM00001"   <- boot 1, boot order
+ARMPROOF-FIRST-BOOT-LANDED-ON-DISK-AS-THE-BOOT-ORDER-SAYS
+  (set BootNext = 0003, reset)
+BdsDxe: loading Boot0003 "UEFI PXEv4 (MAC:525400123456)" <- boot 2, BootNext
+iPXE 2.0.0 -- Open Source Network Boot Firmware
+https://10.255.20.1/fog/service/ipxe/boot.php... ok      <- the real FOG server
+  (FOG menu runs, machine resets)
+ARMPROOF-BACK-IN-THE-SHELL-BOOTNEXT-DID-NOT-REDIRECT     <- boot 3, disk again
+```
+
+Three boots: the boot order, then the armed entry, then the boot order again
+without anything being cleaned up. That is section 2's one-shot property
+observed rather than quoted, and the middle boot reached FOG's own iPXE menu.
+
+**VirtualBox proves the other half.** `telliottwin11` (VirtualBox 7.2, Windows
+11) is where the agent's real Windows write path was exercised as
+`NT AUTHORITY\SYSTEM`, on a queued task, against firmware that persists no
+network entry. Given a hand-written one to point at, its firmware honored
+`BootNext` and said so on screen:
+
+```
+BdsDxe: failed to load Boot0009 "UEFI PXEv4 (MAC:080027E9FF13)"
+        from PciRoot(0x0)/Pci(0x3,0x0)/MAC(080027E9FF13,0x1): Not Found
+```
+
+It went to the armed entry ahead of Windows and could not resolve it —
+VirtualBox binds a UEFI network driver only inside its interactive Boot
+Manager, never at BDS. That is why it persists no network `Boot####`: an
+option it cannot resolve is one its BDS deletes, which it did to the first
+entry written for it. A **MAC-only** device path
+(`PciRoot/Pci/MAC`, no IPv4 node) survives; the IPv4-node form does not.
+
+So VirtualBox is a good rig for the refusal path and for the Windows write,
+and cannot netboot from NVRAM at all. Nothing in the agent needs changing for
+it: `Find()` returns `ErrNoOption` there, which is exactly true.
+
+Two smaller things that will cost an afternoon again otherwise: **VirtualBox
+and KVM contend for VMX** on this workstation, so a QEMU guest launched while
+a VirtualBox VM is running dies at the first VM entry with `KVM: entry failed,
+hardware error 0x0` and no output at all — `accel=tcg` sidesteps it. And
+QEMU's user-mode networking is enough for the whole test: slirp answers DHCP
+and TFTP locally and still routes the guest to the real FOG server on the host,
+so nothing about the lab network has to be touched.
 
 ## 8. Open
 
