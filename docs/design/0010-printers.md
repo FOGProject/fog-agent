@@ -1,6 +1,11 @@
 # 0010 — Printers
 
-Status: proposed
+Status: SHIPPED 2026-09-04. Agent `internal/printers` (the fact) and
+`internal/provider/printerset` (the capability); server `FOG\Agent\PrinterFacts`
+in `State::FACT_REPORTS`, `PrinterSet` in `State::ITEM_REPORTS`, items
+`FOG\Items\HostPrinter` and `FOG\Items\HostSpooler`, schema 426. Proven in the
+lab on Windows and Linux: spooler rows for two hosts, three reported printers,
+and a stored `printers` fact hash per host.
 Supersedes: the `printermanager` and `defaultprinter` modules of the legacy
 client, and the `/service/Printers.php` and `/service/printerlisting.php`
 endpoints.

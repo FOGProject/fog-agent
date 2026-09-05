@@ -1,6 +1,9 @@
 # 0008: User tracking as sessions, not events
 
-Status: PROPOSED 2026-09-04.
+Status: SHIPPED 2026-09-04. Agent `internal/usersession` and
+`cmd/fog-agent/sessions.go`; server item `FOG\Items\HostUserSession`, schema
+422 (`hostUserSession`), gated by FOG's existing user-tracking module setting
+rather than a second switch. Proven in the lab: 23 session rows recorded.
 
 Supersedes the one-line reservation in `0006-inventory.md` §7, which said
 user-tracking login/logout events are "ordered and lossless, a different shape

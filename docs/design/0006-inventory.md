@@ -1,9 +1,16 @@
 # 0006: Inventory and the installed-software report
 
-Status: PROPOSED 2026-09-04. The agent reports facts about the host it runs
-on: hardware inventory into FOG's existing table, and installed software into
-a new one built for reporting. Follows the desired-state model (0001, 0003)
-in reverse: the server pulls facts, it does not push them.
+Status: SHIPPED 2026-09-04. Agent `internal/inventory` and `internal/software`,
+gathered in `cmd/fog-agent/facts.go`; server `FOG\Agent\InventoryFacts` and
+`FOG\Agent\SoftwareFacts` registered in `State::FACT_REPORTS`, item
+`FOG\Items\HostSoftware`, schema 421 (`hostSoftware`, `hostFactState`). Proven
+against three lab hosts, one Windows and two Linux: 3,236 `hostSoftware` rows
+and a stored `inventory` fact hash for each.
+
+The agent reports facts about the host it runs on: hardware inventory into
+FOG's existing table, and installed software into a new one built for
+reporting. Follows the desired-state model (0001, 0003) in reverse: the server
+pulls facts, it does not push them.
 
 ## 1. The split
 
