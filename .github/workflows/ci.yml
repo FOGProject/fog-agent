@@ -1,0 +1,85 @@
+# Every push and pull request: prove the tree builds everywhere it claims to
+# and that the Windows installer can still be produced. The MSI is built here
+# and not only on a tag, because the two defects design 0005 section 4 records
+# -- an unversioned File row, and an Upgrade table wixl writes that the
+# Windows engine cannot load -- are both silent until an install is attempted.
+# build/msi.sh asserts against them, so building it on every change is what
+# keeps them from coming back.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # build/cross.sh and build/msi.sh both derive the version from
+          # `git describe --tags` and `git rev-list --count HEAD`. The
+          # default shallow checkout has neither tags nor history, so the
+          # version silently becomes "dev" and the MSI "0.0.0".
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:" >&2
+            echo "$unformatted" >&2
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test
+        run: go test ./... -count=1
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # wixl, msibuild and msiinfo. No Windows runner is needed to build the
+      # installer, and using one would mean maintaining a second toolchain.
+      - name: install msitools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y msitools
+
+      # Pinned rather than @latest: an unpinned tool in a release path is the
+      # supply-chain hole that code signing exists to close.
+      - name: install goversioninfo
+        run: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0
+
+      - name: cross-compile every target
+        run: ./build/cross.sh
+
+      - name: build the Windows installer
+        run: ./build/msi.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+          path: dist/
+          retention-days: 14
+          if-no-files-found: error

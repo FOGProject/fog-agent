@@ -1,0 +1,161 @@
+# Tag v1.2.3 -> build every target, sign the Windows artifacts, publish a
+# GitHub release.
+#
+# The build job is deliberately separate from signing and publishing. That is
+# the shape SignPath Foundation (and any other signing service) requires: the
+# thing that gets signed must be an artifact of a specific, inspectable CI
+# run, not something a maintainer uploaded from a laptop. Splitting the jobs
+# is what makes the provenance checkable.
+#
+# THE SIGNING JOB IS INERT UNTIL THE PROJECT HAS A CERTIFICATE. It is guarded
+# on the SIGNPATH_ORGANIZATION_ID repository variable, so until that is set
+# the release publishes unsigned artifacts and says so. See
+# docs/signing/signpath-application.md for where the certificate comes from
+# and why FOG has never had a publicly trusted one.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tags and full history: build/msi.sh turns the tag into the MSI's
+          # numeric ProductVersion, and falls back to a commit count without
+          # them -- so a shallow checkout would publish v1.2.3 as 0.0.0.
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: install msitools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y msitools
+
+      - name: install goversioninfo
+        run: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0
+
+      - name: test before shipping
+        run: go test ./... -count=1
+
+      - name: cross-compile every target
+        run: ./build/cross.sh "${GITHUB_REF_NAME}"
+
+      - name: build the Windows installer
+        run: ./build/msi.sh "${GITHUB_REF_NAME}"
+
+      # Checksums are produced here, over the unsigned build, and regenerated
+      # after signing if signing runs -- signing rewrites the file, so a
+      # checksum taken before it would be wrong.
+      - name: checksums
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          cat SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned
+          path: dist/
+          if-no-files-found: error
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    # Inert until the project holds a certificate: set the
+    # SIGNPATH_ORGANIZATION_ID repository variable to switch this on.
+    if: vars.SIGNPATH_ORGANIZATION_ID != ''
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned
+          path: dist
+
+      # SignPath's own action pulls the artifact from THIS workflow run by
+      # its artifact name, submits a signing request, and writes the signed
+      # result back. Its exact inputs and the action's pinned SHA must be
+      # taken from SignPath's documentation once the project is accepted --
+      # I have not run this and will not pretend the argument names below
+      # are verified. The two that matter and will not change: sign the MSI
+      # AND the fog-agent.exe inside it (signing only the installer leaves
+      # the service binary Defender actually watches unsigned), and pin the
+      # action to a commit SHA rather than a tag.
+      #
+      # Deliberately no GitHub Actions expressions in here: an expression is
+      # expanded into the shell command by the workflow templater, so writing
+      # a secret into an echo puts it on the command line whether or not the
+      # shell would have expanded it.
+      - name: submit signing request
+        run: |
+          echo 'Signing is enabled (SIGNPATH_ORGANIZATION_ID is set) but not wired up yet.'
+          echo 'Replace this step with signpath/github-action-submit-signing-request,'
+          echo 'pinned to a commit SHA, taking organization-id from the repository'
+          echo 'variable, project and signing-policy slugs from SignPath, the API'
+          echo 'token from the SIGNPATH_API_TOKEN secret, and the artifact named'
+          echo '"unsigned" from this run. Sign the MSI and the fog-agent.exe inside'
+          echo 'it -- signing only the installer leaves the service binary that'
+          echo 'Defender actually watches unsigned.'
+          exit 1   # fail loudly rather than publish unsigned artifacts labelled signed
+
+      - name: checksums over the signed files
+        run: |
+          cd dist
+          rm -f SHA256SUMS
+          sha256sum * > SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: [build, sign]
+    # sign is skipped, not failed, while the project has no certificate.
+    if: always() && needs.build.result == 'success' && needs.sign.result != 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ needs.sign.result == 'success' && 'signed' || 'unsigned' }}
+          path: dist
+
+      # Written to a file rather than passed inline: --notes takes the body
+      # verbatim, and a body assembled by string-substitution into a shell
+      # command is one stray quote away from being a different command.
+      - name: say whether these artifacts are signed
+        env:
+          SIGN_RESULT: ${{ needs.sign.result }}
+        run: |
+          if [ "$SIGN_RESULT" = "success" ]; then
+            echo 'Windows artifacts are code-signed.' > notes.md
+          else
+            {
+              echo '**These artifacts are NOT code-signed.** Windows will warn on'
+              echo 'install and Defender may quarantine the agent. See'
+              echo 'docs/signing/signpath-application.md for why, and what fixes it.'
+            } > notes.md
+          fi
+
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --notes-file notes.md \
+            dist/*
