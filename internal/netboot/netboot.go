@@ -15,11 +15,9 @@ import (
 	"errors"
 	"fmt"
 	"unicode/utf16"
-)
 
-// EFIGlobal is the EFI global variable namespace, the GUID every variable
-// named here lives under.
-const EFIGlobal = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
+	"github.com/FOGProject/fog-agent/internal/firmware"
+)
 
 // The two failures a caller must tell apart. "This machine has no UEFI" and
 // "this machine has UEFI but no network boot entry" look the same from the
@@ -29,8 +27,10 @@ const EFIGlobal = "8be4df61-93ca-11d2-aa0d-00e098032b8c"
 // entry at all.
 var (
 	// ErrUnsupported is returned when there is no UEFI to talk to: a
-	// BIOS/CSM machine, a kernel with no efivars, or macOS.
-	ErrUnsupported = errors.New("netboot: firmware variables are not available")
+	// BIOS/CSM machine, a kernel with no efivars, or macOS. It is
+	// firmware.ErrUnsupported re-exported, so errors.Is works against
+	// either name.
+	ErrUnsupported = firmware.ErrUnsupported
 	// ErrNoOption is returned when the firmware answered but holds no
 	// network boot entry to point BootNext at.
 	ErrNoOption = errors.New("netboot: firmware has no network boot entry")
@@ -189,11 +189,11 @@ func choose(order []uint16, opts map[uint16]loadOption) (Option, bool) {
 	return fallback, haveFallback
 }
 
-// The OS-specific halves, replaced in tests.
+// The firmware accessors, replaced in tests.
 var (
-	readVar   = osReadVar
-	writeVar  = osWriteVar
-	deleteVar = osDeleteVar
+	readVar   = firmware.ReadVar
+	writeVar  = firmware.WriteVar
+	deleteVar = firmware.DeleteVar
 )
 
 // Find returns the network boot entry the agent would arm, or ErrNoOption

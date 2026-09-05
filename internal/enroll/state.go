@@ -107,6 +107,9 @@ type Config struct {
 	// FactsInterval -- it is a single syscall, and it is what the server
 	// picks wake relays from, so staleness costs a wake.
 	NetworkHash string `json:"network_hash,omitempty"`
+	// SecureBootHash is the same gate for the firmware's Secure Boot
+	// posture (design 0012 §3).
+	SecureBootHash string `json:"secureboot_hash,omitempty"`
 	// FactsChecked is when the collectors last ran. They are re-run on
 	// FactsInterval rather than every poll: enumerating a package-managed
 	// host's 2800 packages every five minutes buys nothing.
@@ -114,11 +117,12 @@ type Config struct {
 	// WantInventory and WantSoftware are the server's request from the
 	// last poll answer, honored on the next poll regardless of whether
 	// anything changed locally.
-	WantInventory bool `json:"want_inventory,omitempty"`
-	WantSoftware  bool `json:"want_software,omitempty"`
-	WantDirectory bool `json:"want_directory,omitempty"`
-	WantPrinters  bool `json:"want_printers,omitempty"`
-	WantNetwork   bool `json:"want_network,omitempty"`
+	WantInventory  bool `json:"want_inventory,omitempty"`
+	WantSoftware   bool `json:"want_software,omitempty"`
+	WantDirectory  bool `json:"want_directory,omitempty"`
+	WantPrinters   bool `json:"want_printers,omitempty"`
+	WantNetwork    bool `json:"want_network,omitempty"`
+	WantSecureBoot bool `json:"want_secureboot,omitempty"`
 	// UnauthorizedSince is when an unbroken run of 401s began that the
 	// server did NOT attribute to this agent's certificate. The identity
 	// is kept while it runs, and discarded only once it outlasts

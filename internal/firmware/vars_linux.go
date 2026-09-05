@@ -1,6 +1,6 @@
 //go:build linux
 
-package netboot
+package firmware
 
 import (
 	"encoding/binary"
@@ -28,12 +28,6 @@ const attrWordLen = 4
 // kernel's stable userspace ABI.
 const fsImmutableFl = 0x00000010
 
-// NV | BS | RT: non-volatile, available to boot services, available at
-// runtime. BootNext must survive the reboot that consumes it, so NV is not
-// optional, and these are the attributes the firmware's own BootNext
-// carries.
-const bootNextAttrs = 0x01 | 0x02 | 0x04
-
 func osReadVar(name string) ([]byte, error) {
 	b, err := os.ReadFile(varPath(name))
 	if err != nil {
@@ -44,12 +38,12 @@ func osReadVar(name string) ([]byte, error) {
 			if _, statErr := os.Stat(efivarsDir); statErr != nil {
 				return nil, ErrUnsupported
 			}
-			return nil, fmt.Errorf("netboot: firmware variable %s is not set", name)
+			return nil, fmt.Errorf("firmware: firmware variable %s is not set", name)
 		}
 		return nil, err
 	}
 	if len(b) < attrWordLen {
-		return nil, fmt.Errorf("netboot: %s is %d bytes, shorter than the attribute word", name, len(b))
+		return nil, fmt.Errorf("firmware: %s is %d bytes, shorter than the attribute word", name, len(b))
 	}
 	return b[attrWordLen:], nil
 }
@@ -60,7 +54,7 @@ func osReadVar(name string) ([]byte, error) {
 func osWriteVar(name string, data []byte) error {
 	path := varPath(name)
 	buf := make([]byte, attrWordLen+len(data))
-	binary.LittleEndian.PutUint32(buf[:attrWordLen], bootNextAttrs)
+	binary.LittleEndian.PutUint32(buf[:attrWordLen], AttrsNVBSRT)
 	copy(buf[attrWordLen:], data)
 
 	// An existing efivarfs file carries the immutable flag: the kernel's
@@ -88,7 +82,7 @@ func osWriteVar(name string, data []byte) error {
 		return err
 	}
 	if n != len(buf) {
-		return fmt.Errorf("netboot: short write to %s: %d of %d bytes", name, n, len(buf))
+		return fmt.Errorf("firmware: short write to %s: %d of %d bytes", name, n, len(buf))
 	}
 	return nil
 }
@@ -139,7 +133,7 @@ func clearImmutable(path string) (func(), error) {
 	}
 	if err := unix.IoctlSetPointerInt(fd, unix.FS_IOC_SETFLAGS, flags&^fsImmutableFl); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("netboot: could not clear the immutable flag on %s: %w", path, err)
+		return nil, fmt.Errorf("firmware: could not clear the immutable flag on %s: %w", path, err)
 	}
 	return func() {
 		_ = unix.IoctlSetPointerInt(fd, unix.FS_IOC_SETFLAGS, flags)

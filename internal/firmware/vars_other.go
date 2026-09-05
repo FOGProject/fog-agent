@@ -1,6 +1,6 @@
 //go:build !linux && !windows
 
-package netboot
+package firmware
 
 // macOS and anything else: there is no UEFI boot manager to ask, and Apple
 // platforms do not netboot into FOS. Unsupported is the honest answer, and

@@ -1,6 +1,6 @@
 //go:build windows
 
-package netboot
+package firmware
 
 import (
 	"fmt"
@@ -50,7 +50,7 @@ func osReadVar(name string) ([]byte, error) {
 		if en, ok := e.(syscall.Errno); ok && en == errorInvalidFunction {
 			return nil, ErrUnsupported
 		}
-		return nil, fmt.Errorf("netboot: reading %s: %w", name, e)
+		return nil, fmt.Errorf("firmware: reading %s: %w", name, e)
 	}
 	return buf[:r], nil
 }
@@ -68,7 +68,7 @@ func osWriteVar(name string, data []byte) error {
 		return err
 	}
 	if len(data) == 0 {
-		return fmt.Errorf("netboot: refusing to write %s with no data", name)
+		return fmt.Errorf("firmware: refusing to write %s with no data", name)
 	}
 	r, _, e := procSetFirm.Call(
 		uintptr(unsafe.Pointer(n)),
@@ -80,7 +80,7 @@ func osWriteVar(name string, data []byte) error {
 		if en, ok := e.(syscall.Errno); ok && en == errorInvalidFunction {
 			return ErrUnsupported
 		}
-		return fmt.Errorf("netboot: writing %s: %w", name, e)
+		return fmt.Errorf("firmware: writing %s: %w", name, e)
 	}
 	return nil
 }
@@ -109,7 +109,7 @@ func osDeleteVar(name string) error {
 		if en, ok := e.(syscall.Errno); ok && en == errorInvalidFunction {
 			return ErrUnsupported
 		}
-		return fmt.Errorf("netboot: deleting %s: %w", name, e)
+		return fmt.Errorf("firmware: deleting %s: %w", name, e)
 	}
 	return nil
 }
@@ -130,7 +130,7 @@ func enableFirmwarePrivilege() error {
 		windows.TOKEN_ADJUST_PRIVILEGES|windows.TOKEN_QUERY,
 		&tok,
 	); err != nil {
-		return fmt.Errorf("netboot: opening the process token: %w", err)
+		return fmt.Errorf("firmware: opening the process token: %w", err)
 	}
 	defer tok.Close()
 
@@ -140,7 +140,7 @@ func enableFirmwarePrivilege() error {
 		return err
 	}
 	if err := windows.LookupPrivilegeValue(nil, name, &luid); err != nil {
-		return fmt.Errorf("netboot: looking up SeSystemEnvironmentPrivilege: %w", err)
+		return fmt.Errorf("firmware: looking up SeSystemEnvironmentPrivilege: %w", err)
 	}
 	priv := windows.Tokenprivileges{
 		PrivilegeCount: 1,
@@ -150,13 +150,13 @@ func enableFirmwarePrivilege() error {
 		Attributes: windows.SE_PRIVILEGE_ENABLED,
 	}
 	if err := windows.AdjustTokenPrivileges(tok, false, &priv, 0, nil, nil); err != nil {
-		return fmt.Errorf("netboot: enabling SeSystemEnvironmentPrivilege: %w", err)
+		return fmt.Errorf("firmware: enabling SeSystemEnvironmentPrivilege: %w", err)
 	}
 	// AdjustTokenPrivileges reports success even when it enabled nothing;
 	// ERROR_NOT_ALL_ASSIGNED is delivered as the last error rather than as
 	// a failed return, which is the one way this call lies.
 	if err := windows.GetLastError(); err == windows.ERROR_NOT_ALL_ASSIGNED {
-		return fmt.Errorf("netboot: this process does not hold SeSystemEnvironmentPrivilege")
+		return fmt.Errorf("firmware: this process does not hold SeSystemEnvironmentPrivilege")
 	}
 	return nil
 }

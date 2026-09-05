@@ -29,6 +29,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/provider/software"
 	"github.com/FOGProject/fog-agent/internal/provider/wake"
 	"github.com/FOGProject/fog-agent/internal/reboot"
+	"github.com/FOGProject/fog-agent/internal/secureboot"
 	// The observed program list, aliased because `software` above is the
 	// desired-state install capability: two different things (design 0006).
 	softwarefacts "github.com/FOGProject/fog-agent/internal/software"
@@ -153,6 +154,12 @@ type PollRequest struct {
 	// lets the server answer "which awake machine shares a link with the
 	// sleeping one", which is the whole basis of the wake relay.
 	Network *network.Network `json:"network,omitempty"`
+	// SecureBoot is what the firmware says about Secure Boot (design
+	// 0012): the platform and the two raw variable bytes, never a state
+	// name. The server maps them with the same call it uses on the ones
+	// iPXE sends, so the six-way vocabulary stays in one place. Same hash
+	// gate and the same rule about absence as the blocks above.
+	SecureBoot *secureboot.State `json:"secureboot,omitempty"`
 	// Sessions is the user-session report (design 0008): who is logged on
 	// now, and which sessions the agent watched end. Absent when the host's
 	// usertracker module is off, or when this platform has no collector --
@@ -181,11 +188,12 @@ type PollResponse struct {
 	// no current hash for -- a fresh enrollment, a restored database, a
 	// cleared row -- so the agent sends it even though nothing changed
 	// locally (design 0006 §2).
-	WantInventory bool `json:"want_inventory,omitempty"`
-	WantSoftware  bool `json:"want_software,omitempty"`
-	WantDirectory bool `json:"want_directory,omitempty"`
-	WantPrinters  bool `json:"want_printers,omitempty"`
-	WantNetwork   bool `json:"want_network,omitempty"`
+	WantInventory  bool `json:"want_inventory,omitempty"`
+	WantSoftware   bool `json:"want_software,omitempty"`
+	WantDirectory  bool `json:"want_directory,omitempty"`
+	WantPrinters   bool `json:"want_printers,omitempty"`
+	WantNetwork    bool `json:"want_network,omitempty"`
+	WantSecureBoot bool `json:"want_secureboot,omitempty"`
 	// Error is the server's human sentence when Status is not "ok". FOG
 	// already sends one (Route's agent error path, and the schema-update
 	// answer), and without this field the agent read the status word and

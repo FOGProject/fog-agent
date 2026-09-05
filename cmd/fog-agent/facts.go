@@ -9,6 +9,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/inventory"
 	"github.com/FOGProject/fog-agent/internal/network"
 	"github.com/FOGProject/fog-agent/internal/printers"
+	"github.com/FOGProject/fog-agent/internal/secureboot"
 	"github.com/FOGProject/fog-agent/internal/software"
 )
 
@@ -30,19 +31,21 @@ func factsDue(cfg enroll.Config, now time.Time) bool {
 		return false
 	}
 	return cfg.WantInventory || cfg.WantSoftware || cfg.WantDirectory ||
-		cfg.WantPrinters || now.Sub(cfg.FactsChecked) >= FactsInterval
+		cfg.WantPrinters || cfg.WantSecureBoot ||
+		now.Sub(cfg.FactsChecked) >= FactsInterval
 }
 
 // sentFacts is the hashes of the blocks a poll actually carried, empty for
 // a block that was not sent. The caller stores them only after the poll
 // succeeds (see recordFacts).
 type sentFacts struct {
-	gathered  bool // the collectors ran this poll
-	inventory string
-	software  string
-	directory string
-	printers  string
-	network   string
+	gathered   bool // the collectors ran this poll
+	inventory  string
+	software   string
+	directory  string
+	printers   string
+	network    string
+	secureboot string
 }
 
 // attachFacts runs the collectors when due and hangs onto the request only
@@ -98,8 +101,14 @@ func attachFacts(st *enroll.State, req *enroll.PollRequest, now time.Time, out *
 			sent.printers = h
 		}
 	}
+	if sb, ok := secureboot.Gather(); ok {
+		if h := sb.Hash(); h != st.Config.SecureBootHash || st.Config.WantSecureBoot {
+			req.SecureBoot = &sb
+			sent.secureboot = h
+		}
+	}
 	if sent.inventory != "" || sent.software != "" || sent.directory != "" ||
-		sent.printers != "" || sent.network != "" {
+		sent.printers != "" || sent.network != "" || sent.secureboot != "" {
 		queues := 0
 		if req.Printers != nil {
 			queues = len(req.Printers.Installed)
@@ -124,9 +133,9 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	// Config holds slices, so it is not comparable; the fields this
 	// function owns are, and they are the only ones that can have moved.
 	type owned struct {
-		inv, soft, dir, print, net              string
-		checked                                 time.Time
-		wantI, wantS, wantD, wantP, wantN, offX bool
+		inv, soft, dir, print, net, sb                 string
+		checked                                        time.Time
+		wantI, wantS, wantD, wantP, wantN, wantB, offX bool
 	}
 	// One snapshot function rather than two literals: the pair only means
 	// anything if both sides list the same fields in the same order, and a
@@ -134,9 +143,11 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	snapshot := func() owned {
 		return owned{st.Config.InventoryHash, st.Config.SoftwareHash,
 			st.Config.DirectoryHash, st.Config.PrintersHash, st.Config.NetworkHash,
+			st.Config.SecureBootHash,
 			st.Config.FactsChecked,
 			st.Config.WantInventory, st.Config.WantSoftware,
 			st.Config.WantDirectory, st.Config.WantPrinters, st.Config.WantNetwork,
+			st.Config.WantSecureBoot,
 			st.Config.FactsDisabled}
 	}
 	before := snapshot()
@@ -159,6 +170,9 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	if sent.network != "" {
 		st.Config.NetworkHash = sent.network
 	}
+	if sent.secureboot != "" {
+		st.Config.SecureBootHash = sent.secureboot
+	}
 	// The answer is authoritative: the server stops asking once it holds
 	// a hash, so assigning rather than or-ing is what clears the flags.
 	st.Config.WantInventory = resp.WantInventory
@@ -166,6 +180,7 @@ func recordFacts(st *enroll.State, sent sentFacts, resp *enroll.PollResponse, no
 	st.Config.WantDirectory = resp.WantDirectory
 	st.Config.WantPrinters = resp.WantPrinters
 	st.Config.WantNetwork = resp.WantNetwork
+	st.Config.WantSecureBoot = resp.WantSecureBoot
 	// Absent leaves the setting alone: a server too old to send the gate
 	// must not read as one that turned it off.
 	if resp.CollectFacts != nil {

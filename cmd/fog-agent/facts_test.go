@@ -235,3 +235,75 @@ func TestRecordFactsCarriesAndClearsTheServersPrinterRequest(t *testing.T) {
 		t.Error("the server stopped asking and the agent kept the flag set")
 	}
 }
+
+func TestRecordFactsPersistsTheSecureBootHash(t *testing.T) {
+	// The sixth block, and the same failure the printers and directory
+	// versions of this test guard. recordFacts skips the disk write when
+	// nothing it owns changed, and decides that from a struct listing the
+	// fields it owns -- so a hash left out of that struct is set in memory,
+	// never written, and resent after every service restart for the life
+	// of the agent. The struct's own comment says as much.
+	dir := t.TempDir()
+	st := &enroll.State{Dir: dir}
+	if err := recordFacts(st, sentFacts{secureboot: "sb1"}, &enroll.PollResponse{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := enroll.Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.Config.SecureBootHash != "sb1" {
+		t.Errorf("SecureBootHash = %q after reload, want sb1: the change was"+
+			" never written to disk", reloaded.Config.SecureBootHash)
+	}
+}
+
+func TestRecordFactsKeepsTheSecureBootHashApartFromTheOthers(t *testing.T) {
+	st := &enroll.State{Dir: t.TempDir()}
+	st.Config.InventoryHash, st.Config.SoftwareHash = "inv", "soft"
+	st.Config.DirectoryHash, st.Config.PrintersHash = "dir", "print"
+
+	if err := recordFacts(st, sentFacts{gathered: true, secureboot: "sb1"},
+		&enroll.PollResponse{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if st.Config.SecureBootHash != "sb1" {
+		t.Errorf("SecureBootHash = %q", st.Config.SecureBootHash)
+	}
+	if st.Config.InventoryHash != "inv" || st.Config.SoftwareHash != "soft" ||
+		st.Config.DirectoryHash != "dir" || st.Config.PrintersHash != "print" {
+		t.Error("an unsent block was recorded")
+	}
+}
+
+func TestRecordFactsCarriesAndClearsTheServersSecureBootRequest(t *testing.T) {
+	st := &enroll.State{Dir: t.TempDir()}
+	if err := recordFacts(st, sentFacts{}, &enroll.PollResponse{WantSecureBoot: true}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if !st.Config.WantSecureBoot {
+		t.Fatal("the server asked for the block and the agent did not remember")
+	}
+	// The answer is authoritative: once the server holds a hash it stops
+	// asking, and assigning rather than or-ing is what clears the flag.
+	if err := recordFacts(st, sentFacts{secureboot: "sb1"}, &enroll.PollResponse{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if st.Config.WantSecureBoot {
+		t.Error("the server stopped asking and the agent kept sending")
+	}
+}
+
+func TestSecureBootRequestMakesTheFactsDue(t *testing.T) {
+	// The per-kind hash comparison happens only after factsDue lets the
+	// collectors run at all, so a want flag that is not in that gate can
+	// wait an hour to be honoured.
+	cfg := enroll.Config{FactsChecked: time.Now()}
+	if factsDue(cfg, time.Now()) {
+		t.Fatal("a just-checked agent is not due")
+	}
+	cfg.WantSecureBoot = true
+	if !factsDue(cfg, time.Now()) {
+		t.Error("the server asked for the Secure Boot block and the collectors did not run")
+	}
+}

@@ -1,6 +1,14 @@
 # 0012: Secure Boot posture as a reported fact
 
-Status: PROPOSED 2026-09-04. Adds a sixth kind to the fact channel of
+Status: agent side BUILT 2026-09-05 (`internal/secureboot`, gathered in
+`cmd/fog-agent/facts.go`); the server's `FACT_REPORTS` entry is not written
+yet, so nothing is stored. Verified on both platforms with the shipping code:
+this Linux workstation reports `{efi 00 00}` (→ `disabled`, which is right —
+Secure Boot is off on it) and `telliottwin11` reports `{efi 01 00}`
+(→ `enforcing`, against the ledger's stale `disabled` that motivated the
+whole document).
+
+Adds a sixth kind to the fact channel of
 [0006](0006-inventory.md): the agent reports what its firmware says about
 Secure Boot, so `hosts.hostSbState` stops being only as fresh as the last
 netboot.
@@ -131,12 +139,16 @@ Linux   /sys/.../SecureBoot-8be4df61-…   size=5  bytes=0600000000
 Windows GetFirmwareEnvironmentVariableW  len=1   bytes=01
 ```
 
-efivarfs prepends the 4-byte EFI attribute word; the Win32 call does not. So
-the value is **the last byte on both**, and taking `b[0]` would be right on
-Windows and wrong on Linux — where it would read the attribute word's low
-byte, `0x06`, which is neither `00` nor `01` and lands every Linux host in
-`noefivars`. Read the last byte, not the first, and make that the thing the
-test pins.
+efivarfs prepends the 4-byte EFI attribute word; the Win32 call does not.
+Taking `b[0]` off a raw read would be right on Windows and wrong on Linux,
+where it reads the attribute word's low byte `0x06` — neither `00` nor `01`,
+so every Linux host would land in `noefivars`.
+
+That difference is now absorbed in one place: `internal/firmware.ReadVar`
+strips the attribute word, so every caller sees the data alone and the byte
+wanted is the first one. The package exists precisely so this is handled once
+rather than in both `internal/secureboot` and `internal/netboot` (design
+0013), which would be two copies of the same trap.
 
 Two corrections to what this document first claimed, both from the same
 measurement. Reading these variables needed **no elevation**: the probe ran in
