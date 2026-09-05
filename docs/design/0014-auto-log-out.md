@@ -1,8 +1,9 @@
 # 0014: Auto log out
 
-Status: agent side BUILT 2026-09-05 (`internal/provider/autologout`,
-`internal/usersession` idle/logoff/notify, `cmd/fog-agent/autologout.go`).
-Server side pending.
+Status: BUILT 2026-09-05. Agent `internal/provider/autologout`,
+`internal/usersession` idle/logoff/notify, `cmd/fog-agent/autologout.go`;
+server `FOG\Agent\State` capability `autologout` and schema 432
+(`FOG_CLIENT_AUTOLOGOFF_WARN`, and `FOG_CLIENT_AUTOLOGOFF_BGIMAGE` removed).
 
 Auto Log Out is the one legacy client module the rebuild keeps rather than
 drops. It answers a real problem — a machine left logged in at a desk holds a
@@ -153,11 +154,31 @@ A `warn_seconds` longer than the whole timeout is clamped to half of it
 rather than refused — the policy still expresses a sane intent, and refusing
 it would silently disable the capability on a fat-fingered global setting.
 
-## 8. Server side (pending)
+## 8. Server side
 
-- `FOG\Agent\DesiredState` gains an `autologout` block from `Host::getAlo()`
-  and the globals, subject to the module being enabled for the host.
-- `FOG_CLIENT_AUTOLOGOFF_MIN` and the per-host `hostAutoLogOut` row stay
-  exactly as they are; nothing about the admin's mental model changes.
-- `FOG_CLIENT_AUTOLOGOFF_BGIMAGE` is removed — see section 5.
-- `warn_seconds` needs a global with a sane default. Sixty seconds.
+`State::CAPABILITIES` gains `'autologout' => 'autologout'`, gated on the
+module exactly as every other capability is: the global
+`FOG_CLIENT_AUTOLOGOFF_ENABLED` and the host's resolved module set, which are
+the same two checks `FOGClient` made for the legacy client. An admin's
+existing per-host and per-group choices therefore carry over untouched.
+
+`State::desired()` sends the block from `Host::getAlo()` — the legacy
+accessor unchanged — and withholds it entirely below five minutes, so a
+policy under the floor clears whatever the agent had stored rather than
+sitting there as a number nobody acts on.
+
+`FOG_CLIENT_AUTOLOGOFF_MIN` and the per-host `hostAutoLogOut` row are not
+touched; nothing about the admin's mental model changes.
+
+`FOG_CLIENT_AUTOLOGOFF_WARN` is new (schema 432, default 60), edited on the
+existing Auto Log Out tab next to the timeout it modifies rather than on a
+page of its own.
+
+`FOG_CLIENT_AUTOLOGOFF_BGIMAGE` is removed in the same step — see section 5.
+It had a `globalSettings` row, no reader anywhere, and no page that rendered
+it, which is the defect the greenfog and `FOG_PLUGINSYS_DIR` removals were
+both for.
+
+No `message` is sent. The agent's default text is used, because a string set
+on the server is one the server cannot translate into the language of
+whoever is sitting at the machine.

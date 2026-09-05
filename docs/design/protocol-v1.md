@@ -631,6 +631,41 @@ the password as a pointer in this process's own memory. Linux uses `adcli`,
 or `realm` where adcli is absent, both of which take the password on stdin —
 which is what picks them.
 
+### Auto log out
+
+Capability `autologout` (module short name `autologout`), design 0014. How
+long a session may sit idle before the agent ends it:
+
+```json
+"autologout": {"minutes": 15, "warn_seconds": 60}
+```
+
+`minutes` is `Host::getAlo()` unchanged — the host's own `hostAutoLogOut`
+row falling back to `FOG_CLIENT_AUTOLOGOFF_MIN`, where 0 disables.
+
+**The five-minute floor is enforced on both sides.** The server does not
+send the block below it and the agent ignores one that arrives anyway. A
+two-minute idle timer logs people off while they are reading the screen,
+and the legacy client refused it for that reason; duplicating the check
+costs one comparison and means a policy that arrived wrong cannot log a
+fleet off.
+
+An absent block turns the capability off and clears what the agent stored,
+which is different from `"minutes": 0` only in that a stored policy can
+never outlive its removal from the server.
+
+There is no `message` field in practice. The agent carries its own default
+text, because a string set on the server is one the server cannot translate
+into the language of whoever is sitting at the machine. The field exists in
+the wire format for a site that wants to override it anyway.
+
+**Unlike every other capability, this one is evaluated between polls** — on
+the 30-second session sample, not on the poll. The policy is in minutes and
+the poll interval is an admin's choice, so a fifteen-minute policy on an
+hourly poll would otherwise warn somebody a minute before an event that
+already happened. It also produces no result on the poll that carries it:
+an idle timeout has no outcome until it fires.
+
 ## POST /agent/v1/result
 
 What one provider did at one revision, or what happened to one thing
