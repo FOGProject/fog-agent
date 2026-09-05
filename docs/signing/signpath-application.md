@@ -5,8 +5,10 @@ Project's name to a third party, so it is Tom's to send, not mine. Read it,
 change what is wrong, and submit it yourself at
 <https://signpath.org/apply> (or whatever the current form URL is).
 
-Everything below marked **[CONFIRM]** is something I could not source from the
-repositories and did not want to invent. Fill those in or delete them.
+Every open question has been answered and every number below is sourced —
+nothing here is estimated. The only remaining judgement call is flagged under
+"Why SignPath" below: whether to name the person on the current signing
+certificate.
 
 ---
 
@@ -44,21 +46,24 @@ naming: **no maintainer holds a key.** CI holds a revocable credential. That
 answers the question design 0001 §13 left open — "who owns the signing
 keys" — without anyone having to own one.
 
-## Two blockers, both mine to fix before you submit
+## Prerequisites — both now met, one still needs your word
 
 1. **`FOGProject/fog-agent` had no `LICENSE` file.** SignPath Foundation
-   requires an OSI-approved open source license. I added GPL-3.0, matching
-   `FOGProject/fogproject` and `FOGProject/fog-client`, which are both
-   GPL-3.0. **Confirm that is the license you want for the Go rewrite** — it
-   is a one-file change if not.
+   requires an OSI-approved open source license. GPL-3.0 was added, matching
+   `FOGProject/fogproject` and `FOGProject/fog-client`, which GitHub reports
+   as GPL-3.0 for both. Tom confirmed GPL-3.0 for the Go rewrite on
+   2026-09-05; settled.
 
-2. **There is no CI.** SignPath Foundation signs from a verifiable CI build,
+2. **CI now exists.** SignPath Foundation signs from a verifiable CI build,
    not from a developer's machine; that origin check is the point of the
-   programme. `fog-agent` today has no `.github/workflows`, no Makefile, and
-   no publish step — `build/cross.sh` and `build/msi.sh` write to a local
-   `./dist` and stop. A GitHub Actions workflow that builds the MSI has to
-   exist before the application can be honest about how signing will work.
-   Say the word and I will write it.
+   programme. `.github/workflows/release.yml` triggers on a `v*` tag and
+   splits into `build` → `sign` → `publish`: `build` installs `msitools`,
+   runs `build/msi.sh` with the tag, and uploads an `unsigned` artifact;
+   `sign` is inert until the repository variable `SIGNPATH_ORGANIZATION_ID`
+   is set, at which point the SignPath action goes in that job; `publish`
+   proceeds when `sign` is skipped, so releases work today and become signed
+   releases the moment the certificate exists. `.github/workflows/ci.yml`
+   runs test and build on every push.
 
 ---
 
@@ -109,17 +114,37 @@ service binary fleet-wide.
 Go (`CGO_ENABLED=0`), cross-compiled from Linux; the MSI is produced with
 `msitools` (`wixl` + `msibuild`) from `build/msi/fog-agent.wxs`. Builds are
 reproducible in the sense that matters here: no cgo, no network access during
-build, version stamped from the git tag via `-ldflags -X main.Version`.
-**[CONFIRM: this will move to GitHub Actions — see blocker 2.]**
+build, version stamped from the git tag via `-ldflags -X main.Version`. All
+release artifacts are built by GitHub Actions from a `v*` tag
+(`.github/workflows/release.yml`), never uploaded from a maintainer's
+machine; the workflow already carries the signing job as a separate stage
+between build and publish.
 
 **Maintainers / who will administer the SignPath account**
-**[CONFIRM: Tom Elliott, FOG Project maintainer, GitHub @mastacontrola —
-plus whoever else should hold administrative access.]**
+Tom Elliott, FOG Project maintainer, GitHub @mastacontrola, working on the
+project since 2013. Sole administrator of the SignPath account.
 
 **Project age and community**
-**[CONFIRM: FOG Project has been developed since 2007. Add the numbers you
-would want a reviewer to see — forum registrations, download counts, known
-institutional users. I deliberately did not estimate any of these.]**
+FOG dates from 2007. Its version history is continuous from the original
+SourceForge Subversion trunk — the first commit in the current git
+repository is the imported `svn.code.sf.net/p/freeghost/code/trunk@1`, dated
+2008-02-12 — and moved to GitHub in April 2014.
+
+Numbers, all from public sources and read on 2026-09-05:
+
+| | |
+|---|---|
+| Forum registered users | 12,758 |
+| Forum topics / posts | 17,514 / 155,276 |
+| Contributors to `fogproject` | 93 |
+| Stars / forks / watchers | 1,653 / 283 / 69 |
+| Releases published | 54, most recently 1.5.10.2253 on 2026-08-11 |
+
+The forum figures come from the public API at <https://forums.fogproject.org>;
+the rest from the GitHub API. GitHub release-asset downloads total 39,636,
+but that number badly understates deployment and should not be read as an
+install count: FOG is normally installed by cloning the repository and
+running `installfog.sh`, not by downloading a release asset.
 
 **Anything else**
 The project has been signing its own artifacts with a private CA for years, so
