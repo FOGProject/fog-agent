@@ -6,9 +6,12 @@ change what is wrong, and submit it yourself at
 <https://signpath.org/apply> (or whatever the current form URL is).
 
 Every open question has been answered and every number below is sourced —
-nothing here is estimated. The only remaining judgement call is flagged under
-"Why SignPath" below: whether to name the person on the current signing
-certificate.
+nothing here is estimated. Nothing is left to decide; the only thing left is
+to paste the "Application answers" section into the form and submit it.
+
+The subject of the current signing certificate is deliberately redacted to
+`<maintainer>` below: it is a real past maintainer's name, and naming them to
+a third party adds nothing the argument needs.
 
 ---
 
@@ -19,11 +22,12 @@ certificate.** Both `SmartInstaller.exe` and `FOGService.msi` on a current
 server carry an Authenticode signature that chains to:
 
 ```
-CN=FOG Project - Sebastian Roth, O=FOG Project, C=DE
+CN=FOG Project - <maintainer>, O=FOG Project, C=DE
   issued by  CN=FOG Project CA, O=FOG Project, C=US
 ```
 
-That is FOG's own self-signed CA. It is timestamped by Sectigo, which makes it
+That is FOG's own self-signed CA, with a past maintainer as the leaf subject.
+It is timestamped by Sectigo, which makes it
 *look* like a commercial signature, but the root is not in the Microsoft
 Trusted Root Program, so Windows treats these binaries as unsigned. FOG has
 therefore never shipped a publicly trusted signed client, and this is a
