@@ -1,13 +1,17 @@
-# SignPath Foundation application — draft for review
+# SignPath Foundation application
 
-**This is a draft. It has not been submitted.** It goes out under FOG
-Project's name to a third party, so it is Tom's to send, not mine. Read it,
-change what is wrong, and submit it yourself at
-<https://signpath.org/apply> (or whatever the current form URL is).
+**Submitted by Tom Elliott on 2026-09-05**, at <https://signpath.org/apply>,
+acknowledged with "Form submitted, thank you, we'll be in touch soon".
+Awaiting a decision.
 
-The field list below was read off the live form on 2026-09-05, not guessed.
-Every number is from a public API. Before this can be submitted, `fog-agent`
-must have a published release — see prerequisite 3.
+This file is kept as the record of what was sent and why. The field list was
+read off the live form on the day of submission; every number in it is from a
+public API.
+
+**If they come back with questions**, the answers are below. **If they
+accept**, the remaining work is in "After acceptance" at the end — the
+`SIGNPATH_ORGANIZATION_ID` variable and the `SIGNPATH_API_TOKEN` secret are
+Tom's to set, the workflow wiring is not.
 
 The subject of the current signing certificate is deliberately redacted to
 `<maintainer>` below: it is a real past maintainer's name, and naming them to

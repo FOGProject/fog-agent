@@ -4,11 +4,11 @@ SignPath Foundation's terms require a published code signing policy naming
 the people who can authorize a signature, and the separation of roles between
 them. This is that document.
 
-**Nothing here is in force yet.** `fog-agent` has applied to SignPath
-Foundation but does not hold a certificate; releases today are unsigned, and
-the `sign` stage of the release workflow is inert. This document describes the
-arrangement that takes effect on acceptance, and exists in advance because the
-application requires it.
+**Nothing here is in force yet.** `fog-agent` applied to SignPath Foundation
+on 2026-09-05 and does not hold a certificate; releases today are unsigned,
+and the `sign` stage of the release workflow is inert. This document describes
+the arrangement that takes effect on acceptance, and exists in advance because
+the application requires it.
 
 ## Attribution
 
