@@ -92,8 +92,9 @@ keys" — without anyone having to own one.
    domain and SID — which is personal data.
 
 6. **Multi-factor authentication is mandatory** for every team member on both
-   SignPath and the source repository. **Tom to confirm on his GitHub
-   account.**
+   SignPath and the source repository. Confirmed on for Tom's GitHub account
+   (2026-09-05); it will need enabling on the SignPath account when it is
+   created.
 
 ---
 
