@@ -20,6 +20,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/directory"
 	"github.com/FOGProject/fog-agent/internal/enroll"
 	"github.com/FOGProject/fog-agent/internal/identity"
+	"github.com/FOGProject/fog-agent/internal/netboot"
 	"github.com/FOGProject/fog-agent/internal/printers"
 	"github.com/FOGProject/fog-agent/internal/provider"
 	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
@@ -1029,14 +1030,55 @@ func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, ou
 	if err != nil {
 		return err
 	}
-	d := reboot.Decide(st.Config.PendingReboot, users, reboot.Policy{Grace: st.Config.RebootGrace})
+
+	// A task reason means the machine has to come back in FOS, and it
+	// reaches FOS by booting from the network (design 0013). If the
+	// firmware cannot be pointed there, rebooting for that task takes the
+	// machine away from whoever is using it and changes nothing: the task
+	// is still queued when it comes back, so the next poll asks again and
+	// the machine reboots on a loop.
+	//
+	// So the task reason is withheld rather than acted on. It stays
+	// pending -- an admin may yet enable PXE in firmware setup -- and any
+	// OTHER reason still gets its reboot, because a machine must not be
+	// held hostage by a task it cannot serve.
+	var armTo netboot.Option
+	arming := false
+	var findErr error
+	if hasTaskReason(st.Config.PendingReboot) {
+		armTo, findErr = findNetboot()
+		arming = findErr == nil
+	}
+	reasons, withheld, refusal := planReboot(st.Config.PendingReboot, findErr)
+	if refusal != "" {
+		out.say("netboot: " + refusal)
+	}
+
+	if len(reasons) == 0 {
+		// Every reason was withheld. Report the refusal so the task shows
+		// why it is not moving, and leave the reasons pending.
+		if _, err := client.Result(ctx, enroll.ResultRequest{
+			Revision: st.Config.AppliedRevision, Capability: "reboot",
+			Status: provider.StatusFailed, Detail: refusal,
+		}); err != nil {
+			out.say("result: " + err.Error())
+		}
+		st.Config.PendingReboot = withheld
+		return st.SaveConfig()
+	}
+
+	d := reboot.Decide(reasons, users, reboot.Policy{Grace: st.Config.RebootGrace})
 	status := provider.StatusPendingReboot
 	if d.Reboot {
 		status = provider.StatusApplied
 	}
-	out.say(fmt.Sprintf("reboot: %s (%s%s)", status, d.Why, map[bool]string{true: ", mode " + d.Mode, false: ""}[d.Reboot]))
+	detail := d.Why
+	if refusal != "" {
+		detail += "; task reboot withheld: " + refusal
+	}
+	out.say(fmt.Sprintf("reboot: %s (%s%s)", status, detail, map[bool]string{true: ", mode " + d.Mode, false: ""}[d.Reboot]))
 	if _, err := client.Result(ctx, enroll.ResultRequest{
-		Revision: st.Config.AppliedRevision, Capability: "reboot", Status: status, Detail: d.Why,
+		Revision: st.Config.AppliedRevision, Capability: "reboot", Status: status, Detail: detail,
 	}); err != nil {
 		out.say("result: " + err.Error())
 	}
@@ -1046,23 +1088,96 @@ func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, ou
 	// Persist before asking: the reboot is asynchronous and the reasons
 	// are satisfied the moment it is accepted. A refused request puts
 	// them back.
-	reasons := st.Config.PendingReboot
 	for _, r := range reasons {
 		if r.TaskID != 0 {
 			st.Config.RebootedForTask = r.TaskID
 		}
 	}
-	st.Config.PendingReboot = nil
+	st.Config.PendingReboot = withheld
 	if err := st.SaveConfig(); err != nil {
 		return err
 	}
+	// Armed as late as possible, and undone if the reboot does not happen:
+	// a BootNext left set by a reboot that was refused would send the
+	// machine to the network on whatever boot came next, for whatever
+	// reason, which is a surprise nobody asked for.
+	if arming {
+		if err := netboot.Arm(armTo); err != nil {
+			st.Config.PendingReboot = append(withheld, reasons...)
+			st.Config.RebootedForTask = 0
+			_ = st.SaveConfig()
+			return fmt.Errorf("arming a network boot: %w", err)
+		}
+		out.say("netboot: armed " + armTo.String() + " for one boot")
+	}
 	if err := reboot.Execute(d.Mode, d.Delay, "FOG: "+d.Mode+" for "+d.Why); err != nil {
-		st.Config.PendingReboot = reasons
+		if arming {
+			if derr := netboot.Disarm(); derr != nil {
+				out.say("netboot: could not disarm after a failed reboot: " + derr.Error())
+			}
+		}
+		st.Config.PendingReboot = append(withheld, reasons...)
 		st.Config.RebootedForTask = 0
 		_ = st.SaveConfig()
 		return err
 	}
 	return nil
+}
+
+// findNetboot is netboot.Find, swappable so the withholding policy can be
+// tested without firmware.
+var findNetboot = netboot.Find
+
+// planReboot splits the pending reasons into the ones to act on now and the
+// ones to hold back, given whether a network boot could be armed (design
+// 0013 section 3).
+//
+// findErr nil means armable, or that no task reason was present and the
+// question never arose -- both are "nothing to withhold". A non-nil findErr
+// withholds every task reason and returns the sentence explaining why. It
+// is deliberately only the TASK reasons that are held: a hostname change or
+// a software install wants the machine back in its own OS, which a plain
+// reboot delivers, so those are unaffected by there being nowhere to
+// netboot to.
+func planReboot(pending []reboot.Reason, findErr error) (act, withheld []reboot.Reason, refusal string) {
+	if findErr == nil {
+		return pending, nil, ""
+	}
+	for _, r := range pending {
+		if r.Source == reboot.SourceTask {
+			withheld = append(withheld, r)
+		}
+	}
+	if len(withheld) == 0 {
+		return pending, nil, ""
+	}
+	return reboot.Drop(pending, reboot.SourceTask), withheld, netbootRefusal(findErr)
+}
+
+// hasTaskReason reports whether a FOG task is among the reasons: the one
+// kind of reboot that has to land somewhere other than the local disk.
+func hasTaskReason(reasons []reboot.Reason) bool {
+	for _, r := range reasons {
+		if r.Source == reboot.SourceTask {
+			return true
+		}
+	}
+	return false
+}
+
+// netbootRefusal turns a netboot failure into something an admin can act
+// on. The two cases need different fixes and must not read alike: one is a
+// machine that has no UEFI at all, the other a UEFI machine whose network
+// boot entry is missing or switched off.
+func netbootRefusal(err error) string {
+	switch {
+	case errors.Is(err, netboot.ErrUnsupported):
+		return "this machine exposes no UEFI boot manager, so a one-shot network boot cannot be armed; set its firmware to boot from the network ahead of the local disk"
+	case errors.Is(err, netboot.ErrNoOption):
+		return "the firmware lists no network boot entry to arm; enable PXE or network boot in firmware setup"
+	default:
+		return "could not arm a network boot: " + err.Error()
+	}
 }
 
 // cmdRenew renews now, regardless of expiry: an operator's rotation, and
