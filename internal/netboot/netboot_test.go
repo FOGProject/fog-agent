@@ -64,6 +64,47 @@ const (
 		"00424f"
 )
 
+// The OVMF fixtures below were read out of a QEMU guest's own NVMe-less
+// varstore on 2026-09-05: an edk2-stable202608 OVMF built with
+// NETWORK_PXE_BOOT_ENABLE, booted once, then its OVMF_VARS.fd parsed for
+// AUTHENTICATED_VARIABLE_HEADER entries. Not one byte was substituted -- the
+// MAC really is QEMU's default 52:54:00:12:34:56.
+//
+// Why a second machine's worth of fixtures: the 7550 set above is one
+// vendor's idea of a boot entry, and this package's whole claim is that it
+// reads the BYTES rather than the vendor's description string. OVMF names
+// things differently ("UEFI PXEv4 (MAC:...)" against "Onboard NIC(IPV4)")
+// and emits a device path with no vendor node at all, so a parser that had
+// quietly grown a dependency on the Dell shape would fail here.
+//
+// This is also the firmware design 0013's arming half is proven on. No
+// virtualization ships a network Boot#### by default -- VirtualBox persists
+// none, and Fedora, Debian and openSUSE all compile OVMF without NetworkPkg
+// -- so the entry these bytes came from had to be built before it could be
+// captured.
+const (
+	// Boot0004 "UEFI PXEv4 (MAC:525400123456)": MAC node (03/0b) then IPv4
+	// node (03/0c). The entry Find must choose.
+	fixtureOvmfPXEv4 = "0100000056005500450046004900200050005800450076003400200028004d00410043003a0035003200350034003000" +
+		"30003100320033003400350036002900000002010c00d041030a00000000010106000002030b25005254001234560000" +
+		"00000000000000000000000000000000000000000000000001030c1b0000000000000000000000000000000000000000" +
+		"000000007fff04004eac0881119f594d850ee21a522c59b2"
+		// Boot0005 "UEFI PXEv6 (MAC:525400123456)": the same MAC node, but an
+	// IPv6 node (03/0d). A network entry FOG cannot use, because FOG serves
+	// PXE over IPv4.
+	fixtureOvmfPXEv6 = "0100000077005500450046004900200050005800450076003600200028004d00410043003a0035003200350034003000" +
+		"30003100320033003400350036002900000002010c00d041030a00000000010106000002030b25005254001234560000" +
+		"00000000000000000000000000000000000000000000000001030d3c0000000000000000000000000000000000000000" +
+		"000000000000000000000000000000000000000040000000000000000000000000000000007fff04004eac0881119f59" +
+		"4d850ee21a522c59b2"
+		// Boot0003 "UEFI QEMU HARDDISK QM00003": a SATA node (03/12). A
+	// MESSAGING node that is not a network node, from a second firmware --
+	// the case a lazy "has a messaging node" check would arm.
+	fixtureOvmfSATA = "01000000200055004500460049002000510045004d005500200048004100520044004400490053004b00200051004d00" +
+		"300030003000300033002000000002010c00d041030a0000000001010600021f03120a000100ffff00007fff04004eac" +
+		"0881119f594d850ee21a522c59b2"
+)
+
 func mustHex(t *testing.T, s string) []byte {
 	t.Helper()
 	b, err := hex.DecodeString(s)
@@ -383,6 +424,66 @@ func TestFindPicksTheNetworkEntryOutOfARealBootOrder(t *testing.T) {
 	}
 	if got.Number != 3 {
 		t.Errorf("Find chose %v, want Boot0003", got)
+	}
+}
+
+// The same three questions, asked of a completely different firmware. The
+// entries here are OVMF's, and their real BootOrder is 0000..0008 -- the
+// entries left out are Fv()/FvFile() application options (the boot menu,
+// firmware setup, the internal shell) with no messaging node of any kind,
+// which the Windows fixture above already covers.
+func TestFindPicksPXEv4OutOfAnOvmfBootOrder(t *testing.T) {
+	withFirmware(t, fakeFirmware{vars: map[string][]byte{
+		"BootOrder": bootOrder(3, 4, 5),
+		"Boot0003":  mustHex(t, fixtureOvmfSATA),
+		"Boot0004":  mustHex(t, fixtureOvmfPXEv4),
+		"Boot0005":  mustHex(t, fixtureOvmfPXEv6),
+	}})
+	got, err := Find()
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if got.Number != 4 {
+		t.Errorf("Find chose %v, want Boot0004", got)
+	}
+	if !got.IPv4 {
+		t.Error("the PXEv4 entry parsed as not IPv4")
+	}
+	// The description is reported to an admin, never used to decide. It is
+	// checked here only because a wrong one would mean the UTF-16 walk
+	// found the device path in the wrong place.
+	if got.Description != "UEFI PXEv4 (MAC:525400123456)" {
+		t.Errorf("description = %q", got.Description)
+	}
+}
+
+// OVMF lists PXEv4 before PXEv6, so the previous test would pass even on a
+// parser that just took the first network entry. This one puts IPv6 first.
+func TestOvmfIPv4WinsWhenTheFirmwareListsIPv6First(t *testing.T) {
+	withFirmware(t, fakeFirmware{vars: map[string][]byte{
+		"BootOrder": bootOrder(5, 4),
+		"Boot0004":  mustHex(t, fixtureOvmfPXEv4),
+		"Boot0005":  mustHex(t, fixtureOvmfPXEv6),
+	}})
+	got, err := Find()
+	if err != nil {
+		t.Fatalf("Find: %v", err)
+	}
+	if got.Number != 4 {
+		t.Errorf("Find chose %v, want Boot0004: FOG serves PXE over IPv4", got)
+	}
+}
+
+// A SATA node is type 0x03 -- messaging -- in this firmware exactly as in
+// VirtualBox's. Two vendors doing the same thing is the argument for
+// checking the SUBTYPE rather than the type.
+func TestOvmfDiskOptionIsNotANetworkBoot(t *testing.T) {
+	lo, err := parseLoadOption(mustHex(t, fixtureOvmfSATA))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if lo.network {
+		t.Error("a SATA device path parsed as a network boot")
 	}
 }
 
