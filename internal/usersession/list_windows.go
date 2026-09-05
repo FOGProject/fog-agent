@@ -59,11 +59,19 @@ type wtsInfoW struct {
 	WinStationName          [32]uint16
 	Domain                  [17]uint16
 	UserName                [21]uint16
-	ConnectTime             int64
-	DisconnectTime          int64
-	LastInputTime           int64
-	LogonTime               int64
-	CurrentTime             int64
+	// Explicit padding, and it is not decoration. The fields above end at
+	// offset 172. Windows lays the int64s out on an 8-byte boundary on both
+	// 32- and 64-bit, so the real struct pads to 176. Go's amd64 alignment
+	// does that by itself, but on 386 Go aligns int64 to 4, so without this
+	// the struct is 212 bytes and every timestamp below is read four bytes
+	// early -- a plausible wrong answer, not a crash. Writing the pad out
+	// makes both architectures agree with the header.
+	_              [4]byte
+	ConnectTime    int64
+	DisconnectTime int64
+	LastInputTime  int64
+	LogonTime      int64
+	CurrentTime    int64
 }
 
 // A wrong size means the compiler laid the struct out differently from the
