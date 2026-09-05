@@ -5,9 +5,9 @@ Project's name to a third party, so it is Tom's to send, not mine. Read it,
 change what is wrong, and submit it yourself at
 <https://signpath.org/apply> (or whatever the current form URL is).
 
-Every open question has been answered and every number below is sourced —
-nothing here is estimated. Nothing is left to decide; the only thing left is
-to paste the "Application answers" section into the form and submit it.
+The field list below was read off the live form on 2026-09-05, not guessed.
+Every number is from a public API. Before this can be submitted, `fog-agent`
+must have a published release — see prerequisite 3.
 
 The subject of the current signing certificate is deliberately redacted to
 `<maintainer>` below: it is a real past maintainer's name, and naming them to
@@ -50,7 +50,7 @@ naming: **no maintainer holds a key.** CI holds a revocable credential. That
 answers the question design 0001 §13 left open — "who owns the signing
 keys" — without anyone having to own one.
 
-## Prerequisites — both now met, one still needs your word
+## Prerequisites
 
 1. **`FOGProject/fog-agent` had no `LICENSE` file.** SignPath Foundation
    requires an OSI-approved open source license. GPL-3.0 was added, matching
@@ -67,24 +67,111 @@ keys" — without anyone having to own one.
    is set, at which point the SignPath action goes in that job; `publish`
    proceeds when `sign` is skipped, so releases work today and become signed
    releases the moment the certificate exists. `.github/workflows/ci.yml`
-   runs test and build on every push.
+   runs test and build on every push. The form's Build System field is a
+   dropdown offering only GitHub Actions and GitLab CI/CD, so this was not
+   optional.
+
+3. **The project must already be released in the form to be signed.** This is
+   an explicit eligibility condition in SignPath's terms, and `fog-agent` had
+   no tags and no releases at all — there was nothing for a Download URL to
+   point at. A `v0.1.0` release is the unblock: `release.yml` builds the MSI
+   and publishes it unsigned, which is the state every project is in before
+   it holds a certificate.
+
+4. **The download page must mention SignPath.** The Download URL field's own
+   hint: "This page must mention that the project uses the SignPath
+   Foundation for code signing." `fogproject.org/download.php` says nothing
+   about code signing today. **This is a change to Tom's website, and it is
+   his to make** — normally after acceptance, since the statement would
+   otherwise be false.
+
+5. **A privacy policy and a published code signing policy are required.**
+   Both now exist: [`PRIVACY.md`](../../PRIVACY.md) and
+   [`code-signing-policy.md`](code-signing-policy.md). The privacy policy
+   matters here because the agent reports logon sessions — account name,
+   domain and SID — which is personal data.
+
+6. **Multi-factor authentication is mandatory** for every team member on both
+   SignPath and the source repository. **Tom to confirm on his GitHub
+   account.**
 
 ---
 
 ## Application answers
 
-**Project name**
-FOG Project — `fog-agent`
+The form at <https://signpath.org/apply> is a HubSpot form; these are its
+actual fields, read off the live page on 2026-09-05, in order. `*` marks a
+required field. There is no free-text "anything else" box, so anything not
+covered by a field below does not get said — which is why the Reputation box
+carries the argument.
 
-**Project website**
-<https://fogproject.org>
+| Field | Answer |
+|---|---|
+| Project Name* | `FOG Project` |
+| Repository URL* | `https://github.com/FOGProject/fog-agent` |
+| Homepage URL* | `https://fogproject.org` |
+| Download URL | see blocker 3 |
+| Privacy Policy URL* (if data is collected) | `https://github.com/FOGProject/fog-agent/blob/main/PRIVACY.md` |
+| Wikipedia URL | *(none)* |
+| Tagline* | below |
+| Description* | below |
+| Reputation* | below |
+| Maintainer Type | `Independent community project (no formal organization)` |
+| Build System | `GitHub Actions` |
+| First Name* / Last Name* | `Tom` / `Elliott` |
+| Email* | Tom's — deliberately not written down here |
+| Company Name | *(blank — FOG is not an employer's project)* |
+| Primary Discovery Channel* | `AI / LLM tools` |
+| Code of Conduct checkbox* | must be ticked |
+| Data processing checkbox* | must be ticked |
 
-**Source repository**
-<https://github.com/FOGProject/fog-agent>
+**Project Name** is `FOG Project`, not `fog-agent`. The field's own hint is
+"a Google search for this name should clearly identify your project", and
+`fog-agent` does not — it is a component name a few weeks old.
+
+**Build System** is a dropdown offering only GitHub Actions and GitLab CI/CD.
+FOG qualifies because release artifacts are built by
+`.github/workflows/release.yml`; a project building its installer on a
+maintainer's laptop cannot answer this field at all.
+
+**Tagline** (one sentence, may be published on signpath.org)
+> Free, open source imaging, cloning and management for fleets of computers.
+
+**Description**
+> FOG is an open source computer imaging, cloning and management system, in
+> continuous use since 2007 by schools, universities, hospitals, municipal IT
+> departments and small businesses to image and manage fleets of machines.
+> `fog-agent` is the management agent that runs on each managed machine: it
+> enrolls with its FOG server using a per-machine certificate, converges the
+> machine to the state the server describes, and reports inventory and status
+> back over a mutually authenticated channel.
+
+**Reputation**
+> FOG has been developed since 2007, with continuous version history from the
+> original SourceForge Subversion trunk (the first commit in the current git
+> repository is the imported `trunk@1`, dated 2008-02-12) and on GitHub since
+> April 2014.
+>
+> - Community forum: 12,758 registered users, 17,514 topics, 155,276 posts —
+>   <https://forums.fogproject.org>
+> - `FOGProject/fogproject`: 1,653 stars, 283 forks, 93 contributors, 54
+>   releases, most recently 1.5.10.2253 on 2026-08-11
+> - GitHub release assets have been downloaded 39,636 times, which
+>   substantially understates deployment: FOG is normally installed by
+>   cloning the repository and running `installfog.sh`, not by downloading a
+>   release asset.
+>
+> FOG already signs its Windows artifacts, but with its own self-signed CA
+> whose root is not in the Microsoft Trusted Root Program, so Windows treats
+> them as unsigned. This replaces an untrusted signature with a trusted one
+> rather than introducing a new step.
+
+---
+
+## Supporting detail (not form fields)
 
 **Related repositories**
-- <https://github.com/FOGProject/fogproject> — the server (GPL-3.0, 1,653
-  stars, 283 forks)
+- <https://github.com/FOGProject/fogproject> — the server (GPL-3.0)
 - <https://github.com/FOGProject/fog-client> — the .NET client this replaces
   (GPL-3.0)
 

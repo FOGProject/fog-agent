@@ -57,6 +57,9 @@ mkdir -p dist
 # so a plain dev `go build` stays unversioned and the tree stays clean.
 syso="cmd/fog-agent/resource_windows_amd64.syso"
 verjson="$(mktemp)"
+# $msiver, not $version, everywhere below: goversioninfo requires a bare
+# x.y.z and warns "version expected to start from x.y.z" on a tag like
+# v0.1.0, leaving the exe's displayed ProductVersion unset.
 IFS=. read -r vmaj vmin vpatch <<<"$msiver"
 cat >"$verjson" <<JSON
 {
@@ -70,7 +73,7 @@ cat >"$verjson" <<JSON
     "InternalName": "fog-agent",
     "OriginalFilename": "fog-agent.exe",
     "ProductName": "FOG Agent",
-    "ProductVersion": "${version}"
+    "ProductVersion": "${msiver}"
   },
   "VarFileInfo": {"Translation": {"LangID": "0409", "CharsetID": "04B0"}}
 }
