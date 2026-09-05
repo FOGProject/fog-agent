@@ -37,10 +37,10 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      - name: install msitools
+      - name: install msitools and wixl
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y msitools
+          sudo apt-get install --no-install-recommends -y msitools wixl
 
       - name: install goversioninfo
         run: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@v1.7.0

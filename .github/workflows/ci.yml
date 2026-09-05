@@ -59,12 +59,17 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      # wixl, msibuild and msiinfo. No Windows runner is needed to build the
-      # installer, and using one would mean maintaining a second toolchain.
-      - name: install msitools
+      # No Windows runner is needed to build the installer, and using one
+      # would mean maintaining a second toolchain.
+      #
+      # Two packages, not one: Debian and Ubuntu split the msitools source so
+      # that msiinfo and msibuild come from msitools while wixl has a binary
+      # package of its own. Fedora ships all three in msitools, which is why
+      # this only showed up in CI.
+      - name: install msitools and wixl
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y msitools
+          sudo apt-get install --no-install-recommends -y msitools wixl
 
       # Pinned rather than @latest: an unpinned tool in a release path is the
       # supply-chain hole that code signing exists to close.

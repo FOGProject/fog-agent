@@ -44,9 +44,9 @@ fi
 legacy_upgradecode="{1CCFDEAF-53E9-43AC-AE18-F9F86CEFA4EA}"
 
 need() { command -v "$1" >/dev/null 2>&1 || { echo "build/msi.sh: missing $1 ($2)" >&2; exit 1; }; }
-need wixl "dnf install msitools"
-need msibuild "dnf install msitools"
-need msiinfo "dnf install msitools"
+need wixl "dnf install msitools, or apt install wixl -- Debian splits wixl out of the msitools package"
+need msibuild "dnf install msitools, or apt install msitools"
+need msiinfo "dnf install msitools, or apt install msitools"
 goversioninfo="$(command -v goversioninfo || echo "$(go env GOPATH)/bin/goversioninfo")"
 [[ -x $goversioninfo ]] || { echo "build/msi.sh: missing goversioninfo (go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest)" >&2; exit 1; }
 
