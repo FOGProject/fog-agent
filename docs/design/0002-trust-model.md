@@ -2,8 +2,11 @@
 
 Status: enrollment, the certificate channel, renewal and token minting are
 built (fogproject PR #1707, 2026-09-03); enrollment and the channel are proven
-on the lab, renewal and tokens await a lab run. Capabilities are designed but
-not built. Windows service install is not started.
+on the lab, renewal and tokens await a lab run. The eight capabilities named in
+`supportedCapabilities` — hostname, taskreboot, power, software, printers,
+directory, wake, snapin — are built and each has been exercised on the lab; see
+the status line of the design that owns it. Windows service install ships in
+the MSI (0005) and runs on `telliottwin11`.
 
 ## The one idea
 
