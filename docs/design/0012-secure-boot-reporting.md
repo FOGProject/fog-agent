@@ -1,13 +1,19 @@
 # 0012: Secure Boot posture as a reported fact
 
-Status: SHIPPED 2026-09-05. Agent: `internal/secureboot`, gathered in
-`cmd/fog-agent/facts.go`. Server: `FOG\Agent\SecureBootFacts`, registered as
-`'secureboot'` in `State::FACT_REPORTS`, covered by
-`tests/agent-secureboot-facts.test.php` (13 checks, five mutants killed).
-Verified on both platforms with the shipping code: this Linux workstation
-reports `{efi 00 00}` (-> `disabled`, which is right -- Secure Boot is off on
-it) and `telliottwin11` reports `{efi 01 00}` (-> `enforcing`, against the
-ledger's stale `disabled` that motivated the whole document).
+Status: SHIPPED and PROVEN END TO END 2026-09-05. Agent:
+`internal/secureboot`, gathered in `cmd/fog-agent/facts.go`. Server:
+`FOG\Agent\SecureBootFacts`, registered as `'secureboot'` in
+`State::FACT_REPORTS`, covered by `tests/agent-secureboot-facts.test.php`
+(13 checks, five mutants killed).
+
+Proven on the lab install, not just in tests: host 105 `telliottwin11` polled
+the live server at 11:01:14 UTC, `hosts.hostSbState` moved off the value it
+had been stuck on since the last netboot, and an `agent.secureboot` audit row
+recorded the transition with both ends named. That first live run also found
+a real bug -- see section 5: the service, as LocalSystem, could not read the
+firmware variables at all, so the first thing it reported was `noefivars`.
+Reading needs `SeSystemEnvironmentPrivilege` *enabled*, which this document
+originally said it did not.
 
 Adds a sixth kind to the fact channel of
 [0006](0006-inventory.md): the agent reports what its firmware says about
@@ -151,11 +157,30 @@ wanted is the first one. The package exists precisely so this is handled once
 rather than in both `internal/secureboot` and `internal/netboot` (design
 0013), which would be two copies of the same trap.
 
-Two corrections to what this document first claimed, both from the same
-measurement. Reading these variables needed **no elevation**: the probe ran in
-a UAC-filtered ssh session as an ordinary admin account and returned both
-values, so `SE_SYSTEM_ENVIRONMENT_NAME` is a requirement for *setting* a
-firmware variable, not for getting one. And `Confirm-SecureBootUEFI` is not
+**Reading needs `SeSystemEnvironmentPrivilege` ENABLED, exactly as writing
+does.** This document said the opposite for a day, from a measurement that
+was real but not representative: the probe ran in an interactive ssh session
+whose token already had the privilege enabled, so the read looked free. The
+service runs as LocalSystem, which *holds* the privilege but carries it
+*disabled*, like every other token. Measured on telliottwin11 2026-09-05 with
+the same Win32 call under both identities:
+
+```
+TELLIOTTWIN11\telliott   SecureBoot ok  len=1 bytes=01   privilege Enabled
+NT AUTHORITY\SYSTEM      SecureBoot FAILED win32err=1314 privilege Disabled
+```
+
+1314 is `ERROR_PRIVILEGE_NOT_HELD`, and holding a privilege is not having it
+enabled -- `AdjustTokenPrivileges` is what switches it on. The agent that
+shipped that morning therefore read nothing, reported `{efi   }`, and the
+server correctly mapped two empty bytes to `noefivars` -- overwriting a real
+observation on a machine that was enforcing. `internal/firmware.osReadVar`
+now enables the privilege before the read, and a read that fails for any
+reason other than "no UEFI here" is logged by name rather than rendering as
+a silent empty string. The failure was invisible precisely because
+`noefivars` is a plausible answer.
+
+`Confirm-SecureBootUEFI` is not
 needed at all — it is the documented PowerShell route, but shelling out to
 PowerShell on every poll to read two bytes is not worth it when the Win32 call
 answers directly. The registry value

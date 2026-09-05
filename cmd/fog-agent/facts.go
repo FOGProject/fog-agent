@@ -101,7 +101,14 @@ func attachFacts(st *enroll.State, req *enroll.PollRequest, now time.Time, out *
 			sent.printers = h
 		}
 	}
-	if sb, ok := secureboot.Gather(); ok {
+	if sb, ok, diag := secureboot.Gather(); ok {
+		if diag != nil {
+			// Said once per collection, not per poll, and said even though
+			// the block still goes out: two unreadable variables become
+			// NOEFIVARS on the server, which looks like an answer about the
+			// machine rather than about this agent's access to it.
+			out.say("secure boot: " + diag.Error())
+		}
 		if h := sb.Hash(); h != st.Config.SecureBootHash || st.Config.WantSecureBoot {
 			req.SecureBoot = &sb
 			sent.secureboot = h

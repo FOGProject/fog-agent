@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 
 	"github.com/FOGProject/fog-agent/internal/firmware"
 )
@@ -53,9 +54,16 @@ var goos = runtime.GOOS
 // names; reporting "nonefi" would assert "Secure Boot is not a concept on
 // this machine", which is false. Sending nothing leaves the server's
 // existing value alone, which is the truthful outcome.
-func Gather() (State, bool) {
+//
+// The error is a DIAGNOSTIC, not a failure: the state returned with it is
+// still the one to send. It exists because a read that fails renders as ""
+// and the server maps two empty bytes to NOEFIVARS -- a plausible-looking
+// answer that says nothing about why. On 2026-09-05 that cost a detour: the
+// service, as LocalSystem, could not read either variable and reported an
+// enforcing machine as NOEFIVARS with nothing anywhere saying so. Log it.
+func Gather() (State, bool, error) {
 	if goos == "darwin" {
-		return State{}, false
+		return State{}, false, nil
 	}
 	sb, sbErr := readVar("SecureBoot")
 	sm, smErr := readVar("SetupMode")
@@ -64,13 +72,32 @@ func Gather() (State, bool) {
 	// answer that tells an admin the Secure Boot enrollment task can
 	// never apply here, rather than leaving the host unreported forever.
 	if errors.Is(sbErr, firmware.ErrUnsupported) && errors.Is(smErr, firmware.ErrUnsupported) {
-		return State{Platform: "bios"}, true
+		return State{Platform: "bios"}, true, nil
 	}
 	return State{
 		Platform:   "efi",
 		SecureBoot: firstByteHex(sb, sbErr),
 		SetupMode:  firstByteHex(sm, smErr),
-	}, true
+	}, true, unreadable(sbErr, smErr)
+}
+
+// unreadable describes the reads that failed on a machine that does have
+// UEFI. ErrUnsupported is not included: on a mixed answer it means that one
+// variable is absent, which the empty value already states.
+func unreadable(sbErr, smErr error) error {
+	var parts []string
+	for _, e := range []struct {
+		name string
+		err  error
+	}{{"SecureBoot", sbErr}, {"SetupMode", smErr}} {
+		if e.err != nil && !errors.Is(e.err, firmware.ErrUnsupported) {
+			parts = append(parts, e.name+": "+e.err.Error())
+		}
+	}
+	if len(parts) == 0 {
+		return nil
+	}
+	return errors.New(strings.Join(parts, "; "))
 }
 
 // firstByteHex renders a variable's value the way the server expects it.

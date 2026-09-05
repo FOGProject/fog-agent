@@ -24,10 +24,30 @@ var (
 // with no UEFI, which is the BIOS/CSM signal.
 const errorInvalidFunction syscall.Errno = 1
 
+// ERROR_PRIVILEGE_NOT_HELD is what both the read and the write return when
+// SeSystemEnvironmentPrivilege is not ENABLED in the calling token.
+const errorPrivilegeNotHeld syscall.Errno = 1314
+
 // osReadVar reads a firmware variable. Unlike efivarfs there is no
 // attribute word: the call returns the data bytes alone, measured on
 // telliottwin11 2026-09-04 (design 0012 section 5).
+//
+// READING NEEDS THE PRIVILEGE TOO. This is the correction of a claim design
+// 0012 made from a bad measurement: the first probe ran in an interactive
+// ssh session whose token already had SeSystemEnvironmentPrivilege enabled,
+// so the read looked free. The service runs as LocalSystem, which HOLDS the
+// privilege but carries it DISABLED like every other token -- and the read
+// then fails 1314 exactly as a write does. Measured on telliottwin11
+// 2026-09-05: as TELLIOTTWIN11\telliott, SecureBoot reads 01 with the
+// privilege Enabled; as NT AUTHORITY\SYSTEM it fails 1314 with the same
+// privilege Disabled. The agent shipped that morning reported both
+// variables empty, which the server correctly mapped to `noefivars` and
+// wrote over a real observation on an enforcing machine.
 func osReadVar(name string) ([]byte, error) {
+	// Best effort: a machine where the read needs no privilege still works
+	// if this fails, and the read's own error is the more specific one.
+	privErr := enableFirmwarePrivilege()
+
 	n, err := syscall.UTF16PtrFromString(name)
 	if err != nil {
 		return nil, err
@@ -47,8 +67,26 @@ func osReadVar(name string) ([]byte, error) {
 		uintptr(len(buf)),
 	)
 	if r == 0 {
-		if en, ok := e.(syscall.Errno); ok && en == errorInvalidFunction {
-			return nil, ErrUnsupported
+		if en, ok := e.(syscall.Errno); ok {
+			if en == errorInvalidFunction {
+				return nil, ErrUnsupported
+			}
+			if en == errorPrivilegeNotHeld {
+				// Say which privilege and that enabling it is the fix,
+				// because 1314's own text ("A required privilege is not
+				// held by the client") names neither and sent this on a
+				// long detour once already.
+				if privErr != nil {
+					return nil, fmt.Errorf(
+						"firmware: reading %s needs SeSystemEnvironmentPrivilege enabled: %w",
+						name, privErr,
+					)
+				}
+				return nil, fmt.Errorf(
+					"firmware: reading %s: SeSystemEnvironmentPrivilege was enabled but the call still reports it not held",
+					name,
+				)
+			}
 		}
 		return nil, fmt.Errorf("firmware: reading %s: %w", name, e)
 	}
