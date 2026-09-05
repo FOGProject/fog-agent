@@ -21,7 +21,7 @@ write and the delete, so the firmware never acted on it.
 
 The last step — a machine actually going to the network **because**
 `BootNext` was set — is proven too, and it took building a firmware to prove
-it. See section 9.
+it. See section 8.
 
 ---
 
@@ -245,7 +245,7 @@ It does not replace `hostBiosExit`/`hostEfiExit`. Those govern what iPXE does
 when it finds no task, which is the other half of the same journey and is
 unchanged.
 
-## 9. Proving it, and what it cost
+## 8. Proving it, and what it cost
 
 The claim that needed proving is the one this package does not implement:
 **the firmware boots the armed entry, once, ahead of its own boot order.**
@@ -315,7 +315,7 @@ QEMU's user-mode networking is enough for the whole test: slirp answers DHCP
 and TFTP locally and still routes the guest to the real FOG server on the host,
 so nothing about the lab network has to be touched.
 
-## 8. Open
+## 9. Open
 
 - Whether "this host has no network boot option" should become a reported
   fact in its own right, so an admin can see before queuing a task that it can
