@@ -1,12 +1,13 @@
 # 0012: Secure Boot posture as a reported fact
 
-Status: agent side BUILT 2026-09-05 (`internal/secureboot`, gathered in
-`cmd/fog-agent/facts.go`); the server's `FACT_REPORTS` entry is not written
-yet, so nothing is stored. Verified on both platforms with the shipping code:
-this Linux workstation reports `{efi 00 00}` (→ `disabled`, which is right —
-Secure Boot is off on it) and `telliottwin11` reports `{efi 01 00}`
-(→ `enforcing`, against the ledger's stale `disabled` that motivated the
-whole document).
+Status: SHIPPED 2026-09-05. Agent: `internal/secureboot`, gathered in
+`cmd/fog-agent/facts.go`. Server: `FOG\Agent\SecureBootFacts`, registered as
+`'secureboot'` in `State::FACT_REPORTS`, covered by
+`tests/agent-secureboot-facts.test.php` (13 checks, five mutants killed).
+Verified on both platforms with the shipping code: this Linux workstation
+reports `{efi 00 00}` (-> `disabled`, which is right -- Secure Boot is off on
+it) and `telliottwin11` reports `{efi 01 00}` (-> `enforcing`, against the
+ledger's stale `disabled` that motivated the whole document).
 
 Adds a sixth kind to the fact channel of
 [0006](0006-inventory.md): the agent reports what its firmware says about

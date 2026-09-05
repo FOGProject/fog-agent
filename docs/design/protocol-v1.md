@@ -109,6 +109,7 @@ own host, as opposed to what it has applied:
                             "ipv4": "10.20.30.14", "prefix": 24,
                             "network": "10.20.30.0", "broadcast": "10.20.30.255",
                             "up": true, "wireless": false}]},
+ "secureboot": {"platform": "efi", "secure_boot": "01", "setup_mode": "00"},
  "sessions": {"open": [{"key": "2", "user": "telliott", "domain": "LAB", "type": "console",
                         "state": "active", "started_at": "2026-09-04T09:12:03Z"}],
               "closed": [{"key": "3", "user": "tom", "type": "remote", "state": "active",
@@ -118,7 +119,15 @@ own host, as opposed to what it has applied:
 
 A fact block is present only when the agent's own content hash for it moved,
 or when the previous answer asked with `want_inventory` / `want_software` /
-`want_directory` / `want_printers` / `want_network`.
+`want_directory` / `want_printers` / `want_network` / `want_secureboot`.
+
+`secureboot` carries raw observations rather than a state name (design
+0012): the platform and the two firmware bytes, which the server maps with
+`SecureBootState::fromBootRequest()` -- the same call it applies to what
+iPXE sends on a netboot. Naming the state here would put that six-way
+mapping in two languages, and the vocabulary was copied verbatim from FOS
+precisely so there would only ever be one of it. A machine with no honest
+mapping onto the six names (macOS) sends no block at all.
 
 `network` is the one collected on **every** poll rather than on the agent's
 hourly fact interval: it is a single `net.Interfaces()` call, where
