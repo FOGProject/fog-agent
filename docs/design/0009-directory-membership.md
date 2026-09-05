@@ -331,6 +331,23 @@ dismissed: it needs verification against a real domain controller, and the
 protocol shape (a base64 blob in place of a credential) is a small change to
 make later.
 
+### 6.1 What a Windows join changes besides membership
+
+Worth stating because the lab proof walked into it and any site joining
+Windows hosts through FOG will too: a successful join moves the machine's
+network profile from Private to DomainAuthenticated, and **inbound firewall
+rules scoped to the old profile stop applying**. On the lab host, RDP stayed
+reachable and SSH and ping did not, which looks precisely like the machine
+having fallen off the network — while the agent itself kept polling, because
+the agent's traffic is outbound and nothing blocks that.
+
+Two things follow. The agent is unaffected, so FOG does not lose the host and
+this never becomes an emergency. And the machine may nonetheless become
+unreachable by whatever the admin was using to reach it, which is the kind of
+thing that must be said in the documentation for the join, not discovered.
+The agent must not "fix" this: opening a firewall the site closed is not
+something a management agent gets to do as a side effect of a join.
+
 ## 7. Reporting
 
 A `Directory Membership` report under Lists, gated on `host` like
