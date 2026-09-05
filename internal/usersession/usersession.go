@@ -76,6 +76,32 @@ const (
 // collector ran and genuinely found nobody logged on.
 func List() ([]Session, bool) { return list() }
 
+// IdleFor reports how long the session with this Key has had no user input.
+//
+// The bool is false whenever the answer is not known -- no collector on this
+// platform, a session that vanished between enumeration and this call, or an
+// OS that simply does not populate the field for that session. It is NOT a
+// zero duration in disguise, and the difference is the whole safety property
+// of the auto log out capability (design 0014): "idle since forever" and "I
+// cannot tell" look identical if unknown collapses to a number, and the first
+// one logs everybody off.
+func IdleFor(key string) (time.Duration, bool) { return idleFor(key) }
+
+// Logoff ends the session with this Key. It is the one thing in this package
+// that acts rather than observes, and it is here rather than in the provider
+// because it is the same OS session-management surface the collectors use.
+//
+// A session that has already gone is not an error: the caller's decision was
+// made against a sample, and the user logging themselves off in that window
+// is the outcome the caller wanted anyway.
+func Logoff(key string) error { return logoff(key) }
+
+// Notify puts a message in front of the user of one session, and reports
+// whether it got there. False is not an error -- it is "this session has
+// nowhere to show a message", which is every graphical session on Linux --
+// and the caller decides what an undeliverable warning is worth.
+func Notify(key, message string) bool { return notify(key, message) }
+
 // Closed returns the sessions present in prev but gone from cur, stamped with
 // the time the agent noticed. The reason distinguishes a session that ended
 // from one that merely went away while still disconnected, which is why prev

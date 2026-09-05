@@ -21,6 +21,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/inventory"
 	"github.com/FOGProject/fog-agent/internal/network"
 	"github.com/FOGProject/fog-agent/internal/printers"
+	"github.com/FOGProject/fog-agent/internal/provider/autologout"
 	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
 	"github.com/FOGProject/fog-agent/internal/provider/power"
@@ -250,6 +251,11 @@ type DesiredState struct {
 	// deliberately no destination in it: the agent broadcasts on its own
 	// interfaces, so an agent cannot be aimed.
 	Wake *wake.Policy `json:"wake,omitempty"`
+
+	// AutoLogout is the idle-logoff policy (design 0014). Absent means the
+	// capability is off for this host, which is different from a policy of
+	// zero minutes only in that it also clears whatever was stored.
+	AutoLogout *autologout.Policy `json:"autologout,omitempty"`
 }
 
 // ResultRequest is what the agent reports for one capability.

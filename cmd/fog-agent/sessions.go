@@ -34,6 +34,10 @@ const SessionResyncInterval = time.Hour
 // host's last contact, which is the truthful answer. See design 0008 §2.
 type sessionWatcher struct {
 	open []usersession.Session
+	// warned is the auto log out warning set, keyed by session key. In
+	// memory for the same reason open is: a restarted agent has not warned
+	// anybody, and re-warning is the harmless direction.
+	warned map[string]bool
 }
 
 // sample re-reads the host's sessions and records any that vanished since the
@@ -54,6 +58,12 @@ func (w *sessionWatcher) sample(st *enroll.State, now time.Time, out *sayer) {
 	}
 	closed := usersession.Closed(w.open, cur, now)
 	w.open = cur
+	// Auto log out rides this sample rather than the poll: the policy is in
+	// minutes and the poll can be set to far more than that, so evaluating
+	// it only on a poll would overshoot the timeout by an admin's choice of
+	// interval. Done after the open set is refreshed so a session that just
+	// ended is never warned or logged off.
+	w.autoLogout(st, now, out)
 	if len(closed) == 0 {
 		return
 	}

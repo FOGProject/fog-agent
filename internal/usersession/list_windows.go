@@ -162,10 +162,11 @@ func queryString(session uint32, class uint32) string {
 	return windows.UTF16PtrToString(buf)
 }
 
-// logonTime reads WTSINFO and converts the FILETIME logon stamp. A failure
-// yields the zero time, never "now": design 0008 treats StartedAt as the OS's
-// exact record, and a fabricated one silently becomes a session duration.
-func logonTime(session uint32) time.Time {
+// sessionInfo reads WTSINFO for one session and copies it out of the buffer
+// WTS owns. The copy matters: the caller keeps the value after WTSFreeMemory
+// has run, and reading through the pointer afterwards is a use-after-free
+// that would usually appear to work.
+func sessionInfo(session uint32) (wtsInfoW, bool) {
 	var buf *wtsInfoW
 	var n uint32
 	r, _, _ := procWTSQuerySession.Call(
@@ -176,14 +177,54 @@ func logonTime(session uint32) time.Time {
 		uintptr(unsafe.Pointer(&n)),
 	)
 	if r == 0 || buf == nil {
-		return time.Time{}
+		return wtsInfoW{}, false
 	}
 	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(buf)))
 	if n < uint32(unsafe.Sizeof(wtsInfoW{})) {
 		_ = errNoSessionInfoSize
+		return wtsInfoW{}, false
+	}
+	return *buf, true
+}
+
+// logonTime converts the FILETIME logon stamp. A failure yields the zero
+// time, never "now": design 0008 treats StartedAt as the OS's exact record,
+// and a fabricated one silently becomes a session duration.
+func logonTime(session uint32) time.Time {
+	info, ok := sessionInfo(session)
+	if !ok {
 		return time.Time{}
 	}
-	return filetimeToTime(buf.LogonTime)
+	return filetimeToTime(info.LogonTime)
+}
+
+// idleFor reports how long a session has had no user input, from WTSINFO's
+// own pair of stamps rather than by comparing one of them to the local
+// clock -- CurrentTime and LastInputTime come from the same read, so the
+// difference is not exposed to clock skew or to the time the call took.
+//
+// The false return is doing real work. LastInputTime is not populated for
+// every session on every Windows build; a console session in particular can
+// report zero, and there is no supported alternative from session 0
+// (GetLastInputInfo answers only for the caller's own session, and a service
+// has none). Zero means "not known", and it MUST NOT be read as an epoch:
+// treating it as 1601 makes every session infinitely idle, which for the
+// auto log out capability means logging the whole fleet off at once. So an
+// unusable pair is reported as unknown and the caller does nothing.
+func sessionIdle(session uint32) (time.Duration, bool) {
+	info, ok := sessionInfo(session)
+	if !ok {
+		return 0, false
+	}
+	if info.LastInputTime <= 0 || info.CurrentTime <= 0 {
+		return 0, false
+	}
+	d := time.Duration(info.CurrentTime-info.LastInputTime) * 100 * time.Nanosecond
+	if d < 0 {
+		// Input recorded after the snapshot: the session is active now.
+		return 0, true
+	}
+	return d, true
 }
 
 // filetimeToTime converts a FILETIME (100ns ticks since 1601-01-01 UTC).

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/FOGProject/fog-agent/internal/identity"
+	"github.com/FOGProject/fog-agent/internal/provider/autologout"
 	"github.com/FOGProject/fog-agent/internal/provider/power"
 	"github.com/FOGProject/fog-agent/internal/reboot"
 	"github.com/FOGProject/fog-agent/internal/usersession"
@@ -151,6 +152,12 @@ type Config struct {
 	// Stored rather than re-read each poll so a restart does not resume
 	// gathering on a site that turned it off.
 	FactsDisabled bool `json:"facts_disabled,omitempty"`
+	// AutoLogout is the idle-logoff policy the server last sent (design
+	// 0014). Persisted for the same reason PowerSchedules is: it is
+	// evaluated between polls, so an agent that had to reread it from the
+	// server before acting would do nothing for a whole poll interval after
+	// every restart.
+	AutoLogout autologout.Policy `json:"autologout,omitzero"`
 }
 
 // State is the on-disk material. Load never generates anything by itself;

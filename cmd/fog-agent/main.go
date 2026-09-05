@@ -23,6 +23,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/netboot"
 	"github.com/FOGProject/fog-agent/internal/printers"
 	"github.com/FOGProject/fog-agent/internal/provider"
+	"github.com/FOGProject/fog-agent/internal/provider/autologout"
 	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
 	"github.com/FOGProject/fog-agent/internal/provider/power"
@@ -568,6 +569,29 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 				}
 			}
 			continue
+		case "autologout":
+			// Stored, not acted on here. The policy is in minutes and the
+			// poll interval is an admin's choice -- five minutes by
+			// default and often far more -- so it is evaluated on the
+			// session sampler's tick instead (cmd/fog-agent/autologout.go).
+			// Nothing to report but the fact that it was accepted: the
+			// capability produces a result when it logs somebody off, and
+			// an idle-timeout policy that has not fired yet has no outcome.
+			was := st.Config.AutoLogout
+			if desired.AutoLogout == nil {
+				st.Config.AutoLogout = autologout.Policy{}
+			} else {
+				st.Config.AutoLogout = *desired.AutoLogout
+			}
+			if was != st.Config.AutoLogout {
+				if st.Config.AutoLogout.Enabled() {
+					out.say(fmt.Sprintf("autologout: %d minutes idle, %ds warning",
+						st.Config.AutoLogout.Minutes, st.Config.AutoLogout.WarnSeconds))
+				} else {
+					out.say("autologout: off")
+				}
+			}
+			continue
 		case "software":
 			// The desired package set, converged in order. Outcomes do
 			// not hold the revision: a failed install is reported and
@@ -669,7 +693,7 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 // the Windows lab upgrade to the power build sat on an on-demand shutdown
 // for ten minutes because the old binary had already marked that revision
 // applied, and nothing moved it until an unrelated task did.
-const supportedCapabilities = "hostname,taskreboot,power,software,printers,directory,wake,snapin"
+const supportedCapabilities = "hostname,taskreboot,power,software,printers,directory,wake,snapin,autologout"
 
 // needsReconcile says whether the server's revision must be converged: it
 // is not the one applied, or it was applied by a build that handled a
