@@ -119,17 +119,42 @@ whatever the SecureBoot byte says.
 
 | platform | source |
 |---|---|
-| Linux | `/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c` and `SetupMode-…` — 4 attribute bytes then one data byte, which is the value. `/sys/firmware/efi` absent means `platform=bios` and the other two go empty |
-| Windows | `GetFirmwareEnvironmentVariableW` for both variables under `{8be4df61-93ca-11d2-aa0d-00e098032b8c}`. The service runs as SYSTEM, which holds `SE_SYSTEM_ENVIRONMENT_NAME`; an unprivileged caller does not. On a BIOS/CSM machine the call fails with `ERROR_INVALID_FUNCTION`, which is the `platform=bios` signal |
+| Linux | `/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c` and `SetupMode-…`. `/sys/firmware/efi` absent means `platform=bios` and the other two go empty |
+| Windows | `GetFirmwareEnvironmentVariableW` for both variables under `{8be4df61-93ca-11d2-aa0d-00e098032b8c}` |
 | macOS | sends nothing |
 
-The Windows mechanism is my judgment from the API contract, not something
-measured yet — `Confirm-SecureBootUEFI` is the documented route but it is
-PowerShell, and shelling out to PowerShell on every poll to read two bytes is
-not worth it. The registry value
+**The two platforms return different bytes for the same variable, and the
+difference is silent.** Measured 2026-09-04:
+
+```
+Linux   /sys/.../SecureBoot-8be4df61-…   size=5  bytes=0600000000
+Windows GetFirmwareEnvironmentVariableW  len=1   bytes=01
+```
+
+efivarfs prepends the 4-byte EFI attribute word; the Win32 call does not. So
+the value is **the last byte on both**, and taking `b[0]` would be right on
+Windows and wrong on Linux — where it would read the attribute word's low
+byte, `0x06`, which is neither `00` nor `01` and lands every Linux host in
+`noefivars`. Read the last byte, not the first, and make that the thing the
+test pins.
+
+Two corrections to what this document first claimed, both from the same
+measurement. Reading these variables needed **no elevation**: the probe ran in
+a UAC-filtered ssh session as an ordinary admin account and returned both
+values, so `SE_SYSTEM_ENVIRONMENT_NAME` is a requirement for *setting* a
+firmware variable, not for getting one. And `Confirm-SecureBootUEFI` is not
+needed at all — it is the documented PowerShell route, but shelling out to
+PowerShell on every poll to read two bytes is not worth it when the Win32 call
+answers directly. The registry value
 `HKLM\SYSTEM\CurrentControlSet\Control\SecureBoot\State\UEFISecureBootEnabled`
-is a fallback that gives SecureBoot but *not* SetupMode, so it cannot be the
-primary source. This needs a lab measurement before it is built.
+gives SecureBoot but *not* SetupMode, so it cannot be the primary source.
+
+Still unmeasured: the BIOS/CSM signal on Windows. The API is documented to
+fail with `ERROR_INVALID_FUNCTION` on a machine with no UEFI, and there is no
+BIOS Windows guest in the lab to confirm it on. Treat any error from the call
+as `platform=bios` only after that is checked; until then an error should
+produce `noefivars`, which is the answer that cannot make a host look
+eligible.
 
 macOS sends nothing rather than sending `nonefi`. Apple's platforms have a
 secure boot model that is not UEFI Secure Boot at all, and there is no honest
@@ -181,8 +206,8 @@ fact collection off has said what they want.
 
 ## 9. Open
 
-- The Windows read mechanism needs measuring on `telliottwin11` before it is
-  built (section 5).
+- The BIOS/CSM signal on Windows (section 5) — no BIOS Windows guest in the
+  lab to measure it on.
 - Whether the host list's Secure Boot filter should distinguish "reported by
   an agent within the hour" from "reported by iPXE eight months ago". The
   data is there — `hostSbStateTime` — and `SecureBootState` already has a
