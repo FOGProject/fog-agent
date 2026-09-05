@@ -19,7 +19,7 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # build/cross.sh and build/msi.sh both derive the version from
           # `git describe --tags` and `git rev-list --count HEAD`. The
@@ -27,7 +27,7 @@ jobs:
           # version silently becomes "dev" and the MSI "0.0.0".
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           check-latest: true
@@ -50,11 +50,11 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           check-latest: true
@@ -82,7 +82,7 @@ jobs:
       - name: build the Windows installer
         run: ./build/msi.sh
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ github.sha }}
           path: dist/
