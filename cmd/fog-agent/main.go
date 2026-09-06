@@ -31,6 +31,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/provider/printerset"
 	"github.com/FOGProject/fog-agent/internal/provider/snapin"
 	"github.com/FOGProject/fog-agent/internal/provider/software"
+	"github.com/FOGProject/fog-agent/internal/provider/update"
 	"github.com/FOGProject/fog-agent/internal/provider/wake"
 	"github.com/FOGProject/fog-agent/internal/reboot"
 )
@@ -66,6 +67,8 @@ func main() {
 		err = cmdRun(os.Args[2:])
 	case "renew":
 		err = cmdRenew(os.Args[2:])
+	case "update-revert":
+		err = cmdUpdateRevert(os.Args[2:])
 	case "status":
 		err = cmdStatus(os.Args[2:])
 	case "ca":
@@ -89,6 +92,7 @@ func usage() {
   fog-agent run [--server URL] [--ca FILE] [--token T] [--once] [--dir DIR]
                                           enroll if needed, then poll the server
   fog-agent renew [--dir DIR]             renew the certificate now, whatever its expiry
+  fog-agent update-revert [--dir DIR]     put back the binary an update replaced
   fog-agent status [--dir DIR]
   fog-agent ca probe --server URL         show the certificate the server publishes
   fog-agent service install --server URL --ca FILE [--token T] [--dir DIR]
@@ -324,6 +328,12 @@ func runAgent(ctx context.Context, args []string) error {
 		return err
 	}
 	out := &sayer{}
+	// Before anything else: if this binary was installed by an update and
+	// its window has already passed without a successful poll, put the
+	// previous one back and let the service manager start it.
+	if checkProbation(st, out) {
+		return errUpdated
+	}
 	watch := &sessionWatcher{}
 	for {
 		if len(st.Cert) == 0 {
@@ -423,6 +433,11 @@ func runAgent(ctx context.Context, args []string) error {
 			if err := clearUnauthorized(st); err != nil {
 				out.say("state: " + err.Error())
 			}
+			// A poll got through, which is the whole of the probation
+			// test: not that this binary starts, which the service
+			// manager already checks, but that it can still talk to the
+			// server that manages it.
+			passedProbation(st, out)
 			if resp.State != nil {
 				out.say(fmt.Sprintf("host %d (%s), server capabilities: [%s]", resp.Host.ID, resp.Host.Name, strings.Join(resp.State.Capabilities, " ")))
 			}
@@ -451,6 +466,15 @@ func runAgent(ctx context.Context, args []string) error {
 				out.say("poll: the revision moved but the server sent no state")
 			case needsReconcile(st.Config, resp.Revision):
 				if err := reconcile(ctx, st, client, resp.State, out); err != nil {
+					if errors.Is(err, errUpdated) {
+						// The binary under this process is no longer the
+						// one that started it. Leave with a non-zero
+						// status so the service manager starts the new
+						// one; that is the same recovery path a crashing
+						// new binary takes, deliberately (design 0015 §6).
+						out.say(err.Error())
+						return err
+					}
 					out.say("reconcile: " + err.Error())
 				}
 			case resp.State != nil && driftMayBeDue(st):
@@ -544,6 +568,13 @@ func renew(ctx context.Context, st *enroll.State, client *enroll.Client, out *sa
 // reporting each result. The revision is recorded as applied only
 // when nothing failed: a failed provider is retried on the next poll
 // rather than forgotten.
+// errUpdated is how reconcile says the binary under this process is no
+// longer the one that started it. Not an error in the ordinary sense: the
+// process must now exit non-zero so the service manager starts the new
+// binary, which is the same mechanism that recovers from a new binary
+// that crashes on start (design 0015 section 6).
+var errUpdated = errors.New("the agent replaced itself; restarting")
+
 func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, desired *enroll.DesiredState, out *sayer) error {
 	if desired.Reboot != nil {
 		st.Config.RebootGrace = desired.Reboot.Grace
@@ -706,6 +737,42 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 			})
 		}
 	}
+	// Update runs last, on purpose and outside the loop. Everything above
+	// it is sequential in this goroutine, so by the time it runs there is
+	// no snapin child and no package manager mid-install to be killed by
+	// the process going away -- which is why Busy is nil rather than a
+	// lock nothing else takes.
+	//
+	// It runs whether or not a provider failed above: a broken print
+	// queue must not be able to hold up a security update.
+	if desired.Update != nil && has(desired.Capabilities, "update") {
+		if len(st.Config.PendingReboot) > 0 {
+			// Yield. The machine is going down anyway and the agent
+			// comes back with it; doing both means two restarts and a
+			// window where a half-applied update meets a reboot.
+			out.say("update: deferred, a reboot is pending")
+		} else {
+			r, restart := update.Run(ctx, *desired.Update, updateConfig(st))
+			out.say(fmt.Sprintf("update: %s (%s)", r.Status, r.Detail))
+			if _, err := client.Result(ctx, enroll.ResultRequest{
+				Revision: desired.Revision, Capability: "update", Status: r.Status, Detail: r.Detail,
+			}); err != nil {
+				out.say("result: " + err.Error())
+			}
+			if restart {
+				// Save first. Exiting here skips the bottom of this
+				// function, and a pending reboot reason recorded above
+				// would otherwise be lost across the restart.
+				if err := st.SaveConfig(); err != nil {
+					out.say("state: " + err.Error())
+				}
+				return errUpdated
+			}
+			if r.Status == provider.StatusFailed {
+				allOK = false
+			}
+		}
+	}
 	if !allOK {
 		// Keep whatever reasons were recorded; only the revision waits.
 		_ = st.SaveConfig()
@@ -722,7 +789,7 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 // the Windows lab upgrade to the power build sat on an on-demand shutdown
 // for ten minutes because the old binary had already marked that revision
 // applied, and nothing moved it until an unrelated task did.
-const supportedCapabilities = "hostname,taskreboot,power,software,printers,directory,wake,snapin,autologout"
+const supportedCapabilities = "hostname,taskreboot,power,software,printers,directory,wake,snapin,autologout,update"
 
 // needsReconcile says whether the server's revision must be converged: it
 // is not the one applied, or it was applied by a build that handled a

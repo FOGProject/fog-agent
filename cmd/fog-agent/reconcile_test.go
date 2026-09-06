@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/FOGProject/fog-agent/internal/enroll"
@@ -25,3 +26,25 @@ func TestNeedsReconcileAfterCapabilityUpgrade(t *testing.T) {
 		t.Fatal("an unstamped revision must be reconciled once")
 	}
 }
+
+// The update capability is in supportedCapabilities, which matters more
+// than it looks: an agent that inherited an applied revision from a build
+// without this code must re-converge, or the first host to be told to
+// update would sit on the old revision until something unrelated moved it.
+// That exact defect cost the Windows lab ten minutes on the power build.
+func TestUpdateIsPartOfTheCapabilitySetThatForcesAReconcile(t *testing.T) {
+	if !has(splitCaps(supportedCapabilities), "update") {
+		t.Fatal("update is missing from supportedCapabilities")
+	}
+	cfg := enroll.Config{
+		AppliedRevision: "abc123",
+		// What a 0.1.1 build stored: the same revision, applied by a
+		// build that had no update provider.
+		AppliedWith: "hostname,taskreboot,power,software,printers,directory,wake,snapin,autologout",
+	}
+	if !needsReconcile(cfg, "abc123") {
+		t.Error("a build that has learned update must re-converge the revision it inherited")
+	}
+}
+
+func splitCaps(s string) []string { return strings.Split(s, ",") }
