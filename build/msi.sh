@@ -121,6 +121,22 @@ printf 'ProbeCA\t66\tAgentProbeExe\tca probe --server "[SERVER]" --registry\t\n'
 msibuild "$out" -i "$caidt"
 rm -f "$caidt"
 
+# 4. Close the tab loop on the one-button dialogs. Windows Installer walks
+# Control_First through Control_Next and refuses the dialog with error 2834
+# unless the walk returns to where it began; with a single tabbable control
+# that means the control points at itself, which is what WiX emits and what
+# wixl does not: it writes no Control_Next at all below two controls, and
+# will not count an Icon as tabbable whatever TabSkip says. Any dialog that
+# needs this and does not get it is caught by build/check-msi-ui.py, which
+# is how error 2834 was found in the first place.
+loopidt="$(mktemp)"
+msiinfo export "$out" Control \
+    | awk 'BEGIN{FS=OFS="\t"}
+           NR>3 && $2=="OK" && ($1=="FogNeedsCfgDlg" || $1=="FogNoCaDlg"){$11="OK"}
+           {print}' >"$loopidt"
+msibuild "$out" -i "$loopidt"
+rm -f "$loopidt"
+
 # Set File.Version to match the exe's stamped resource (x.y.z.0). wixl
 # leaves it empty, which makes the engine treat the package exe as
 # unversioned and skip overwriting an existing one -- see note 1 above.

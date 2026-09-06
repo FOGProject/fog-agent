@@ -179,10 +179,15 @@
   -->
   <Fragment>
     <UI Id="FogUI">
-      <TextStyle Id="FogFontNormal" FaceName="Tahoma" Size="8" />
-      <TextStyle Id="FogFontBigger" FaceName="Tahoma" Size="12" />
-      <TextStyle Id="FogFontTitle" FaceName="Tahoma" Size="9" Bold="yes" />
-      <Property Id="DefaultUIFont" Value="FogFontNormal" />
+      <!-- These names are not a choice. Every dialog in wixl's ui extension
+           asks for WixUI_Font_Bigger or WixUI_Font_Title in its heading, and
+           those rows live in WixUI_Minimal, which this package does not use.
+           Defining a differently named style leaves all of them asking for a
+           font that is not in the package. -->
+      <TextStyle Id="WixUI_Font_Normal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="WixUI_Font_Bigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="WixUI_Font_Title" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="WixUI_Font_Normal" />
 
       <DialogRef Id="ErrorDlg" />
       <DialogRef Id="FatalError" />
@@ -209,18 +214,25 @@
            URL the server publishes it on, because "the FOG CA" means
            nothing to somebody who has never had to find the file. -->
       <Dialog Id="FogCfgDlg" Width="370" Height="270" Title="[ProductName] Setup">
-        <!-- TabSkip on the banner so the caret opens in the server field, not on the artwork. -->
+        <!-- ORDER MATTERS, and not for layout: wixl builds Control_Next in
+             the order controls are authored and makes the FIRST ONE
+             Control_First, whether or not it is in the chain. Windows
+             Installer then walks that chain and refuses the dialog with
+             error 2834 unless the walk comes back to where it started. So
+             every tabbable control is authored first, in the order the
+             caret should visit them, and the artwork follows. -->
+        <Control Id="ServerEdit" Type="Edit" X="20" Y="68" Width="330" Height="17" Property="SERVER" />
+        <Control Id="TokenEdit" Type="Edit" X="20" Y="118" Width="330" Height="17" Property="TOKEN" />
+        <Control Id="CaEdit" Type="Edit" X="20" Y="178" Width="330" Height="17" Property="CA" />
         <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="yes" Text="WixUI_Bmp_Banner" />
-        <Control Id="BannerTitle" Type="Text" X="15" Y="6" Width="250" Height="15" Transparent="yes" NoPrefix="yes" Text="{\FogFontTitle}Your FOG server" />
+        <Control Id="BannerTitle" Type="Text" X="15" Y="6" Width="250" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Your FOG server" />
         <Control Id="BannerDescription" Type="Text" X="25" Y="23" Width="330" Height="15" Transparent="yes" NoPrefix="yes" Text="The agent enrolls with this server and trusts nothing else." />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
 
         <Control Id="ServerLabel" Type="Text" X="20" Y="56" Width="330" Height="10" NoPrefix="yes" Text="&amp;Server address (the FOG web UI address, ending in /fog):" />
-        <Control Id="ServerEdit" Type="Edit" X="20" Y="68" Width="330" Height="17" Property="SERVER" />
         <Control Id="ServerHint" Type="Text" X="20" Y="87" Width="330" Height="10" NoPrefix="yes" Text="Example:  https://fog.example.org/fog" />
 
         <Control Id="TokenLabel" Type="Text" X="20" Y="106" Width="330" Height="10" NoPrefix="yes" Text="Enrollment &amp;token (optional):" />
-        <Control Id="TokenEdit" Type="Edit" X="20" Y="118" Width="330" Height="17" Property="TOKEN" />
         <Control Id="TokenHint" Type="Text" X="20" Y="137" Width="330" Height="10" NoPrefix="yes" Text="Leave this empty to approve the machine by hand in Host Management." />
 
         <Control Id="MidLine" Type="Line" X="20" Y="157" Width="330" Height="0" />
@@ -229,7 +241,6 @@
              its fingerprint. The field stays for the one case the fetch
              cannot serve, a web UI on a public or corporate certificate. -->
         <Control Id="CaLabel" Type="Text" X="20" Y="166" Width="330" Height="10" NoPrefix="yes" Text="&amp;Certificate file to trust (leave empty for almost every server):" />
-        <Control Id="CaEdit" Type="Edit" X="20" Y="178" Width="330" Height="17" Property="CA" />
         <Control Id="CaHint" Type="Text" X="20" Y="197" Width="330" Height="30" NoPrefix="yes" Text="Empty is right unless your FOG web UI runs on a public or corporate certificate. Otherwise Setup fetches the certificate from the server and asks you to confirm its fingerprint on the next page." />
 
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
@@ -269,8 +280,18 @@
            here, and the deferred setup checks the fingerprint again itself
            when it re-fetches as SYSTEM. -->
       <Dialog Id="FogCaDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <!-- Tabbable controls first: see the note in FogCfgDlg. -->
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next">
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" />
+        </Control>
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back">
+          <Publish Event="NewDialog" Value="FogCfgDlg" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
         <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="yes" Text="WixUI_Bmp_Banner" />
-        <Control Id="BannerTitle" Type="Text" X="15" Y="6" Width="250" Height="15" Transparent="yes" NoPrefix="yes" Text="{\FogFontTitle}Is this your server's certificate?" />
+        <Control Id="BannerTitle" Type="Text" X="15" Y="6" Width="250" Height="15" Transparent="yes" NoPrefix="yes" Text="{\WixUI_Font_Title}Is this your server's certificate?" />
         <Control Id="BannerDescription" Type="Text" X="25" Y="23" Width="330" Height="15" Transparent="yes" NoPrefix="yes" Text="The agent will trust this one and no other." />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
 
@@ -288,31 +309,24 @@
         <Control Id="Where" Type="Text" X="20" Y="186" Width="330" Height="40" NoPrefix="yes" Text="Where to check it: sign in to the FOG web UI and open FOG Configuration, then the Certificates tab. The Root row's SHA-256 column holds the same value. If the two do not match character for character, click Cancel." />
 
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
-        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back">
-          <Publish Event="NewDialog" Value="FogCfgDlg" />
-        </Control>
-        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next">
-          <Publish Event="NewDialog" Value="VerifyReadyDlg" />
-        </Control>
-        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
-          <Publish Event="SpawnDialog" Value="CancelDlg" />
-        </Control>
       </Dialog>
 
       <Dialog Id="FogNoCaDlg" Width="290" Height="125" Title="[ProductName] Setup">
-        <Control Id="Icon" Type="Icon" X="15" Y="15" Width="24" Height="24" ToolTip="yes" FixedSize="yes" IconSize="32" Text="WixUI_Ico_Exclam" />
-        <Control Id="Text" Type="Text" X="48" Y="15" Width="224" Height="70" NoPrefix="yes" Text="Setup could not read a certificate from [SERVER]. Check the address, including https and the /fog on the end, and that this machine can reach the server. If the FOG web UI runs on a public or corporate certificate, give that certificate authority's file in the box instead." />
         <Control Id="OK" Type="PushButton" X="117" Y="97" Width="56" Height="17" Default="yes" Cancel="yes" Text="OK">
           <Publish Event="EndDialog" Value="Return" />
         </Control>
+        <Control Id="Icon" Type="Icon" X="15" Y="15" Width="24" Height="24" ToolTip="yes" FixedSize="yes" IconSize="32" TabSkip="no" Text="WixUI_Ico_Exclam" />
+        <Control Id="Text" Type="Text" X="48" Y="15" Width="224" Height="70" NoPrefix="yes" Text="Setup could not read a certificate from [SERVER]. Check the address, including https and the /fog on the end, and that this machine can reach the server. If the FOG web UI runs on a public or corporate certificate, give that certificate authority's file in the box instead." />
       </Dialog>
 
+      <!-- One button, and a tab loop still has to close, so the icon is
+           left tabbable to be the other half of it. -->
       <Dialog Id="FogNeedsCfgDlg" Width="260" Height="105" Title="[ProductName] Setup">
-        <Control Id="Icon" Type="Icon" X="15" Y="15" Width="24" Height="24" ToolTip="yes" FixedSize="yes" IconSize="32" Text="WixUI_Ico_Exclam" />
-        <Control Id="Text" Type="Text" X="48" Y="15" Width="194" Height="50" NoPrefix="yes" Text="Fill in the server address. The agent cannot reach a server it has not been told about." />
         <Control Id="OK" Type="PushButton" X="102" Y="77" Width="56" Height="17" Default="yes" Cancel="yes" Text="OK">
           <Publish Event="EndDialog" Value="Return" />
         </Control>
+        <Control Id="Icon" Type="Icon" X="15" Y="15" Width="24" Height="24" ToolTip="yes" FixedSize="yes" IconSize="32" TabSkip="no" Text="WixUI_Ico_Exclam" />
+        <Control Id="Text" Type="Text" X="48" Y="15" Width="194" Height="50" NoPrefix="yes" Text="Fill in the server address. The agent cannot reach a server it has not been told about." />
       </Dialog>
 
       <!-- The flow. A repair or an uninstall never sees FogCfgDlg: the

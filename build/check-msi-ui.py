@@ -13,8 +13,10 @@ Checked: Dialog.Control_First/Default/Cancel and Control.Control_Next name a
 control that exists in that dialog; Bitmap and Icon controls name a Binary
 row that exists; every ControlEvent and EventMapping row names a real
 control; every NewDialog/SpawnDialog names a dialog in the package; every
-DoAction names an action that exists, custom or sequenced; and every
-AppSearch row has the locator it points at.
+DoAction names an action that exists, custom or sequenced; every AppSearch
+row has the locator it points at; and every dialog's Control_Next pointers
+form one closed loop starting at Control_First, which is what error 2834 is
+about.
 
 The DoAction check earns its keep on this package specifically: wixl accepts
 BinaryKey only with DllEntry or JScriptCall, so the wizard's ProbeCA action
@@ -27,6 +29,7 @@ published no certificate.
 Exits non-zero, listing what dangles, so a broken wizard cannot ship.
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -86,6 +89,57 @@ def main(msi):
     for r in table(msi, "ControlEvent"):
         if r[2] == "DoAction" and r[3] not in actions:
             bad.append(f"ControlEvent {r[0]}.{r[1]} DoAction names {r[3]}, which is neither a custom action nor sequenced")
+
+    # Windows Installer walks Control_First and follows Control_Next, and
+    # refuses the dialog with error 2834 unless that walk visits every
+    # tabbable control and returns to where it started. wixl takes the FIRST
+    # AUTHORED control as Control_First whether or not it is in the chain,
+    # so marking the banner bitmap TabSkip and leaving it first in the file
+    # is enough to break the loop -- which is exactly what shipped and what
+    # 2834 said. Error dialogs (attribute bit 65536) are exempt: the engine
+    # drives those itself.
+    for r in dialogs:
+        dlg = r[0]
+        attrs = int(r[5] or 0)
+        if attrs & 65536:
+            continue
+        cs = controls.get(dlg, {})
+        chained = {c for c, row in cs.items() if len(row) > 10 and row[10]}
+        first = r[7] if len(r) > 7 else ""
+        if not chained:
+            bad.append(f"Dialog {dlg} has no tab loop at all: no control has a Control_Next")
+            continue
+        if first not in chained:
+            bad.append(f"Dialog {dlg}.Control_First is {first}, which is not in the tab loop (error 2834)")
+            continue
+        walk, cur = [], first
+        while cur and cur not in walk:
+            walk.append(cur)
+            cur = cs[cur][10] if cur in cs and len(cs[cur]) > 10 else ""
+        if cur != first or len(walk) != len(chained):
+            bad.append(f"Dialog {dlg} tab order is not a single loop (error 2834): "
+                       f"{' -> '.join(walk)} -> {cur or 'nothing'}, missing "
+                       f"{sorted(chained - set(walk))}")
+
+    # A control that runs off its dialog is error 2826. Not always fatal,
+    # but it is always a layout mistake, and it is invisible from here
+    # otherwise.
+    for r in dialogs:
+        dw, dh = int(r[3] or 0), int(r[4] or 0)
+        for cid, c in controls.get(r[0], {}).items():
+            x, y, w, h = (int(c[i] or 0) for i in (3, 4, 5, 6))
+            if x + w > dw or y + h > dh:
+                bad.append(f"Control {r[0]}.{cid} runs to {x + w}x{y + h}, past the dialog's {dw}x{dh} (error 2826)")
+
+    # A leading {\Style} in a control's text names a TextStyle row; without
+    # one the text silently renders in the fallback font.
+    styles = {r[0] for r in table(msi, "TextStyle")}
+    named = re.compile(r"^\{\\([^}]+)\}")
+    for dlg, cs in controls.items():
+        for cid, c in cs.items():
+            m = named.match(c[9] if len(c) > 9 else "")
+            if m and m.group(1) not in styles:
+                bad.append(f"Control {dlg}.{cid} asks for text style {m.group(1)}, which has no TextStyle row")
 
     locators = set()
     for t in ("RegLocator", "IniLocator", "CompLocator", "DrLocator", "Signature"):
