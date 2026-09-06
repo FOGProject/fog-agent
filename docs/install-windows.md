@@ -4,7 +4,51 @@ The agent runs as a Windows service named `fog-agent` (display name "FOG
 Agent") under the SYSTEM account. The supported install is the MSI; the
 binary can also install itself from an administrator prompt.
 
-## The MSI
+## Before you start: get the certificate off the server
+
+The agent trusts one certificate and nothing else — not the machine's
+certificate store, not whatever the web browser already accepts. So the
+one thing to fetch before installing is the certificate the FOG server
+presents. Open this in a browser on the machine you are installing on and
+save the file:
+
+```
+http://your-fog-server/fog/management/other/ca.cert.pem
+```
+
+`ca.cert.der` sits beside it and the installer takes either. If the FOG web
+UI already uses a certificate from a public CA (Let's Encrypt, a commercial
+one, your own corporate CA), point the installer at that CA's PEM instead —
+the agent has to be able to build a chain to whatever the web server hands
+it.
+
+Optionally mint an enrollment token in the web UI as well. Without one the
+machine shows up in Host Management as pending and waits for an admin to
+approve it, which is fine — it just means one more click per machine.
+
+## The MSI, by double-click
+
+Double-click `fog-agent-1.2.3-x64.msi` and the wizard asks for the three
+things above:
+
+| The wizard asks | Example |
+|---|---|
+| Server address | `https://fog.example.org/fog` |
+| Certificate file to trust | `C:\Users\you\Downloads\ca.cert.pem` |
+| Enrollment token (optional) | leave empty to approve the machine by hand |
+
+The server address is the FOG web UI address with `/fog` on the end — the
+same thing you type to reach the management pages. If you reach the UI at
+`https://fog.example.org/fog/management/`, the address to give the agent is
+`https://fog.example.org/fog`.
+
+The wizard appears only on a first install. An upgrade keeps the state
+directory, so it has nothing to ask.
+
+## The MSI, from a script
+
+The same three values as properties. `/qn` skips the wizard entirely, so a
+deployment tool behaves exactly as it always did:
 
 ```
 msiexec /i fog-agent-1.2.3-x64.msi /qn SERVER=https://fog.example.org/fog CA=C:\path\ca.cert.pem TOKEN=... /l*v C:\fog-agent-install.log
@@ -13,9 +57,13 @@ msiexec /i fog-agent-1.2.3-x64.msi /qn SERVER=https://fog.example.org/fog CA=C:\
 | Property | Meaning |
 |---|---|
 | `SERVER` | base URL of the FOG server, the same one the web UI uses plus `/fog` |
-| `CA` | path to the PEM bundle to trust: the FOG CA (`management/other/ca.cert.pem` on the server) or the public CA the web UI uses. The agent trusts only what it is given |
+| `CA` | path to a saved copy of the certificate to trust, PEM or DER: the FOG CA (`management/other/ca.cert.pem` on the server) or the public CA the web UI uses. The agent trusts only what it is given |
 | `TOKEN` | enrollment token minted by an admin. Optional: without one the host is pending until an admin approves it in Host Management |
 | `WEBADDRESS`, `WEBROOT` | the legacy client's names, honored when `SERVER` is absent: `SERVER` becomes `https://WEBADDRESS` + `WEBROOT` |
+
+A silent install with no `SERVER` and no `CA` fails, and it should: there is
+nothing for the agent to enroll with. The reason is in the msiexec log
+(`/l*v`) and in `C:\ProgramData\FOG\fog-agent.log`.
 
 What the installer does, in order:
 
@@ -49,6 +97,13 @@ From an administrator prompt:
 
 ```
 fog-agent.exe service install --server https://fog.example.org/fog --ca ca.pem [--token T]
+```
+
+Run it with no flags and it asks for the same three values the wizard asks
+for, so this works too:
+
+```
+fog-agent.exe service install
 ```
 
 This does what the MSI does with the binary itself: the `setup` step above,

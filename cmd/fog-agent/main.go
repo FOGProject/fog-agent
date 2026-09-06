@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -90,6 +91,9 @@ func usage() {
   fog-agent service install --server URL --ca FILE [--token T] [--dir DIR]
   fog-agent setup --server URL --ca FILE [--token T] [--dir DIR]
                                           Windows: install and start the service
+  --server and --ca are asked for at the prompt when "service install" or
+  "setup" is run without them. --ca takes the server's ca.cert.pem or
+  ca.cert.der, from management/other/ on the FOG server.
   fog-agent service uninstall|start|stop|status
   fog-agent version`)
 }
@@ -149,7 +153,7 @@ func openState(f commonFlags) (*enroll.State, []byte, error) {
 	}
 	caPEM := st.CA()
 	if *f.caPath != "" {
-		if caPEM, err = os.ReadFile(*f.caPath); err != nil {
+		if caPEM, err = enroll.ReadCABundle(*f.caPath); err != nil {
 			return nil, nil, err
 		}
 		if err := st.SaveCA(caPEM); err != nil {
@@ -1294,6 +1298,64 @@ func cmdStatus(args []string) error {
 	return printJSON(out)
 }
 
+// askMissing fills in what the command line did not say, when there is a
+// person there to be asked. `fog-agent service install` typed at an
+// administrator prompt used to answer "--server is required the first
+// time" and leave the reader to go and find the flags; the MSI's wizard
+// covers a double-click install, and this covers the binary.
+//
+// Nothing is asked unless stdin is a console -- under msiexec, a
+// deployment script or the service itself nobody can answer and the error
+// is the right answer -- and nothing is asked once the state directory
+// remembers a server, which is the reinstall and the upgrade.
+func askMissing(f commonFlags) {
+	if !stdinIsConsole() {
+		return
+	}
+	st, err := enroll.Load(*f.dir)
+	if err != nil || st.Config.ServerURL != "" || len(st.CA()) > 0 {
+		return
+	}
+	if *f.server == "" {
+		*f.server = ask("FOG server address, the web UI address ending in /fog",
+			"https://fog.example.org/fog")
+	}
+	if *f.caPath == "" {
+		*f.caPath = ask("Certificate file to trust, downloaded from that server at /fog/management/other/ca.cert.pem",
+			`C:\Users\you\Downloads\ca.cert.pem`)
+	}
+	if *f.token == "" {
+		*f.token = ask("Enrollment token, or empty to approve this machine by hand in Host Management", "")
+	}
+}
+
+// stdinReader is kept across prompts: a fresh bufio.Reader each time would
+// discard whatever the last one had already buffered.
+var stdinReader = bufio.NewReader(os.Stdin)
+
+// ask puts one question on the terminal. Prompts go to stderr, not through
+// logOut, which setup has already pointed at the log file as well.
+func ask(label, example string) string {
+	fmt.Fprintf(os.Stderr, "\n%s\n", label)
+	if example != "" {
+		fmt.Fprintf(os.Stderr, "  example: %s\n", example)
+	}
+	fmt.Fprint(os.Stderr, "> ")
+	line, err := stdinReader.ReadString('\n')
+	if err != nil && line == "" {
+		return ""
+	}
+	return strings.TrimSpace(line)
+}
+
+// stdinIsConsole reports whether somebody is there typing. A character
+// device is the portable test: a pipe, a redirected file and the service's
+// null handle are all something else, on Windows as well as on Linux.
+func stdinIsConsole() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
 // cmdSetup prepares the state directory for a service that something else
 // registers and starts: the MSI on Windows, a package's unit elsewhere. It
 // is the install-time half of `service install` without the service
@@ -1325,6 +1387,7 @@ func cmdSetup(args []string) error {
 // run by a deployment tool does not fail on a network blip and does not
 // lose the token. A fresh directory with no server or CA is an error.
 func prepareState(f commonFlags, out *sayer) (*enroll.State, []byte, error) {
+	askMissing(f)
 	st, caPEM, err := openState(f)
 	if err != nil {
 		return nil, nil, err

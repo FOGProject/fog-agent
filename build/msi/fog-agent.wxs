@@ -11,11 +11,18 @@
   request from SERVER, CA and TOKEN. A server that does not answer at
   install time is not an install failure; the service keeps trying.
 
+  Two ways in. A double-click walks a wizard that asks for the three
+  values below (the FogUI fragment at the foot of this file); a scripted
+  install passes them as properties and never sees a dialog, because /qn
+  and /qb skip the InstallUISequence entirely.
+
   Properties, all optional on an upgrade because the state directory is
   kept:
     SERVER      base URL, e.g. https://fog.example.org/fog
-    CA          path to the PEM bundle to trust (the FOG CA, or the public
-                CA the web UI uses); the agent trusts only what it is given
+    CA          path to a saved copy of the certificate to trust, PEM or
+                DER: the FOG CA the server publishes at
+                management/other/ca.cert.pem, or the public CA the web UI
+                uses. The agent trusts only what it is given
     TOKEN       enrollment token minted by an admin
     WEBADDRESS, WEBROOT
                 the legacy client's names, honored when SERVER is absent:
@@ -33,7 +40,14 @@
     <!-- A newer FOG Agent replaces an older one in place; the state
          directory (key, certificate, server) is untouched, so no
          re-enrollment. -->
-    <MajorUpgrade DowngradeErrorMessage="A newer FOG Agent is already installed." />
+    <!-- AllowSameVersionUpgrades because Product Id="*" gives every build a
+         fresh ProductCode while the version only moves on a release: two
+         builds of 0.1.0 are two different products to Windows Installer,
+         and without this the second one registers alongside the first
+         instead of replacing it. The lab host carried two "FOG Agent" rows
+         in Add/Remove Programs on 2026-09-06 for exactly that reason. -->
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer FOG Agent is already installed." />
 
     <!-- The legacy client ("FOG Service", fog-client 0.x) is removed as a
          related product. Two agents on one host fight over the same rows:
@@ -97,5 +111,118 @@
     <Feature Id="Agent" Title="FOG Agent" Level="1">
       <ComponentRef Id="Agent" />
     </Feature>
+
+    <!-- The wizard, in the fragment below. -->
+    <UIRef Id="FogUI" />
   </Product>
+
+  <!--
+    The install-time wizard. Windows Installer has no UI of its own: a
+    package with no Dialog rows shows a bare progress bar, takes whatever
+    properties the command line gave it, and a double-click therefore
+    reached `setup` with no server and no CA and failed 1603 with nothing
+    on screen to say why. The three things the agent has to be told are
+    asked for here instead.
+
+    wixl ships the standard WiX dialog set as its `ui` extension
+    (/usr/share/wixl-*/ext/ui); build/msi.sh passes the ui extension flag. What is
+    authored below is only the one FOG-specific page and its place in the
+    flow: welcome -> FogCfgDlg -> ready -> progress -> finish.
+
+    The dialogs run only under a UI install. `/qn` and `/qb` skip the whole
+    InstallUISequence, so a scripted install behaves exactly as it did
+    before and still takes SERVER, CA and TOKEN from the command line.
+  -->
+  <Fragment>
+    <UI Id="FogUI">
+      <TextStyle Id="FogFontNormal" FaceName="Tahoma" Size="8" />
+      <TextStyle Id="FogFontBigger" FaceName="Tahoma" Size="12" />
+      <TextStyle Id="FogFontTitle" FaceName="Tahoma" Size="9" Bold="yes" />
+      <Property Id="DefaultUIFont" Value="FogFontNormal" />
+
+      <DialogRef Id="ErrorDlg" />
+      <DialogRef Id="FatalError" />
+      <DialogRef Id="FilesInUse" />
+      <DialogRef Id="MsiRMFilesInUse" />
+      <!-- The stock VerifyReadyDlg and ResumeDlg spawn these two when the
+           volume is short of space. wixl pulls in only what is referenced,
+           and its own WixUI_Minimal omits them, which leaves a SpawnDialog
+           pointing at a dialog that is not in the package: a failure at
+           the one moment it is needed. -->
+      <DialogRef Id="OutOfDiskDlg" />
+      <DialogRef Id="OutOfRbDiskDlg" />
+      <DialogRef Id="PrepareDlg" />
+      <DialogRef Id="ProgressDlg" />
+      <DialogRef Id="ResumeDlg" />
+      <DialogRef Id="UserExit" />
+      <DialogRef Id="WelcomeDlg" />
+      <DialogRef Id="MaintenanceWelcomeDlg" />
+      <DialogRef Id="MaintenanceTypeDlg" />
+      <DialogRef Id="VerifyReadyDlg" />
+
+      <!-- The one page this package adds. Every field carries the example
+           the documentation used to keep to itself; the CA line names the
+           URL the server publishes it on, because "the FOG CA" means
+           nothing to somebody who has never had to find the file. -->
+      <Dialog Id="FogCfgDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <!-- TabSkip on the banner so the caret opens in the server field, not on the artwork. -->
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="yes" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerTitle" Type="Text" X="15" Y="6" Width="250" Height="15" Transparent="yes" NoPrefix="yes" Text="{\FogFontTitle}Your FOG server" />
+        <Control Id="BannerDescription" Type="Text" X="25" Y="23" Width="330" Height="15" Transparent="yes" NoPrefix="yes" Text="The agent enrolls with this server and trusts nothing else." />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+
+        <Control Id="ServerLabel" Type="Text" X="20" Y="58" Width="330" Height="10" NoPrefix="yes" Text="&amp;Server address (the FOG web UI address, ending in /fog):" />
+        <Control Id="ServerEdit" Type="Edit" X="20" Y="70" Width="330" Height="17" Property="SERVER" />
+        <Control Id="ServerHint" Type="Text" X="20" Y="89" Width="330" Height="10" NoPrefix="yes" Text="Example:  https://fog.example.org/fog" />
+
+        <Control Id="CaLabel" Type="Text" X="20" Y="110" Width="330" Height="10" NoPrefix="yes" Text="&amp;Certificate file to trust, saved on this machine:" />
+        <Control Id="CaEdit" Type="Edit" X="20" Y="122" Width="330" Height="17" Property="CA" />
+        <Control Id="CaHint" Type="Text" X="20" Y="141" Width="330" Height="24" NoPrefix="yes" Text="Download it from your server first, at /fog/management/other/ca.cert.pem, then give the path to the saved file.  Example:  C:\Users\you\Downloads\ca.cert.pem" />
+
+        <Control Id="TokenLabel" Type="Text" X="20" Y="174" Width="330" Height="10" NoPrefix="yes" Text="Enrollment &amp;token (optional):" />
+        <Control Id="TokenEdit" Type="Edit" X="20" Y="186" Width="330" Height="17" Property="TOKEN" />
+        <Control Id="TokenHint" Type="Text" X="20" Y="205" Width="330" Height="20" NoPrefix="yes" Text="Leave this empty to approve the machine by hand in Host Management." />
+
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back">
+          <Publish Event="NewDialog" Value="WelcomeDlg" />
+        </Control>
+        <!-- Ordering matters: the complaint is published first, so a click
+             with a field empty spawns it and never reaches the NewDialog
+             below. A dialog cannot re-evaluate a control condition as you
+             type, so this is the check, not a greyed-out button. -->
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next">
+          <Publish Event="SpawnDialog" Value="FogNeedsCfgDlg" Order="1" Condition="NOT SERVER OR NOT CA" />
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2" Condition="SERVER AND CA" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="FogNeedsCfgDlg" Width="260" Height="105" Title="[ProductName] Setup">
+        <Control Id="Icon" Type="Icon" X="15" Y="15" Width="24" Height="24" ToolTip="yes" FixedSize="yes" IconSize="32" Text="WixUI_Ico_Exclam" />
+        <Control Id="Text" Type="Text" X="48" Y="15" Width="194" Height="50" NoPrefix="yes" Text="Fill in both the server address and the certificate file. The agent cannot reach a server it has not been told about, and it will not trust one it cannot verify." />
+        <Control Id="OK" Type="PushButton" X="102" Y="77" Width="56" Height="17" Default="yes" Cancel="yes" Text="OK">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+
+      <!-- The flow. A repair or an uninstall never sees FogCfgDlg: the
+           state directory already holds the server and the CA, and the
+           properties are optional on anything but a first install. -->
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="FogCfgDlg" Condition="NOT Installed" />
+      <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="FogCfgDlg" Order="1" Condition="NOT Installed" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="3" Condition="Installed AND PATCH" />
+      <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="MaintenanceTypeDlg" Control="RemoveButton" Event="NewDialog" Value="VerifyReadyDlg" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="EndDialog" Value="Return" Order="999" />
+    </UI>
+
+    <UIRef Id="WixUI_Common" />
+  </Fragment>
 </Wix>

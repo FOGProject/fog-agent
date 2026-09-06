@@ -89,7 +89,11 @@ rm -f "$syso"
 # 2. wixl builds the package; msibuild then rewrites the Upgrade table with
 # the legacy row appended to whatever MajorUpgrade emitted.
 out="dist/fog-agent-${msiver}-x64.msi"
-wixl -a x64 -D "Version=${msiver}" -D "Exe=${exe}" -o "$out" build/msi/fog-agent.wxs
+# --ext ui pulls in wixl's copy of the standard WiX dialog set, which the
+# wizard in fog-agent.wxs refers to by DialogRef. Without it the package
+# builds fine and silently has no UI at all, which is the defect the wizard
+# was added to fix -- the check after the build is what makes that loud.
+wixl -a x64 --ext ui -D "Version=${msiver}" -D "Exe=${exe}" -o "$out" build/msi/fog-agent.wxs
 
 idt="$(mktemp)"
 msiinfo export "$out" Upgrade >"$idt"
@@ -119,5 +123,15 @@ if ! msiinfo export "$out" File | awk 'BEGIN{FS="\t"} $1=="AgentExe"{exit ($5=="
     echo "build/msi.sh: File.Version was not set on the agent exe" >&2
     exit 1
 fi
+
+# The wizard: a package with no Dialog rows installs with a bare progress
+# bar and no way to say which server, which is how a double-click used to
+# fail 1603. FogCfgDlg is the page that asks.
+if ! msiinfo export "$out" Dialog 2>/dev/null | grep -q '^FogCfgDlg\b'; then
+    echo "build/msi.sh: the UI is missing (no FogCfgDlg row); is the ui extension supported by this wixl?" >&2
+    exit 1
+fi
+# ...and every dialog it can reach has to be in the package too.
+python3 build/check-msi-ui.py "$out" || exit 1
 
 echo "$out"

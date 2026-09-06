@@ -300,6 +300,33 @@ func (st *State) SaveCA(pemBytes []byte) error {
 	return writeFile(filepath.Join(st.Dir, caFile), pemBytes, 0o600)
 }
 
+// ReadCABundle reads a CA file the person installing the agent pointed at
+// and returns it as PEM. DER is accepted and converted because the FOG
+// server publishes both forms side by side --
+// management/other/ca.cert.pem and ca.cert.der -- and a browser saving the
+// .der one is an entirely reasonable way to get the file onto a Windows
+// machine. Without this the DER lands in the state directory and the only
+// symptom is "CA bundle contains no certificates" from NewClient, which
+// says nothing about the format.
+func ReadCABundle(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if block, _ := pem.Decode(raw); block != nil {
+		return raw, nil
+	}
+	certs, err := x509.ParseCertificates(raw)
+	if err != nil || len(certs) == 0 {
+		return nil, fmt.Errorf("%s holds no certificate: expected PEM (-----BEGIN CERTIFICATE-----) or DER, as the server publishes at management/other/ca.cert.pem and ca.cert.der", path)
+	}
+	var out []byte
+	for _, c := range certs {
+		out = append(out, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.Raw})...)
+	}
+	return out, nil
+}
+
 // CA returns the stored bundle, or nil if none.
 func (st *State) CA() []byte {
 	b, _ := os.ReadFile(filepath.Join(st.Dir, caFile))
