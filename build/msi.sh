@@ -79,7 +79,7 @@ cat >"$verjson" <<JSON
 }
 JSON
 "$goversioninfo" -64 -o "$syso" -platform-specific=false "$verjson"
-trap 'rm -f "$syso" "$verjson"' EXIT
+trap 'rm -f "$syso" "$verjson" "${wixllog:-}"' EXIT
 
 exe="dist/fog-agent-windows-amd64.exe"
 GOOS=windows GOARCH=amd64 CGO_ENABLED=0 \
@@ -93,7 +93,8 @@ out="dist/fog-agent-${msiver}-x64.msi"
 # wizard in fog-agent.wxs refers to by DialogRef. Without it the package
 # builds fine and silently has no UI at all, which is the defect the wizard
 # was added to fix -- the check after the build is what makes that loud.
-wixl -a x64 --ext ui -D "Version=${msiver}" -D "Exe=${exe}" -o "$out" build/msi/fog-agent.wxs
+wixllog="$(mktemp)"
+wixl -a x64 --ext ui -D "Version=${msiver}" -D "Exe=${exe}" -o "$out" build/msi/fog-agent.wxs 2>&1 | tee "$wixllog"
 
 idt="$(mktemp)"
 msiinfo export "$out" Upgrade >"$idt"
@@ -175,7 +176,19 @@ fi
 # bar and no way to say which server, which is how a double-click used to
 # fail 1603. FogCfgDlg is the page that asks.
 if ! msiinfo export "$out" Dialog 2>/dev/null | grep -q '^FogCfgDlg\b'; then
-    echo "build/msi.sh: the UI is missing (no FogCfgDlg row); is the ui extension supported by this wixl?" >&2
+    # Say which of the two it is rather than asking. This fired once on a CI
+    # runner while the same wixl on the same Ubuntu release built it fine in
+    # a container, so the message has to carry enough to tell the two apart
+    # without another push.
+    {
+        echo "build/msi.sh: the UI is missing (no FogCfgDlg row in $out)"
+        echo "  wixl:     $(wixl --version 2>&1 | head -1)"
+        echo "  wixl at:  $(command -v wixl)"
+        echo "  ui ext:   $(ls -d /usr/share/wixl-*/ext/ui 2>&1 | tr '\n' ' ')"
+        echo "  dialogs:  $(msiinfo export "$out" Dialog 2>/dev/null | awk 'NR>3{print $1}' | tr '\n' ' ')"
+        echo "  wixl said:"
+        sed 's/^/    /' "$wixllog"
+    } >&2
     exit 1
 fi
 # ...and every dialog it can reach has to be in the package too.
