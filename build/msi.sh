@@ -104,6 +104,23 @@ printf '%s\t0.0.0\t99.0.0\t\t256\t\tLEGACYFOGCLIENT\n' "$legacy_upgradecode" >>"
 msibuild "$out" -i "$idt"
 rm -f "$idt"
 
+# 3. The ProbeCA custom action, for the same reason the legacy Upgrade row
+# is appended here: wixl accepts BinaryKey only with DllEntry or
+# JScriptCall, and BinaryKey with ExeCommand (custom action type 2) trips an
+# assertion and leaves no row at all. The wizard's Next button invokes this
+# by name to fetch the server's certificate before anything trusts it.
+#
+# Type 66 = 2 (EXE held in the Binary table) + 64 (ignore the exit code).
+# Ignoring it is deliberate: a server that cannot be reached has to land on
+# a dialog that says so, not on a 1603. The action leaves the fingerprint in
+# HKCU for AppSearch to lift into CAFINGERPRINT, so "it did not work" shows
+# up as that property still being empty, which is what the wizard tests.
+caidt="$(mktemp)"
+msiinfo export "$out" CustomAction >"$caidt"
+printf 'ProbeCA\t66\tAgentProbeExe\tca probe --server "[SERVER]" --registry\t\n' >>"$caidt"
+msibuild "$out" -i "$caidt"
+rm -f "$caidt"
+
 # Set File.Version to match the exe's stamped resource (x.y.z.0). wixl
 # leaves it empty, which makes the engine treat the package exe as
 # unversioned and skip overwriting an existing one -- see note 1 above.

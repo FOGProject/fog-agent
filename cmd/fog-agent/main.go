@@ -68,6 +68,8 @@ func main() {
 		err = cmdRenew(os.Args[2:])
 	case "status":
 		err = cmdStatus(os.Args[2:])
+	case "ca":
+		err = cmdCA(os.Args[2:])
 	case "service":
 		err = cmdService(os.Args[2:])
 	default:
@@ -88,12 +90,16 @@ func usage() {
                                           enroll if needed, then poll the server
   fog-agent renew [--dir DIR]             renew the certificate now, whatever its expiry
   fog-agent status [--dir DIR]
+  fog-agent ca probe --server URL         show the certificate the server publishes
   fog-agent service install --server URL --ca FILE [--token T] [--dir DIR]
   fog-agent setup --server URL --ca FILE [--token T] [--dir DIR]
                                           Windows: install and start the service
   --server and --ca are asked for at the prompt when "service install" or
   "setup" is run without them. --ca takes the server's ca.cert.pem or
-  ca.cert.der, from management/other/ on the FOG server.
+  ca.cert.der, from management/other/ on the FOG server; leave it out and
+  the agent fetches what the server publishes and asks you to confirm its
+  fingerprint. Unattended, pass that fingerprint as --ca-fingerprint
+  instead of copying a file to every machine.
   fog-agent service uninstall|start|stop|status
   fog-agent version`)
 }
@@ -127,14 +133,19 @@ func (s *sayer) say(msg string) {
 // commonFlags are shared by enroll and run.
 type commonFlags struct {
 	server, caPath, token, dir *string
+	// caFingerprint pins what the server is allowed to publish when no CA
+	// file is given, so an unattended install can fetch the anchor without
+	// trusting whatever answers.
+	caFingerprint *string
 }
 
 func addCommonFlags(fs *flag.FlagSet) commonFlags {
 	return commonFlags{
-		server: fs.String("server", "", "FOG server base URL, e.g. https://fog.example.org/fog (remembered after the first enroll)"),
-		caPath: fs.String("ca", "", "PEM bundle to trust for the server (the FOG CA, or the public CA the web UI uses; remembered)"),
-		token:  fs.String("token", "", "enrollment token minted by an admin (optional)"),
-		dir:    fs.String("dir", enroll.DefaultDir, "state directory"),
+		server:        fs.String("server", "", "FOG server base URL, e.g. https://fog.example.org/fog (remembered after the first enroll)"),
+		caPath:        fs.String("ca", "", "PEM or DER certificate to trust for the server (the FOG CA, or the public CA the web UI uses; remembered)"),
+		caFingerprint: fs.String("ca-fingerprint", "", "SHA-256 of the certificate the server publishes; with this and no --ca the agent fetches it and refuses anything else"),
+		token:         fs.String("token", "", "enrollment token minted by an admin (optional)"),
+		dir:           fs.String("dir", enroll.DefaultDir, "state directory"),
 	}
 }
 
@@ -161,7 +172,21 @@ func openState(f commonFlags) (*enroll.State, []byte, error) {
 		}
 	}
 	if len(caPEM) == 0 {
-		return nil, nil, errors.New("--ca is required the first time: the agent trusts only the bundle it is given")
+		// No file, and nothing remembered: fetch what the server publishes
+		// and settle it against a fingerprint. acquireCA returns nothing
+		// when there is neither a fingerprint to check nor anybody to ask,
+		// and the error below is then the honest one.
+		if caPEM, err = acquireCA(f, st.Config.ServerURL); err != nil {
+			return nil, nil, err
+		}
+		if len(caPEM) > 0 {
+			if err := st.SaveCA(caPEM); err != nil {
+				return nil, nil, err
+			}
+		}
+	}
+	if len(caPEM) == 0 {
+		return nil, nil, errors.New("--ca is required the first time: the agent trusts only the certificate it is given, or one whose fingerprint it is given with --ca-fingerprint")
 	}
 	if err := st.SaveConfig(); err != nil {
 		return nil, nil, err
@@ -1312,6 +1337,14 @@ func askMissing(f commonFlags) {
 	if !stdinIsConsole() {
 		return
 	}
+	// A named server means somebody is scripting this, and a script that
+	// gets asked a question hangs. Only the bare "fog-agent service
+	// install" is treated as an invitation to ask; anything with --server
+	// on it gets errors, or the certificate confirmation in acquireCA,
+	// which is a decision and not a convenience.
+	if *f.server != "" {
+		return
+	}
 	st, err := enroll.Load(*f.dir)
 	if err != nil || st.Config.ServerURL != "" || len(st.CA()) > 0 {
 		return
@@ -1320,8 +1353,13 @@ func askMissing(f commonFlags) {
 		*f.server = ask("FOG server address, the web UI address ending in /fog",
 			"https://fog.example.org/fog")
 	}
-	if *f.caPath == "" {
-		*f.caPath = ask("Certificate file to trust, downloaded from that server at /fog/management/other/ca.cert.pem",
+	if *f.caPath == "" && *f.caFingerprint == "" {
+		// Empty is the good answer here, and it is offered first: the
+		// agent fetches what the server publishes and shows the
+		// fingerprint to confirm, which beats sending somebody to find a
+		// file. The path is still there for a server whose web UI runs on
+		// a public or corporate certificate.
+		*f.caPath = ask("Certificate file to trust, or empty to fetch it from the server and check its fingerprint",
 			`C:\Users\you\Downloads\ca.cert.pem`)
 	}
 	if *f.token == "" {

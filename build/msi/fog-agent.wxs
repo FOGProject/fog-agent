@@ -70,6 +70,50 @@
     <Property Id="SERVER" Secure="yes" />
     <Property Id="CA" Secure="yes" />
     <Property Id="TOKEN" Secure="yes" />
+
+    <!-- The wizard fetches the certificate the server publishes and shows
+         its fingerprint for somebody to check against the web UI before
+         anything trusts it. Three pieces make that work, because Windows
+         Installer has no way for a program to hand a value back:
+
+           AgentProbeExe  the agent itself, a second copy in the Binary
+                          table, because the UI sequence runs before
+                          InstallFiles and there is nothing on disk yet.
+           ProbeCA        runs the probe with its registry flag, clearing and then
+                          writes the result under HKCU\Software\FOG\Setup.
+                          Return="ignore" so an unreachable server lands on
+                          a dialog that says so instead of a 1603.
+           RegistrySearch lifts those values into properties, which is what
+                          AppSearch is for.
+
+         CAFINGERPRINT is the only one that matters afterwards: the deferred
+         setup re-fetches as SYSTEM and refuses anything whose SHA-256 is
+         not this. The certificate bytes never cross from the wizard, only
+         the fingerprint somebody looked at. -->
+    <Binary Id="AgentProbeExe" SourceFile="$(var.Exe)" />
+    <!-- ProbeCA is NOT authored here. wixl (msitools 0.106) accepts
+         BinaryKey only alongside DllEntry or JScriptCall; BinaryKey with
+         ExeCommand, which is custom action type 2, trips an assertion and
+         the row is silently dropped. build/msi.sh appends it with msibuild
+         after wixl, the same way it appends the legacy Upgrade row, and
+         build/check-msi-ui.py fails the build if any DoAction ends up
+         naming an action that is not there. -->
+    <!-- AppSearch never overwrites a property that is already set, so going
+         Back and naming a different server would otherwise confirm the
+         first server's fingerprint. "{}" is how a property is emptied. -->
+    <CustomAction Id="ClearCAFingerprint" Property="CAFINGERPRINT" Value="{}" />
+    <CustomAction Id="ClearCASubject" Property="CASUBJECT" Value="{}" />
+    <CustomAction Id="ClearCAExpires" Property="CAEXPIRES" Value="{}" />
+
+    <Property Id="CAFINGERPRINT" Secure="yes">
+      <RegistrySearch Id="CaFingerprintSearch" Root="HKCU" Key="Software\FOG\Setup" Name="CAFingerprint" Type="raw" />
+    </Property>
+    <Property Id="CASUBJECT">
+      <RegistrySearch Id="CaSubjectSearch" Root="HKCU" Key="Software\FOG\Setup" Name="CASubject" Type="raw" />
+    </Property>
+    <Property Id="CAEXPIRES">
+      <RegistrySearch Id="CaExpiresSearch" Root="HKCU" Key="Software\FOG\Setup" Name="CAExpires" Type="raw" />
+    </Property>
     <Property Id="WEBADDRESS" Secure="yes" />
     <Property Id="WEBROOT" Secure="yes" />
     <Property Id="ARPNOMODIFY" Value="1" />
@@ -100,7 +144,7 @@
          which the agent reads as absent. Return check: a bad CA path or an
          unwritable state directory must fail the install visibly. -->
     <CustomAction Id="Setup" FileKey="AgentExe"
-                  ExeCommand="setup --server &quot;[SERVER]&quot; --ca &quot;[CA]&quot; --token &quot;[TOKEN]&quot;"
+                  ExeCommand="setup --server &quot;[SERVER]&quot; --ca &quot;[CA]&quot; --ca-fingerprint &quot;[CAFINGERPRINT]&quot; --token &quot;[TOKEN]&quot;"
                   Execute="deferred" Impersonate="no" Return="check" />
 
     <InstallExecuteSequence>
@@ -171,38 +215,101 @@
         <Control Id="BannerDescription" Type="Text" X="25" Y="23" Width="330" Height="15" Transparent="yes" NoPrefix="yes" Text="The agent enrolls with this server and trusts nothing else." />
         <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
 
-        <Control Id="ServerLabel" Type="Text" X="20" Y="58" Width="330" Height="10" NoPrefix="yes" Text="&amp;Server address (the FOG web UI address, ending in /fog):" />
-        <Control Id="ServerEdit" Type="Edit" X="20" Y="70" Width="330" Height="17" Property="SERVER" />
-        <Control Id="ServerHint" Type="Text" X="20" Y="89" Width="330" Height="10" NoPrefix="yes" Text="Example:  https://fog.example.org/fog" />
+        <Control Id="ServerLabel" Type="Text" X="20" Y="56" Width="330" Height="10" NoPrefix="yes" Text="&amp;Server address (the FOG web UI address, ending in /fog):" />
+        <Control Id="ServerEdit" Type="Edit" X="20" Y="68" Width="330" Height="17" Property="SERVER" />
+        <Control Id="ServerHint" Type="Text" X="20" Y="87" Width="330" Height="10" NoPrefix="yes" Text="Example:  https://fog.example.org/fog" />
 
-        <Control Id="CaLabel" Type="Text" X="20" Y="110" Width="330" Height="10" NoPrefix="yes" Text="&amp;Certificate file to trust, saved on this machine:" />
-        <Control Id="CaEdit" Type="Edit" X="20" Y="122" Width="330" Height="17" Property="CA" />
-        <Control Id="CaHint" Type="Text" X="20" Y="141" Width="330" Height="24" NoPrefix="yes" Text="Download it from your server first, at /fog/management/other/ca.cert.pem, then give the path to the saved file.  Example:  C:\Users\you\Downloads\ca.cert.pem" />
+        <Control Id="TokenLabel" Type="Text" X="20" Y="106" Width="330" Height="10" NoPrefix="yes" Text="Enrollment &amp;token (optional):" />
+        <Control Id="TokenEdit" Type="Edit" X="20" Y="118" Width="330" Height="17" Property="TOKEN" />
+        <Control Id="TokenHint" Type="Text" X="20" Y="137" Width="330" Height="10" NoPrefix="yes" Text="Leave this empty to approve the machine by hand in Host Management." />
 
-        <Control Id="TokenLabel" Type="Text" X="20" Y="174" Width="330" Height="10" NoPrefix="yes" Text="Enrollment &amp;token (optional):" />
-        <Control Id="TokenEdit" Type="Edit" X="20" Y="186" Width="330" Height="17" Property="TOKEN" />
-        <Control Id="TokenHint" Type="Text" X="20" Y="205" Width="330" Height="20" NoPrefix="yes" Text="Leave this empty to approve the machine by hand in Host Management." />
+        <Control Id="MidLine" Type="Line" X="20" Y="157" Width="330" Height="0" />
+        <!-- The certificate is normally not typed at all: Next fetches what
+             the server publishes and the next page asks somebody to check
+             its fingerprint. The field stays for the one case the fetch
+             cannot serve, a web UI on a public or corporate certificate. -->
+        <Control Id="CaLabel" Type="Text" X="20" Y="166" Width="330" Height="10" NoPrefix="yes" Text="&amp;Certificate file to trust (leave empty for almost every server):" />
+        <Control Id="CaEdit" Type="Edit" X="20" Y="178" Width="330" Height="17" Property="CA" />
+        <Control Id="CaHint" Type="Text" X="20" Y="197" Width="330" Height="30" NoPrefix="yes" Text="Empty is right unless your FOG web UI runs on a public or corporate certificate. Otherwise Setup fetches the certificate from the server and asks you to confirm its fingerprint on the next page." />
 
         <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
         <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back">
           <Publish Event="NewDialog" Value="WelcomeDlg" />
         </Control>
-        <!-- Ordering matters: the complaint is published first, so a click
-             with a field empty spawns it and never reaches the NewDialog
-             below. A dialog cannot re-evaluate a control condition as you
-             type, so this is the check, not a greyed-out button. -->
+        <!-- Ordering matters. The complaint is published first, so a click
+             with no server spawns it and never reaches anything below. A
+             dialog cannot re-evaluate a control condition as you type, so
+             this is the check, not a greyed-out button.
+             Then: a typed certificate file skips the fetch entirely;
+             otherwise clear last time's answer, fetch, lift the result out
+             of the registry, and go to the page that shows it. If the fetch
+             found nothing, CAFINGERPRINT is still empty and the last two
+             publishes send the reader somewhere that says so. -->
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next">
-          <Publish Event="SpawnDialog" Value="FogNeedsCfgDlg" Order="1" Condition="NOT SERVER OR NOT CA" />
+          <Publish Event="SpawnDialog" Value="FogNeedsCfgDlg" Order="1" Condition="NOT SERVER" />
           <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2" Condition="SERVER AND CA" />
+          <Publish Event="DoAction" Value="ClearCAFingerprint" Order="3" Condition="SERVER AND NOT CA" />
+          <Publish Event="DoAction" Value="ClearCASubject" Order="4" Condition="SERVER AND NOT CA" />
+          <Publish Event="DoAction" Value="ClearCAExpires" Order="5" Condition="SERVER AND NOT CA" />
+          <Publish Event="DoAction" Value="ProbeCA" Order="6" Condition="SERVER AND NOT CA" />
+          <Publish Event="DoAction" Value="AppSearch" Order="7" Condition="SERVER AND NOT CA" />
+          <Publish Event="NewDialog" Value="FogCaDlg" Order="8" Condition="SERVER AND NOT CA AND CAFINGERPRINT" />
+          <Publish Event="SpawnDialog" Value="FogNoCaDlg" Order="9" Condition="SERVER AND NOT CA AND NOT CAFINGERPRINT" />
         </Control>
         <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
           <Publish Event="SpawnDialog" Value="CancelDlg" />
         </Control>
       </Dialog>
 
+      <!-- The confirmation. Fetching the certificate over the connection it
+           is meant to verify would be trust on first use, which is what the
+           old client did; a person comparing this fingerprint against the
+           one the server's own web UI prints is what makes it a decision
+           taken out of band. Nothing is installed until Next is clicked
+           here, and the deferred setup checks the fingerprint again itself
+           when it re-fetches as SYSTEM. -->
+      <Dialog Id="FogCaDlg" Width="370" Height="270" Title="[ProductName] Setup">
+        <Control Id="BannerBitmap" Type="Bitmap" X="0" Y="0" Width="370" Height="44" TabSkip="yes" Text="WixUI_Bmp_Banner" />
+        <Control Id="BannerTitle" Type="Text" X="15" Y="6" Width="250" Height="15" Transparent="yes" NoPrefix="yes" Text="{\FogFontTitle}Is this your server's certificate?" />
+        <Control Id="BannerDescription" Type="Text" X="25" Y="23" Width="330" Height="15" Transparent="yes" NoPrefix="yes" Text="The agent will trust this one and no other." />
+        <Control Id="BannerLine" Type="Line" X="0" Y="44" Width="370" Height="0" />
+
+        <Control Id="Intro" Type="Text" X="20" Y="56" Width="330" Height="20" NoPrefix="yes" Text="[SERVER] offers the certificate below. Compare its fingerprint with the one your FOG server shows before you continue." />
+
+        <Control Id="SubjectLabel" Type="Text" X="20" Y="84" Width="60" Height="10" NoPrefix="yes" Text="Issued to:" />
+        <Control Id="SubjectValue" Type="Text" X="82" Y="84" Width="268" Height="20" NoPrefix="yes" Text="[CASUBJECT]" />
+        <Control Id="ExpiresLabel" Type="Text" X="20" Y="108" Width="60" Height="10" NoPrefix="yes" Text="Expires:" />
+        <Control Id="ExpiresValue" Type="Text" X="82" Y="108" Width="268" Height="10" NoPrefix="yes" Text="[CAEXPIRES]" />
+
+        <Control Id="FpLabel" Type="Text" X="20" Y="128" Width="330" Height="10" NoPrefix="yes" Text="SHA-256 fingerprint:" />
+        <Control Id="FpValue" Type="Text" X="20" Y="140" Width="330" Height="30" NoPrefix="yes" Text="[CAFINGERPRINT]" />
+
+        <Control Id="WhereLine" Type="Line" X="20" Y="178" Width="330" Height="0" />
+        <Control Id="Where" Type="Text" X="20" Y="186" Width="330" Height="40" NoPrefix="yes" Text="Where to check it: sign in to the FOG web UI and open FOG Configuration, then the Certificates tab. The Root row's SHA-256 column holds the same value. If the two do not match character for character, click Cancel." />
+
+        <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="Back">
+          <Publish Event="NewDialog" Value="FogCfgDlg" />
+        </Control>
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next">
+          <Publish Event="NewDialog" Value="VerifyReadyDlg" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+
+      <Dialog Id="FogNoCaDlg" Width="290" Height="125" Title="[ProductName] Setup">
+        <Control Id="Icon" Type="Icon" X="15" Y="15" Width="24" Height="24" ToolTip="yes" FixedSize="yes" IconSize="32" Text="WixUI_Ico_Exclam" />
+        <Control Id="Text" Type="Text" X="48" Y="15" Width="224" Height="70" NoPrefix="yes" Text="Setup could not read a certificate from [SERVER]. Check the address, including https and the /fog on the end, and that this machine can reach the server. If the FOG web UI runs on a public or corporate certificate, give that certificate authority's file in the box instead." />
+        <Control Id="OK" Type="PushButton" X="117" Y="97" Width="56" Height="17" Default="yes" Cancel="yes" Text="OK">
+          <Publish Event="EndDialog" Value="Return" />
+        </Control>
+      </Dialog>
+
       <Dialog Id="FogNeedsCfgDlg" Width="260" Height="105" Title="[ProductName] Setup">
         <Control Id="Icon" Type="Icon" X="15" Y="15" Width="24" Height="24" ToolTip="yes" FixedSize="yes" IconSize="32" Text="WixUI_Ico_Exclam" />
-        <Control Id="Text" Type="Text" X="48" Y="15" Width="194" Height="50" NoPrefix="yes" Text="Fill in both the server address and the certificate file. The agent cannot reach a server it has not been told about, and it will not trust one it cannot verify." />
+        <Control Id="Text" Type="Text" X="48" Y="15" Width="194" Height="50" NoPrefix="yes" Text="Fill in the server address. The agent cannot reach a server it has not been told about." />
         <Control Id="OK" Type="PushButton" X="102" Y="77" Width="56" Height="17" Default="yes" Cancel="yes" Text="OK">
           <Publish Event="EndDialog" Value="Return" />
         </Control>
@@ -213,9 +320,10 @@
            properties are optional on anything but a first install. -->
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="FogCfgDlg" Condition="NOT Installed" />
       <Publish Dialog="WelcomeDlg" Control="Next" Event="NewDialog" Value="VerifyReadyDlg" Condition="Installed AND PATCH" />
-      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="FogCfgDlg" Order="1" Condition="NOT Installed" />
-      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="2" Condition="Installed AND NOT PATCH" />
-      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="3" Condition="Installed AND PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="FogCaDlg" Order="1" Condition="NOT Installed AND CAFINGERPRINT AND NOT CA" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="FogCfgDlg" Order="2" Condition="NOT Installed AND (CA OR NOT CAFINGERPRINT)" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="MaintenanceTypeDlg" Order="3" Condition="Installed AND NOT PATCH" />
+      <Publish Dialog="VerifyReadyDlg" Control="Back" Event="NewDialog" Value="WelcomeDlg" Order="4" Condition="Installed AND PATCH" />
       <Publish Dialog="MaintenanceWelcomeDlg" Control="Next" Event="NewDialog" Value="MaintenanceTypeDlg" />
       <Publish Dialog="MaintenanceTypeDlg" Control="Back" Event="NewDialog" Value="MaintenanceWelcomeDlg" />
       <Publish Dialog="MaintenanceTypeDlg" Control="RepairButton" Event="NewDialog" Value="VerifyReadyDlg" />

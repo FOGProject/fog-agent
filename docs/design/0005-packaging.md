@@ -28,23 +28,28 @@ registration itself.
 | 5 | The log is `C:\ProgramData\FOG\fog-agent.log`, beside the state directory, not in it | The state directory is locked to SYSTEM and Administrators because it holds the key. The log must be readable by whoever is asked to post it on the forums, and this is the successor to `C:\fog.log`. Nothing secret is written to it |
 | 7 | The MSI carries a wizard, and the binary asks at the prompt | Windows Installer shows no UI of its own: with no Dialog rows a double-click ran `setup` with no server and no CA and failed 1603 with nothing on screen. Anyone who has installed Windows software expects to be asked. wixl ships the standard WiX dialog set as its `ui` extension, so the package authors one page (`FogCfgDlg`) and reuses the rest; `/qn` and `/qb` skip the InstallUISequence, so scripted installs are untouched. `service install` with no flags asks the same three questions on the console, gated on stdin being a character device so msiexec and the service never prompt |
 | 8 | The CA file is accepted as PEM or DER | The server publishes `management/other/ca.cert.pem` and `ca.cert.der` side by side. A browser saving the `.der` one is a reasonable way to get the file onto a Windows machine, and the only symptom was "CA bundle contains no certificates", which names neither the file nor the format |
+| 10 | The wizard fetches the CA and asks the admin to confirm its fingerprint | Almost nobody installing an agent has a PEM file to hand, and telling them to go and find one is where the old flow lost people. Fetching alone would be trust on first use; the confirmation against the web UI's own Certificates tab is what makes it an out-of-band decision (0002) |
+| 11 | wixl cannot author the probe custom action either | It accepts `BinaryKey` only with `DllEntry` or `JScriptCall`; `BinaryKey` with `ExeCommand` (type 2) trips an assertion and leaves no row, and Windows Installer treats a `DoAction` naming a missing action as a no-op. `build/msi.sh` appends the row with msibuild, as it already does for the legacy Upgrade row, and `build/check-msi-ui.py` fails the build if any `DoAction` dangles |
 | 9 | `AllowSameVersionUpgrades` on the MajorUpgrade | `Product Id="*"` mints a fresh ProductCode on every build while the version only moves on a release, so two builds of 0.1.0 are two products to Windows Installer. Without this the second registers beside the first: the lab host carried two "FOG Agent" rows in Add/Remove Programs on 2026-09-06 |
 | 6 | No self-upgrade in the agent yet | A newer MSI over an older one is the upgrade path on Windows for now. The lab needed a snapin plus Task Scheduler to swap a binary, which shows the gap; an agent-driven upgrade is its own slice |
 
 ## 3. What a package does not do
 
-It does not carry the CA. The CA is per server; the installer takes a path
-to it. Fetching it from the server with a fingerprint pin is a possible
-later convenience, not a v1 requirement.
+It does not carry the CA. The CA is per server, so the package fetches it
+from the server at install time and makes somebody confirm its fingerprint
+before anything trusts it (0002, "Where the server anchor comes from"). A
+file is still accepted, and is the answer where the web UI runs on a public
+or corporate certificate.
 
-With the wizard in place that path is the only step left that the installer
-cannot do for the person running it: they have to visit
-`/fog/management/other/ca.cert.pem` in a browser first and know to do so.
-The wizard says where to get the file, and the trust model (0002) is why it
-is not simply downloaded: the agent trusts what it is handed and nothing
-else, so acquiring the anchor over the same connection it is meant to
-verify would have to be an out-of-band fingerprint check, not a silent
-fetch.
+The MSI-side plumbing for that is three pieces, because Windows Installer
+gives a program no way to hand a value back to the install: a second copy of
+the agent in the Binary table (the UI sequence runs before InstallFiles, so
+nothing is on disk yet), a custom action running its `ca probe --registry`,
+and an AppSearch RegistrySearch lifting the result out of HKCU into
+`CAFINGERPRINT`. The exe costs the package about 7 MB, taken deliberately
+over a second implementation of fetch-and-hash in PowerShell or JScript: the
+fingerprint shown to the admin has to be computed exactly the way `setup`
+computes and re-checks it.
 
 ## 4. Proof
 
@@ -88,6 +93,29 @@ rows across two UpgradeCodes, one more than the arrangement that produced
 the two duplicate "FOG Agent" rows in Add/Remove Programs into one, which
 is decision 9 working.
 
+### The certificate fetch, 2026-09-06
+
+Same host, after the wizard learned to fetch. `msiexec /qn` over the
+package that carries the agent twice (7.3 MB Binary stream, 3.3 MB package
+to 10.7 MB) exited 0 with the service Running and one Add/Remove row, so
+neither the Binary stream nor the msibuild-appended CustomAction row upsets
+anything the engine loads.
+
+The Go half of the wizard was exercised on the same Windows host directly:
+`fog-agent ca probe --server https://10.255.20.1/fog --registry` printed
+`50:02:7A:...:C5:C4` and left exactly that under
+`HKCU\Software\FOG\Setup`, which is what AppSearch reads. The same value
+is what the server's own web UI shows: `fog-pki-admin status` reports it for
+the `root` slot, and that is the field FOGConfigurationPage renders in the
+Certificates tab's SHA-256 column. Two independent paths to the same 95
+characters is the whole basis of the confirmation step, so it is worth
+having checked rather than assumed.
+
+Pointed at a server that is not there, the probe deleted the key rather than
+leaving it: a stale fingerprint surviving a failed fetch would have put
+somebody in front of the previous server's certificate and asked them to
+confirm it. That was a real defect, found by running it.
+
 **Not yet proven: the dialogs themselves.** Nobody was logged in to the lab
 VM, and with no interactive session msiexec runs at UI level none and skips
 the InstallUISequence entirely, so no dialog was ever created. What is
@@ -98,4 +126,5 @@ spawn `OutOfDiskDlg` and `OutOfRbDiskDlg` when the volume is short of space,
 wixl includes only what is referenced, and its own `WixUI_Minimal` does not
 reference either, so both were missing from the package. That check cannot
 stand in for a double-click on a logged-in Windows desktop, which is the one
-step left.
+step left: the dialogs rendering, the AppSearch lift into CAFINGERPRINT, and
+the Next-button publish order.

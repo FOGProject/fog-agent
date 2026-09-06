@@ -12,7 +12,17 @@ either.
 Checked: Dialog.Control_First/Default/Cancel and Control.Control_Next name a
 control that exists in that dialog; Bitmap and Icon controls name a Binary
 row that exists; every ControlEvent and EventMapping row names a real
-control, and every NewDialog/SpawnDialog names a dialog in the package.
+control; every NewDialog/SpawnDialog names a dialog in the package; every
+DoAction names an action that exists, custom or sequenced; and every
+AppSearch row has the locator it points at.
+
+The DoAction check earns its keep on this package specifically: wixl accepts
+BinaryKey only with DllEntry or JScriptCall, so the wizard's ProbeCA action
+(BinaryKey with ExeCommand) trips an assertion and leaves no row, and
+build/msi.sh appends it afterwards with msibuild. A button publishing
+DoAction against a name with no row is not an error to Windows Installer --
+it just does nothing, and the wizard would go on to report that the server
+published no certificate.
 
 Exits non-zero, listing what dangles, so a broken wizard cannot ship.
 """
@@ -66,6 +76,23 @@ def main(msi):
     for r in table(msi, "EventMapping"):
         if r[1] not in controls.get(r[0], {}):
             bad.append(f"EventMapping {r[0]}.{r[1]} names a control that does not exist")
+
+    # An action a button can invoke is either a custom action or one of the
+    # standard actions this package sequences; both are named in tables, so
+    # nothing has to be hard-coded.
+    actions = {r[0] for r in table(msi, "CustomAction")}
+    for seq in ("InstallUISequence", "InstallExecuteSequence", "AdminUISequence"):
+        actions |= {r[0] for r in table(msi, seq)}
+    for r in table(msi, "ControlEvent"):
+        if r[2] == "DoAction" and r[3] not in actions:
+            bad.append(f"ControlEvent {r[0]}.{r[1]} DoAction names {r[3]}, which is neither a custom action nor sequenced")
+
+    locators = set()
+    for t in ("RegLocator", "IniLocator", "CompLocator", "DrLocator", "Signature"):
+        locators |= {r[0] for r in table(msi, t)}
+    for r in table(msi, "AppSearch"):
+        if r[1] not in locators:
+            bad.append(f"AppSearch for {r[0]} names locator {r[1]}, which does not exist")
 
     if bad:
         print("build/check-msi-ui.py: the wizard has dangling references:", file=sys.stderr)

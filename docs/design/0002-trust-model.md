@@ -24,10 +24,42 @@ must keep.
 
 | Who trusts what | Anchor | Where it comes from |
 |---|---|---|
-| Agent trusts the server | the CA bundle handed to it at install (`--ca`), pinned in its state dir; the system trust store is never consulted | the FOG CA the installer mints, or the public CA the web UI already uses |
+| Agent trusts the server | the CA bundle settled at install, pinned in its state dir; the system trust store is never consulted | a file handed over with `--ca`, or the CA the server publishes, fetched and then confirmed by fingerprint (below) |
 | Web server trusts agents | **FOG Agent CA**, a new intermediate under the FOG root, published with the root as `management/other/agent-ca-bundle.pem` | installer `createAgentIntermediateCA`, key root-only under `/etc/fog/pki/agent/ca/` |
 | PHP trusts agents | the same bundle, re-verified in PHP for client-auth purpose, independently of the web server | `FOG\Agent\Principal::verify()` |
 | Server trusts a host binding | `hostAgentFingerprint` on the host row: sha256 of the key's SubjectPublicKeyInfo | written at approval, checked on every request |
+
+### Where the server anchor comes from
+
+Two ways, and the second is the ordinary one because almost nobody installing
+an agent has a PEM file to hand:
+
+- **`--ca FILE`** (`CA=` to the MSI): a bundle carried to the machine by
+  whoever is installing. Required where the FOG web UI runs on a public or
+  corporate certificate, because the CA FOG publishes did not sign it.
+- **fetch, then confirm the fingerprint.** The agent reads
+  `management/other/ca.cert.pem` from the server with TLS verification off
+  — its whole purpose is to find out what the anchor would be, so there is
+  nothing yet to verify against — and then refuses to use a byte of it
+  until something from outside that connection agrees. That is either
+  `--ca-fingerprint` (`CAFINGERPRINT=`), which a deployment script already
+  knows, or a person comparing the SHA-256 the installer displays against
+  the one the server's own web UI prints under FOG Configuration →
+  Certificates. The probe also checks that the server's own certificate is
+  actually issued by what it published, so the public-CA case is reported
+  as itself rather than failing later as a handshake error.
+
+The distinction that matters: **fetching is not trusting.** The old
+fog-client downloaded `ca.cert.der` and trusted it, which is trust on first
+use — anyone on the path at install time picks the anchor. Here the bytes
+arrive over an unverified connection and the *decision* arrives over a
+different channel: an admin's eyes, or a fingerprint pinned in a script. The
+agent stores the bundle only once the two agree.
+
+Under the MSI the confirmation happens unelevated, in the wizard, and only
+the fingerprint crosses into the elevated half; `setup` fetches the
+certificate again as SYSTEM and checks it against that fingerprint itself,
+so a wizard that was lied to cannot hand a certificate to the install.
 
 The Agent CA issues **client certificates only** (extended key usage clientAuth,
 CA:FALSE, one year). Nothing it signs can pose as a server, so a compromise of
