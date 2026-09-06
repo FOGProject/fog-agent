@@ -784,3 +784,30 @@ about a second protocol version, which is `/agent/v2/` and a new contract,
 not a new subject. And a new transport shape is still a decision, not a
 loophole: "it needs a different verb" is the start of a design note, not a
 license to add the route.
+
+## The two version numbers
+
+`protocol` and `agent_version` both ride the enroll request, both look like
+versions, and conflating them makes the `v1` in the path decorative: every
+agent release would imply a protocol change. They are different things and
+must be allowed to diverge. **Agent 1.4.0 speaking `/agent/v1/` is the
+normal case.**
+
+| Number | Lives | On the wire | Stored | Moves when |
+|---|---|---|---|---|
+| **Protocol** | `enroll.Protocol` (agent), `\FOG\Agent\Enrollment::PROTOCOL` (server) | `protocol` in the enroll request; `protocol` in the poll answer; the `v1` in `/agent/v1/` | nowhere per host | the wire contract changes in a way an existing agent cannot read: a field changes meaning, a required field appears, a status disappears. Currently `1` |
+| **Agent version** | `main.Version`, stamped `-X main.Version=` from the release tag | `agent_version` in the enroll and poll requests | `hostAgentVersion`, `aeAgentVersion`, `varchar(50)` | every release, including one that changes no wire byte |
+
+**Neither is derived from the other, and the server never gates behavior on
+`agent_version`.** It exists to be reported, and to be compared against a
+desired version (design 0015). Anything else the server needs to know about
+what an agent can do comes from `protocol`, or from the agent's own declared
+capability list — never from parsing a version string. A protocol bump is a
+deliberate act with a migration story and a `426`; an agent release is not.
+
+The agent's declared list is `supported` in the poll request: the
+capabilities this **binary** implements, as against `capabilities` in the
+answer, which is what the **server** is offering this host. The two are
+different questions and the server has only ever been able to answer the
+second. A server that sees no `supported` key is talking to an agent built
+before the key existed.
