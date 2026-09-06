@@ -760,6 +760,35 @@ it explicitly.
 | The agent already generates and handles ECDSA P-256 keys | `grep -n 'ecdsa' internal/enroll/state.go` |
 | 0003 already makes the system-roots-plus-FOG-CA exception for the choco bootstrap fetch | `grep -n 'system roots' docs/design/0003-software.md` |
 
+**PROVEN ON A RIG** — `background_scripts/prove_self_update.sh`, run 2026-09-06 on
+10.255.20.1 against a real signed manifest, a real HTTP mirror and a real systemd
+service. Fourteen assertions, all passing. These were inference when this document
+was written; they are now observed behavior of the shipped code:
+
+| Claim | What the run showed |
+|---|---|
+| A running binary can be renamed and replaced under itself on Unix, and the process keeps executing the old inode | `update: applied (0.2.0 -> 0.3.0, restarting)`; the service kept running until restarted, then reported 0.3.0 |
+| Exiting non-zero is a working restart signal to a service manager | `Restart=always` + exit 1; `Started fog-agent-lab.service` on the new binary |
+| A tampered manifest is refused before anything is downloaded | `signature_invalid: the manifest is not signed by a key this build trusts`, binary byte-identical to 0.2.0 |
+| A correctly signed manifest whose mirror serves different bytes is refused on the artifact hash | `hash_mismatch: the bytes served are not the bytes the manifest describes` — and NOT on the signature, which the test asserts separately |
+| The sequence floor survives a restart and refuses a replayed manifest | `stale_manifest: sequence 1, already accepted 2` |
+| Probation is armed before the swap, and the record survives the restart | `{"from":"0.2.0","to":"0.3.0","sequence":2,"deadline":...}` read back after the service came up |
+| **A deadline that passes with no successful poll reverts the fleet member unattended** | The running service noticed on its own loop 300s later, restored 0.2.0, exited, and came back up on it. Nobody intervened |
+
+Two of those checks passed for the wrong reason on the first run, which is worth
+recording because both are the shape where a security test goes green while testing
+nothing. Building the wrong-bytes case by editing a signed manifest breaks the
+signature, so the refusal came one step earlier and the hash was never reached; and
+asking a 0.3.0 agent to become 0.3.0 short-circuits on the version comparison before
+the manifest is ever fetched, so the floor was never consulted. Both now assert
+*which* check refused, not merely that something did.
+
+Still not proven on a rig, because it needs the server half and schema step 434 has
+not been applied to the lab database: probation clearing on a successful
+authenticated poll, and the server naming a version at all. The clear path is pinned
+by tests instead (`TestClearProbationStopsTheRevert`), which is weaker — it proves
+`ClearProbation` works, not that the run loop calls it at the right moment.
+
 **INFERRED** — reasoning, not a read:
 
 - A leaf certificate plus chain in a JSON envelope, verified with `x509.CertPool` / `Certificate.Verify` / `CheckSignature` against a compiled-in root, needs no dependency beyond the standard library. Each of those APIs is stdlib and I am confident of the shape; I have not written it.
