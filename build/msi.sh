@@ -175,17 +175,26 @@ fi
 # The wizard: a package with no Dialog rows installs with a bare progress
 # bar and no way to say which server, which is how a double-click used to
 # fail 1603. FogCfgDlg is the page that asks.
-if ! msiinfo export "$out" Dialog 2>/dev/null | grep -q '^FogCfgDlg\b'; then
-    # Say which of the two it is rather than asking. This fired once on a CI
-    # runner while the same wixl on the same Ubuntu release built it fine in
-    # a container, so the message has to carry enough to tell the two apart
-    # without another push.
+# Read the table into a variable first, and match with a here-string. Piping
+# into `grep -q` looks equivalent and is not: grep exits the moment it
+# matches, msiinfo takes SIGPIPE writing the rest of the rows, and `set -o
+# pipefail` reports the pipeline as failed even though the match succeeded.
+# Whether it happens at all depends on which side finishes first, so it
+# passed here every time and failed on every CI runner -- reported as a
+# missing wizard while the wizard was in fact present and correct.
+dialogtable="$(msiinfo export "$out" Dialog 2>/dev/null || true)"
+if ! grep -q '^FogCfgDlg[[:space:]]' <<<"$dialogtable"; then
+    # Say what is actually wrong rather than asking whether the extension is
+    # supported. The first time this fired the extension was fine and so was
+    # the package -- it was the check itself -- and the message said nothing
+    # that would have shown that. It now carries enough to tell a real
+    # missing-UI from anything else without another push.
     {
         echo "build/msi.sh: the UI is missing (no FogCfgDlg row in $out)"
         echo "  wixl:     $(wixl --version 2>&1 | head -1)"
         echo "  wixl at:  $(command -v wixl)"
         echo "  ui ext:   $(ls -d /usr/share/wixl-*/ext/ui 2>&1 | tr '\n' ' ')"
-        echo "  dialogs:  $(msiinfo export "$out" Dialog 2>/dev/null | awk 'NR>3{print $1}' | tr '\n' ' ')"
+        echo "  dialogs:  $(awk 'NR>3{print $1}' <<<"$dialogtable" | tr '\n' ' ')"
         echo "  wixl said:"
         sed 's/^/    /' "$wixllog"
     } >&2
