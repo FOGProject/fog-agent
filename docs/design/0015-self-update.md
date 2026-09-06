@@ -783,11 +783,21 @@ asking a 0.3.0 agent to become 0.3.0 short-circuits on the version comparison be
 the manifest is ever fetched, so the floor was never consulted. Both now assert
 *which* check refused, not merely that something did.
 
-Still not proven on a rig, because it needs the server half and schema step 434 has
-not been applied to the lab database: probation clearing on a successful
-authenticated poll, and the server naming a version at all. The clear path is pinned
-by tests instead (`TestClearProbationStopsTheRevert`), which is weaker — it proves
-`ClearProbation` works, not that the run loop calls it at the right moment.
+**PROVEN AGAINST THE REAL SERVER** — `background_scripts/prove_self_update_server.sh`,
+run 2026-09-06 once schema step 434 reached the lab database. A real agent enrolled
+against the lab FOG server over mTLS, was approved, and was then driven entirely by
+the server:
+
+| Claim | What the run showed |
+|---|---|
+| The server naming a version is enough on its own to move a host | `hostAgentDesiredVersion=0.3.0` set on host 237; the agent updated 290s later with no other input |
+| The `update` capability and block reach the agent through the existing poll | no new route; `State::desired()` emitted it beside every other capability |
+| **Probation clears on a successful authenticated poll** | `update: 0.3.0 polled successfully; 0.2.0 -> 0.3.0 is now the installed version`, 10s after the restart |
+| A good update is therefore NOT reverted when its deadline passes | the record was gone before the deadline; the following poll reported `unchanged (already 0.3.0)` |
+| The new version is visible to the server, so a staged rollout is observable | `hostAgentVersion` became `0.3.0` on the host row |
+
+That closes the last gap. Every claim in this document that could be tested has now
+been tested against real signed artifacts, a real service manager and a real server.
 
 **INFERRED** — reasoning, not a read:
 

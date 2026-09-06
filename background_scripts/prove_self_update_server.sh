@@ -58,13 +58,6 @@ bad() { fail=$((fail+1)); printf '   \033[31mFAIL\033[0m %s\n' "$*"; }
 sha() { sha256sum "$1" | cut -d' ' -f1; }
 fog() { sudo php /tmp/fogq.php "$@"; }
 
-if [ "${1:-}" = "--clean" ]; then
-    systemctl --user stop "$UNIT" 2>/dev/null
-    rm -f "$HOME/.config/systemd/user/$UNIT"; systemctl --user daemon-reload
-    rm -rf "$RIG"; echo "local rig removed; delete the host row in Host Management yourself"
-    exit 0
-fi
-
 # One helper for every database touch, so the credential is read by PHP out
 # of FOG's own config and never reaches a command line. QUERY_STRING is set
 # before the bootstrap because DatabaseManager redirects everything to the
@@ -78,11 +71,17 @@ $_SERVER['REQUEST_METHOD'] = 'GET';
 $_GET['node'] = 'schema';
 chdir('/var/www/html/fog/management');
 require_once '/var/www/html/fog/commons/base.inc.php';
-$DB = \FOG\Base\FOGBase::getClass('DatabaseManager');
+// getDB(), not the manager: DatabaseManager exposes establish/getLink/
+// getDB/tableColumns/getColumns and no query() of its own.
+$DB = \FOG\Db\DatabaseManager::getDB();
 switch ($argv[1]) {
 case 'has-column':
-    $DB->query("SHOW COLUMNS FROM `hosts` LIKE 'hostAgentDesiredVersion'");
-    exit($DB->fetch()->get() ? 0 : 1);
+    // tableColumns() lowercases every name it returns, so this compares
+    // lowercased. A case-sensitive in_array() here reports the column
+    // absent on a database that has it, which reads as "the schema step
+    // never ran" and sends you off to run it again.
+    $cols = \FOG\Db\DatabaseManager::tableColumns('hosts');
+    exit(in_array('hostagentdesiredversion', $cols, true) ? 0 : 1);
 case 'pending-host':   // newest pending enrollment's host id
     $DB->query("SELECT `aeHostID` FROM `agentEnrollment` WHERE `aeState`='pending' ORDER BY `aeID` DESC LIMIT 1");
     echo (int)$DB->fetch()->get('aeHostID');
@@ -92,7 +91,7 @@ case 'set-desired':    // <hostID> <version>
     // not confirmed the manager proxies it; a version is a closed
     // character set, so refusing anything else is both safer and one
     // fewer API to be wrong about.
-    if (!preg_match('/^[0-9A-Za-z.+-]{1,50}$/', $argv[3])) {
+    if ('' !== $argv[3] && !preg_match('/^[0-9A-Za-z.+-]{1,50}$/', $argv[3])) {
         fwrite(STDERR, "not a version: {$argv[3]}\n");
         exit(2);
     }
@@ -110,6 +109,30 @@ case 'set-mirror':
     break;
 }
 PHP
+
+# --clean undoes the two things this leaves on the SERVER as well as the
+# local rig. Both matter: the manifest URL is a global setting pointing at
+# a throwaway python http.server, and the desired version is a per-host
+# override that would sit there holding one machine at 0.3.0 forever.
+#
+# It does NOT delete the host row. On a machine that already had one this
+# enrolls as a "rebind" against the existing host, so that row is not this
+# script's to remove -- it is the operator's own record of their machine.
+if [ "${1:-}" = "--clean" ]; then
+    systemctl --user stop "$UNIT" 2>/dev/null
+    rm -f "$HOME/.config/systemd/user/$UNIT"; systemctl --user daemon-reload
+    rm -rf "$RIG"
+    if [ -n "${2:-}" ]; then
+        fog set-desired "$2" "" && echo "cleared hostAgentDesiredVersion on host $2"
+    else
+        echo "pass the host id to clear its desired version: $0 --clean <hostID>"
+    fi
+    fog set-mirror "" && echo "cleared FOG_AGENT_UPDATE_MANIFEST_URL"
+    echo "local rig removed. The host row is left alone -- an enrollment on a"
+    echo "machine that already had one is a rebind against the existing host."
+    exit 0
+fi
+
 
 say "0. the schema step"
 if ! fog has-column; then
