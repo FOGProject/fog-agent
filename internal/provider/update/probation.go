@@ -94,9 +94,17 @@ func LoadProbation(dir string) (*Probation, error) {
 }
 
 // ClearProbation is what a new binary calls once it has proved itself.
-// It also removes the kept previous binary: one spare is the design, and
-// a second one accumulating per update is how a state directory fills a
-// small disk.
+//
+// It removes the record and NOTHING ELSE. In particular it leaves the
+// .prev binary in place, which is deliberate twice over. Copies do not
+// accumulate -- swap renames over .prev every time, so there is only ever
+// one -- and more importantly .prev is the only thing `fog-agent
+// update-revert` has to restore from. The failure probation cannot see is
+// a build that installs, starts, polls happily and then behaves badly;
+// that one is found by a person, hours later, and the whole recovery is
+// that the binary it replaced is still sitting there. Deleting .prev here
+// would pass every test in this package and quietly remove the hands-on
+// way out of the worst case.
 func ClearProbation(dir string) error {
 	return os.Remove(filepath.Join(dir, probationFile))
 }
