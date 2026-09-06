@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"os"
@@ -10,6 +13,7 @@ import (
 	"time"
 
 	"github.com/FOGProject/fog-agent/internal/enroll"
+	"github.com/FOGProject/fog-agent/internal/provider"
 	"github.com/FOGProject/fog-agent/internal/provider/update"
 	"github.com/FOGProject/fog-agent/internal/release"
 )
@@ -175,4 +179,46 @@ func has(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// cmdUpdate applies a version by hand, the way `fog-agent renew` forces a
+// renewal that would otherwise wait for its window.
+//
+// It exists for the same two reasons renew does: an admin standing at a
+// machine should not have to wait for a poll to make something happen, and
+// the mechanism should be exercisable without a server being involved. It
+// takes the same path the server-driven update takes -- the same
+// verification, the same rollback arming, the same swap -- because a
+// hands-on path that skipped any of those would be a way to install an
+// unverified binary, which is the one thing this design exists to prevent.
+func cmdUpdate(args []string) error {
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
+	dir := fs.String("dir", enroll.DefaultDir, "state directory")
+	to := fs.String("to", "", "the version to become (required)")
+	url := fs.String("manifest", "", "override the release manifest URL")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *to == "" {
+		return errors.New("update: --to VERSION is required; there is deliberately no \"latest\"")
+	}
+	st, err := enroll.Load(*dir)
+	if err != nil {
+		return err
+	}
+	out := &sayer{}
+	r, restart := update.Run(context.Background(),
+		update.Desired{Version: *to, ManifestURL: *url}, updateConfig(st))
+	out.say(fmt.Sprintf("update: %s (%s)", r.Status, r.Detail))
+	if r.Status == provider.StatusFailed {
+		return errors.New(r.Detail)
+	}
+	if restart {
+		// Same contract as the service path: the binary under this
+		// process is not the one that started it, so say so and leave
+		// non-zero. A person running this by hand restarts the service;
+		// under the service manager, the non-zero exit IS the restart.
+		return errUpdated
+	}
+	return nil
 }

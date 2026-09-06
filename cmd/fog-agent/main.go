@@ -67,6 +67,8 @@ func main() {
 		err = cmdRun(os.Args[2:])
 	case "renew":
 		err = cmdRenew(os.Args[2:])
+	case "update":
+		err = cmdUpdate(os.Args[2:])
 	case "update-revert":
 		err = cmdUpdateRevert(os.Args[2:])
 	case "status":
@@ -92,6 +94,7 @@ func usage() {
   fog-agent run [--server URL] [--ca FILE] [--token T] [--once] [--dir DIR]
                                           enroll if needed, then poll the server
   fog-agent renew [--dir DIR]             renew the certificate now, whatever its expiry
+  fog-agent update --to VERSION           verify and apply a version now, without waiting for a poll
   fog-agent update-revert [--dir DIR]     put back the binary an update replaced
   fog-agent status [--dir DIR]
   fog-agent ca probe --server URL         show the certificate the server publishes
@@ -328,14 +331,19 @@ func runAgent(ctx context.Context, args []string) error {
 		return err
 	}
 	out := &sayer{}
-	// Before anything else: if this binary was installed by an update and
-	// its window has already passed without a successful poll, put the
-	// previous one back and let the service manager start it.
-	if checkProbation(st, out) {
-		return errUpdated
-	}
 	watch := &sessionWatcher{}
 	for {
+		// Checked every time round, not only at start. A binary that
+		// crashes is the service manager's problem and it has recovery
+		// actions for it; the case this catches is the quieter one --
+		// a binary that starts perfectly well, runs for hours and
+		// cannot talk to its server. Evaluating the deadline only at
+		// startup would leave that host up on a broken version until
+		// something else happened to restart it, which on a machine
+		// nobody logs into is "until somebody notices".
+		if checkProbation(st, out) {
+			return errUpdated
+		}
 		if len(st.Cert) == 0 {
 			// A token setup kept for us outranks nothing on the command
 			// line: the service is registered with plain `run`.

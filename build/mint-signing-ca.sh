@@ -27,6 +27,7 @@
 #                 $HOME/.fog-agent-signing
 #   --install     write the root into internal/release/roots.pem
 #   --leaf-only   reissue the leaf under the existing root, nothing else
+#   --install-only  install the existing root and mint nothing
 #
 set -euo pipefail
 
@@ -34,12 +35,14 @@ here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 dir=${FOG_SIGNING_DIR:-$HOME/.fog-agent-signing}
 install=0
 leaf_only=0
+install_only=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --dir) dir=$2; shift 2 ;;
         --install) install=1; shift ;;
         --leaf-only) leaf_only=1; shift ;;
+        --install-only) install=1; install_only=1; shift ;;
         -h|--help) sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -47,6 +50,20 @@ done
 
 mkdir -p "$dir"
 chmod 700 "$dir"
+
+# --install-only skips every mint. A release build installs the root it was
+# given; it does not get to create one, and coupling the two would mean the
+# only way to install a root is to make a new one.
+if [ "$install_only" -eq 1 ]; then
+    [ -e "$dir/root.crt" ] || { echo "no root at $dir/root.crt" >&2; exit 1; }
+    roots=$here/internal/release/roots.pem
+    { grep '^#' "$roots" || true; echo; cat "$dir/root.crt"; } > "$roots.new"
+    mv "$roots.new" "$roots"
+    echo "installed $dir/root.crt into $roots"
+    echo "root fingerprint: $(openssl x509 -in "$dir/root.crt" -noout -fingerprint -sha256 | cut -d= -f2)"
+    echo "DO NOT COMMIT a lab root."
+    exit 0
+fi
 
 # Twenty years on the root, ninety days on the leaf. The root's expiry is
 # the one cliff in this design -- when it passes, every deployed agent
