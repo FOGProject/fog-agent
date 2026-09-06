@@ -98,22 +98,19 @@
          after wixl, the same way it appends the legacy Upgrade row, and
          build/check-msi-ui.py fails the build if any DoAction ends up
          naming an action that is not there. -->
-    <!-- AppSearch never overwrites a property that is already set, so going
-         Back and naming a different server would otherwise confirm the
-         first server's fingerprint. "{}" is how a property is emptied. -->
-    <CustomAction Id="ClearCAFingerprint" Property="CAFINGERPRINT" Value="{}" />
-    <CustomAction Id="ClearCASubject" Property="CASUBJECT" Value="{}" />
-    <CustomAction Id="ClearCAExpires" Property="CAEXPIRES" Value="{}" />
+    <!-- ReadProbe lifts what the probe wrote into properties. It has to be
+         a custom action: the DoAction control event runs custom actions
+         ONLY, and handed the name of a standard action it does nothing and
+         says nothing, which is how a first attempt at this using AppSearch
+         and a RegistrySearch looked exactly like a server that published no
+         certificate. The script clears the properties when the key is
+         absent, so a failed probe cannot leave the previous server's
+         fingerprint on screen to be confirmed. -->
+    <Binary Id="ReadProbeJs" SourceFile="build/msi/readprobe.js" />
+    <CustomAction Id="ReadProbe" BinaryKey="ReadProbeJs" JScriptCall="ReadProbe"
+                  Execute="immediate" Return="ignore" />
 
-    <Property Id="CAFINGERPRINT" Secure="yes">
-      <RegistrySearch Id="CaFingerprintSearch" Root="HKCU" Key="Software\FOG\Setup" Name="CAFingerprint" Type="raw" />
-    </Property>
-    <Property Id="CASUBJECT">
-      <RegistrySearch Id="CaSubjectSearch" Root="HKCU" Key="Software\FOG\Setup" Name="CASubject" Type="raw" />
-    </Property>
-    <Property Id="CAEXPIRES">
-      <RegistrySearch Id="CaExpiresSearch" Root="HKCU" Key="Software\FOG\Setup" Name="CAExpires" Type="raw" />
-    </Property>
+    <Property Id="CAFINGERPRINT" Secure="yes" />
     <Property Id="WEBADDRESS" Secure="yes" />
     <Property Id="WEBROOT" Secure="yes" />
     <Property Id="ARPNOMODIFY" Value="1" />
@@ -252,20 +249,17 @@
              dialog cannot re-evaluate a control condition as you type, so
              this is the check, not a greyed-out button.
              Then: a typed certificate file skips the fetch entirely;
-             otherwise clear last time's answer, fetch, lift the result out
-             of the registry, and go to the page that shows it. If the fetch
-             found nothing, CAFINGERPRINT is still empty and the last two
-             publishes send the reader somewhere that says so. -->
+             otherwise fetch, lift the result into properties, and go to the
+             page that shows it. If the fetch found nothing, CAFINGERPRINT
+             is empty and the last publish sends the reader somewhere that
+             says so. -->
         <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="Next">
           <Publish Event="SpawnDialog" Value="FogNeedsCfgDlg" Order="1" Condition="NOT SERVER" />
           <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2" Condition="SERVER AND CA" />
-          <Publish Event="DoAction" Value="ClearCAFingerprint" Order="3" Condition="SERVER AND NOT CA" />
-          <Publish Event="DoAction" Value="ClearCASubject" Order="4" Condition="SERVER AND NOT CA" />
-          <Publish Event="DoAction" Value="ClearCAExpires" Order="5" Condition="SERVER AND NOT CA" />
-          <Publish Event="DoAction" Value="ProbeCA" Order="6" Condition="SERVER AND NOT CA" />
-          <Publish Event="DoAction" Value="AppSearch" Order="7" Condition="SERVER AND NOT CA" />
-          <Publish Event="NewDialog" Value="FogCaDlg" Order="8" Condition="SERVER AND NOT CA AND CAFINGERPRINT" />
-          <Publish Event="SpawnDialog" Value="FogNoCaDlg" Order="9" Condition="SERVER AND NOT CA AND NOT CAFINGERPRINT" />
+          <Publish Event="DoAction" Value="ProbeCA" Order="3" Condition="SERVER AND NOT CA" />
+          <Publish Event="DoAction" Value="ReadProbe" Order="4" Condition="SERVER AND NOT CA" />
+          <Publish Event="NewDialog" Value="FogCaDlg" Order="5" Condition="SERVER AND NOT CA AND CAFINGERPRINT" />
+          <Publish Event="SpawnDialog" Value="FogNoCaDlg" Order="6" Condition="SERVER AND NOT CA AND NOT CAFINGERPRINT" />
         </Control>
         <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="Cancel">
           <Publish Event="SpawnDialog" Value="CancelDlg" />

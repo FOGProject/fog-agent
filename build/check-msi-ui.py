@@ -13,8 +13,9 @@ Checked: Dialog.Control_First/Default/Cancel and Control.Control_Next name a
 control that exists in that dialog; Bitmap and Icon controls name a Binary
 row that exists; every ControlEvent and EventMapping row names a real
 control; every NewDialog/SpawnDialog names a dialog in the package; every
-DoAction names an action that exists, custom or sequenced; every AppSearch
-row has the locator it points at; and every dialog's Control_Next pointers
+DoAction names a CUSTOM action, which is the only kind it can run; every AppSearch
+row has the locator it points at; every Bitmap control's image is an
+uncompressed BMP; and every dialog's Control_Next pointers
 form one closed loop starting at Control_First, which is what error 2834 is
 about.
 
@@ -46,6 +47,20 @@ def table(msi, name):
         return []
     # msiinfo emits two header lines (names, types) and one table-name line.
     return [ln.split("\t") for ln in out.stdout.split("\n")[3:] if ln.strip()]
+
+
+def binary_streams(msi):
+    """The Binary table's streams, by name. msiinfo writes them out as files
+    under a Binary/ directory rather than to stdout."""
+    out = {}
+    with tempfile.TemporaryDirectory() as scratch:
+        subprocess.run(["msiinfo", "export", os.path.abspath(msi), "Binary"],
+                       capture_output=True, cwd=scratch)
+        d = os.path.join(scratch, "Binary")
+        for f in os.listdir(d) if os.path.isdir(d) else []:
+            with open(os.path.join(d, f), "rb") as fh:
+                out[f.removeprefix("Binary.")] = fh.read(64)
+    return out
 
 
 def main(msi):
@@ -80,15 +95,15 @@ def main(msi):
         if r[1] not in controls.get(r[0], {}):
             bad.append(f"EventMapping {r[0]}.{r[1]} names a control that does not exist")
 
-    # An action a button can invoke is either a custom action or one of the
-    # standard actions this package sequences; both are named in tables, so
-    # nothing has to be hard-coded.
-    actions = {r[0] for r in table(msi, "CustomAction")}
-    for seq in ("InstallUISequence", "InstallExecuteSequence", "AdminUISequence"):
-        actions |= {r[0] for r in table(msi, seq)}
+    # DoAction runs CUSTOM actions only. Handed the name of a standard
+    # action it does nothing at all and reports nothing, which is how a
+    # button that was supposed to run AppSearch shipped and looked, from the
+    # outside, exactly like a server that published no certificate.
+    custom = {r[0] for r in table(msi, "CustomAction")}
     for r in table(msi, "ControlEvent"):
-        if r[2] == "DoAction" and r[3] not in actions:
-            bad.append(f"ControlEvent {r[0]}.{r[1]} DoAction names {r[3]}, which is neither a custom action nor sequenced")
+        if r[2] == "DoAction" and r[3] not in custom:
+            bad.append(f"ControlEvent {r[0]}.{r[1]} DoAction names {r[3]}, which is not a custom action "
+                       f"(DoAction cannot run standard actions, and fails silently)")
 
     # Windows Installer walks Control_First and follows Control_Next, and
     # refuses the dialog with error 2834 unless that walk visits every
@@ -140,6 +155,23 @@ def main(msi):
             m = named.match(c[9] if len(c) > 9 else "")
             if m and m.group(1) not in styles:
                 bad.append(f"Control {dlg}.{cid} asks for text style {m.group(1)}, which has no TextStyle row")
+
+    # A Bitmap control's image has to be an uncompressed BMP. Windows
+    # Installer draws it with a loader that does not handle BI_RLE8, and a
+    # compressed one comes out as the red broken-image square with no error
+    # anywhere -- which is exactly what wixl's own ui extension ships, so
+    # this is a live trap and not a hypothetical one.
+    streams = binary_streams(msi)
+    for dlg, cs in controls.items():
+        for cid, c in cs.items():
+            if c[2] != "Bitmap":
+                continue
+            head = streams.get(c[9] if len(c) > 9 else "", b"")
+            if not head.startswith(b"BM") or len(head) < 34:
+                bad.append(f"Control {dlg}.{cid} names Binary {c[9]}, which is not a BMP")
+            elif int.from_bytes(head[30:34], "little") != 0:
+                bad.append(f"Control {dlg}.{cid} names Binary {c[9]}, a compressed BMP; "
+                           f"Windows Installer draws it as a broken-image square")
 
     locators = set()
     for t in ("RegLocator", "IniLocator", "CompLocator", "DrLocator", "Signature"):

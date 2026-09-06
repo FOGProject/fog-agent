@@ -137,6 +137,20 @@ msiinfo export "$out" Control \
 msibuild "$out" -i "$loopidt"
 rm -f "$loopidt"
 
+# 5. Replace the two dialog bitmaps. wixl's ui extension ships WiX's artwork
+# re-encoded as BI_RLE8, and Windows Installer cannot draw a compressed BMP:
+# every Bitmap control in the package -- our banner and the stock Welcome and
+# Exit pages' side panel -- rendered as the red broken-image square. The icons
+# on the same dialogs were fine, which is what pointed at the compression
+# rather than at the Binary table. build/make-msi-bitmaps.py writes plain
+# uncompressed ones in the sizes WixUI lays out for; check-msi-ui.py fails the
+# build if a compressed bitmap ever comes back.
+bmpdir="$(mktemp -d)"
+python3 build/make-msi-bitmaps.py "$bmpdir"
+msibuild "$out" -a Binary.WixUI_Bmp_Banner "$bmpdir/banner.bmp"
+msibuild "$out" -a Binary.WixUI_Bmp_Dialog "$bmpdir/dialog.bmp"
+rm -rf "$bmpdir"
+
 # Set File.Version to match the exe's stamped resource (x.y.z.0). wixl
 # leaves it empty, which makes the engine treat the package exe as
 # unversioned and skip overwriting an existing one -- see note 1 above.
