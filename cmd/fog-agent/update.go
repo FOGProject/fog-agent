@@ -35,7 +35,16 @@ var DefaultManifestURL = "https://fogproject.org/version/agent-stable.json"
 // agent downgraded below this can never be updated forward again by any
 // mechanism it carries, because the version it landed on does not have
 // this code. A downgrade that strands a fleet is not a rollback.
-const firstSelfUpdatingVersion = "0.2.0"
+//
+// It is 0.1.2 because that is the release self-update actually shipped in.
+// It read 0.2.0 while 0.2.0 was still the expected next version, which had
+// the effect of excluding the one released version that CAN be rolled back
+// to: a downgrade is the only recovery from a build that installs, starts
+// and polls perfectly well and then behaves badly (design 0015 §9, §11),
+// and with the floor above every such version there was nothing left to
+// recover to. Raise this only when a version is genuinely unable to carry
+// a fleet forward, never in step with the current release.
+const firstSelfUpdatingVersion = "0.1.2"
 
 // probationWindow is how long a new binary has to complete one successful
 // authenticated poll. Three poll intervals at the five-minute default:
