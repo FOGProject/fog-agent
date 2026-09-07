@@ -34,6 +34,72 @@ const (
 	serviceDescription = "Enrolls this machine with its FOG server and keeps it the way the server says."
 )
 
+// recoveryActions is the restart policy the service must have: come back
+// after a failure, backing off, with the counter resetting after a day up.
+//
+// It is what makes self-update work at all on Windows. The update path
+// swaps the binary and exits non-zero ON PURPOSE so that the service
+// manager starts the new one -- the same recovery path a crashing new
+// binary takes (design 0015 section 6). With no recovery actions
+// configured, Windows simply leaves the service stopped, and the machine
+// sits with a new binary and nothing running until someone reboots it.
+func recoveryActions() ([]mgr.RecoveryAction, uint32) {
+	return []mgr.RecoveryAction{
+		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
+		{Type: mgr.ServiceRestart, Delay: time.Minute},
+		{Type: mgr.ServiceRestart, Delay: 5 * time.Minute},
+	}, 86400
+}
+
+// ensureRecoveryActions puts the restart policy back if it is missing,
+// and reports whether it had to.
+//
+// `fog-agent install` has always set this. The MSI never did: its
+// <ServiceInstall> registers the service through Windows Installer, and
+// wixl (msitools 0.106, which is what builds our package on Linux) has no
+// element for failure actions at all -- so every MSI-installed agent had
+// an empty recovery policy and went dead on its first self-update.
+// Observed on telliottwin11, 2026-09-07: binary swapped to 0.1.4, service
+// STOPPED, `sc qfailure` empty, probation never cleared because nothing
+// was running to clear it.
+//
+// Repairing it here rather than only in the installer is deliberate: it
+// fixes the agents that are ALREADY installed, on their next start,
+// without anyone reinstalling anything. It runs as LocalSystem, which
+// holds SERVICE_CHANGE_CONFIG on its own service.
+//
+// Never fatal. An agent that cannot reconfigure itself should still run;
+// it just has to say so, because the consequence is silent until the day
+// an update lands.
+func ensureRecoveryActions() (bool, error) {
+	m, err := mgr.Connect()
+	if err != nil {
+		return false, err
+	}
+	defer m.Disconnect()
+	svcH, err := m.OpenService(serviceName)
+	if err != nil {
+		return false, err
+	}
+	defer svcH.Close()
+
+	want, reset := recoveryActions()
+	// A service that already restarts on failure is left alone, whatever
+	// the delays are: an admin may have tuned them, and stamping over
+	// that every start would be this code deciding it knows better.
+	if have, err := svcH.RecoveryActions(); err == nil {
+		for _, a := range have {
+			if a.Type == mgr.ServiceRestart {
+				return false, nil
+			}
+		}
+	}
+	if err := svcH.SetRecoveryActions(want, reset); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // isService reports whether the service control manager started us.
 func isService() bool {
 	ok, _ := svc.IsWindowsService()
@@ -80,6 +146,13 @@ func (h *handler) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<- svc.S
 	go func() { done <- runAgent(ctx, h.args) }()
 	s <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 	h.note("started")
+	if fixed, err := ensureRecoveryActions(); err != nil {
+		h.note("could not read or set the restart policy (" + err.Error() +
+			"); a self-update will leave this service stopped until it is started again")
+	} else if fixed {
+		h.note("restart policy was missing and has been set; this service " +
+			"can now come back on its own after a self-update")
+	}
 	for {
 		select {
 		case c := <-r:
@@ -94,6 +167,17 @@ func (h *handler) Execute(_ []string, r <-chan svc.ChangeRequest, s chan<- svc.S
 				return false, 0
 			}
 		case err := <-done:
+			// A planned restart is not a failure. The update path
+			// replaced this binary on purpose and returns non-zero so
+			// the recovery actions start the new one -- the exit code
+			// is the mechanism, not a fault. Reporting it as "fatal"
+			// and writing an Error to the event log said the update had
+			// crashed when it had just succeeded, and any monitoring
+			// watching that log would have alerted on every update.
+			if errors.Is(err, errUpdated) {
+				h.note("replaced itself; restarting into the new binary")
+				return true, 1
+			}
 			if err != nil && !errors.Is(err, context.Canceled) {
 				// A fatal error (state directory unreadable, no server
 				// configured) exits non-zero so the recovery actions
@@ -178,11 +262,10 @@ func serviceInstall(args []string) error {
 	}
 	defer s.Close()
 	// Restart on failure, backing off; the counter resets after a day up.
-	if err := s.SetRecoveryActions([]mgr.RecoveryAction{
-		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: time.Minute},
-		{Type: mgr.ServiceRestart, Delay: 5 * time.Minute},
-	}, 86400); err != nil {
+	// Same policy the service repairs for itself at start, because the
+	// MSI cannot express this and installs without it.
+	ra, reset := recoveryActions()
+	if err := s.SetRecoveryActions(ra, reset); err != nil {
 		return fmt.Errorf("recovery actions: %w", err)
 	}
 	if err := s.Start(); err != nil {

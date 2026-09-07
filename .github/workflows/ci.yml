@@ -44,6 +44,18 @@ jobs:
       - name: go vet
         run: go vet ./...
 
+      # The agent ships for Windows and macOS, and vet on the runner's own
+      # GOOS compiles neither. Everything behind a //go:build windows tag --
+      # the service lifecycle, the firmware reads, the self-update swap --
+      # was invisible to CI until the release build cross-compiled it, which
+      # is late. vet builds the test files too, so this covers those as well.
+      - name: go vet, other platforms
+        run: |
+          for goos in windows darwin; do
+            echo "== $goos =="
+            GOOS=$goos go vet ./...
+          done
+
       - name: go test
         run: go test ./... -count=1
 
