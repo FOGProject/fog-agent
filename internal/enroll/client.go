@@ -28,6 +28,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/provider/printerset"
 	"github.com/FOGProject/fog-agent/internal/provider/snapin"
 	"github.com/FOGProject/fog-agent/internal/provider/software"
+	"github.com/FOGProject/fog-agent/internal/provider/update"
 	"github.com/FOGProject/fog-agent/internal/provider/wake"
 	"github.com/FOGProject/fog-agent/internal/reboot"
 	"github.com/FOGProject/fog-agent/internal/secureboot"
@@ -237,6 +238,13 @@ type DesiredState struct {
 	// Printers is the host's assigned print queues and how far FOG is to
 	// go in enforcing them (capability printers).
 	Printers *printerset.Policy `json:"printers,omitempty"`
+	// Update is the version this host should be running, and optionally
+	// where its signed manifest lives (capability update, design 0015).
+	// Naming a version is all the server gets to do: what that version
+	// IS comes from a manifest signed under a root compiled into this
+	// binary, so a compromised server can pick which published version a
+	// fleet runs and cannot publish one.
+	Update *update.Desired `json:"update,omitempty"`
 	// Directory is the domain the host should be joined to, with the
 	// credential to do it (capability directory). Present ONLY for a host
 	// the server believes is not joined and has a domain configured, so a
