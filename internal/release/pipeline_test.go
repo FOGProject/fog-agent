@@ -196,3 +196,101 @@ func TestTheManifestNeverOffersAnInstallerAsTheBinary(t *testing.T) {
 		t.Errorf("windows/amd64 should be the exe, got %s", a.URL)
 	}
 }
+
+// TestAMergedManifestStillVerifiesAndStillOffersTheOlderVersion pins the
+// downgrade path, which is the whole recovery story of design 0015 sections
+// 9 and 11: the failure local rollback cannot catch is a build that
+// installs, starts and polls perfectly well and then behaves badly, and the
+// only fix is the server naming an older version.
+//
+// That needs the manifest to still describe the older version. A manifest
+// per release describes exactly one, and Find() looks a version up by exact
+// key -- so without --merge, naming anything but the newest release answers
+// no_artifact and the recovery cannot be expressed at all.
+//
+// The second half matters as much as the first: the merged manifest is
+// written by jq rather than printf, and the signature is over whatever was
+// written. If those two ever disagree the agent reports signature_invalid,
+// which names the wrong thing entirely.
+func TestAMergedManifestStillVerifiesAndStillOffersTheOlderVersion(t *testing.T) {
+	if _, err := exec.LookPath("openssl"); err != nil {
+		t.Skip("openssl is not installed; this test drives the real signing tooling")
+	}
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq is not installed; --merge needs it")
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	run := func(name string, args ...string) {
+		t.Helper()
+		cmd := exec.Command(filepath.Join(root, "build", name), args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s failed: %v\n%s", name, err, out)
+		}
+	}
+	artifact := filepath.Join(dir, "fog-agent-linux-amd64")
+	if err := os.WriteFile(artifact, []byte("stand-in"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run("mint-signing-ca.sh", "--dir", dir)
+
+	published := filepath.Join(dir, "published.json")
+	sign := func(version, sequence string) {
+		t.Helper()
+		run("sign-manifest.sh", "--dir", dir, "--out", dir,
+			"--version", version, "--sequence", sequence,
+			"--url-base", "https://releases.example.invalid/v"+version,
+			"--merge", published, artifact)
+		// What the release publishes becomes what the next one merges.
+		b, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(published, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The first release has nothing to merge, which must not be an error.
+	sign("0.4.2", "47")
+	sign("0.5.0", "48")
+
+	body, err := os.ReadFile(published)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envJSON, err := os.ReadFile(filepath.Join(dir, "manifest.json.sig"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env Envelope
+	if err := json.Unmarshal(envJSON, &env); err != nil {
+		t.Fatal(err)
+	}
+	rootPEM, err := os.ReadFile(filepath.Join(dir, "root.crt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	for _, c := range parsePEMCerts(rootPEM) {
+		pool.AddCert(c)
+	}
+
+	m, err := Verify(body, &env, pool, time.Now())
+	if err != nil {
+		t.Fatalf("a merged manifest must still verify against the root: %v", err)
+	}
+	if m.Sequence != 48 {
+		t.Errorf("the merged manifest must carry the NEW sequence, got %d", m.Sequence)
+	}
+	if _, err := m.Find("0.5.0", "linux", "amd64"); err != nil {
+		t.Errorf("the version just released must be offered: %v", err)
+	}
+	// The point of the whole exercise.
+	if _, err := m.Find("0.4.2", "linux", "amd64"); err != nil {
+		t.Fatalf("the previous version must still be offered, or a fleet cannot be moved back: %v", err)
+	}
+}

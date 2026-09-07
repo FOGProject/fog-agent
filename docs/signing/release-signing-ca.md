@@ -81,6 +81,55 @@ Then set these in the repository so the release workflow can sign:
 Back up `root.key` offline. Delete nothing else: `leaf.key` is needed again
 at every reissue.
 
+## Publishing the manifest
+
+The release workflow builds and signs `manifest.json` and publishes it as a
+release asset. Agents do **not** read it there: they read the URL compiled
+into them, which is
+
+    https://fogproject.org/version/agent-stable.json
+
+That path is served by [`FOGProject/fog-version-check`][vc], cloned on the
+host at `/var/www/html/website/version`. So publishing a release is two
+steps, and the second is currently by hand:
+
+    # after the release workflow finishes
+    gh release download "v$VERSION" -R FOGProject/fog-agent -p manifest.json -D /tmp
+    cp /tmp/manifest.json /path/to/fog-version-check/agent-stable.json
+    cd /path/to/fog-version-check
+    git add agent-stable.json
+    git commit -m "agent: publish the v$VERSION manifest"
+    git push
+    # then pull it on the host, the way the rest of that repo is deployed
+
+[vc]: https://github.com/FOGProject/fog-version-check
+
+**Serve it as a static file.** The signature is over the manifest's exact
+bytes, so it must not pass through anything that re-encodes JSON. Sitting
+next to `index.php` as a plain file is exactly right; being generated *by*
+`index.php` would not be.
+
+`agent-stable.json` names its channel because that URL is **compiled into
+every agent** and cannot be changed for one already deployed. The
+`/version/` service already answers for three channels (stable, dev-branch,
+beta), so a second manifest is a sibling file rather than a rename that
+strands the fleet.
+
+## Versions accumulate
+
+The workflow fetches the currently-published manifest and merges the new
+release into it, so one file offers every release ever published. That is
+not tidiness: `Manifest.Find()` looks a version up by exact key, so a
+manifest describing only the newest release means a server naming anything
+older answers `no_artifact` — and naming an older version is the *only*
+recovery from a build that installs, starts and polls perfectly well and
+then behaves badly (§9, §11). Local rollback cannot catch that one, because
+by every local measure the agent is healthy.
+
+Growth is about 1.8 KB per release. To withdraw a version so nobody can be
+sent to it, edit `agent-stable.json` to remove that key before the next
+release merges it forward — deliberately, by a person.
+
 ## Reissuing the leaf
 
 Every 90 days, or immediately if the leaf key is ever exposed. It does not
@@ -98,6 +147,10 @@ agent can only be moved by a version of itself that already contains the
 update machinery and a root to verify against. Agents built before this
 report `no_signing_root` and have to be replaced the way they were
 installed.
+
+The manifest must be published (above) before any of this works: without
+it the agent fetches the compiled-in URL, gets nothing, and reports
+`fetch_failed`.
 
 Set `FOG_AGENT_DESIRED_VERSION` on the FOG server to start using it, or the
 per-host **Desired Agent Version** to stage a rollout at a smaller blast
