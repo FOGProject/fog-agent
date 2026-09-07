@@ -65,12 +65,28 @@ if [ "$install_only" -eq 1 ]; then
     exit 0
 fi
 
-# Twenty years on the root, ninety days on the leaf. The root's expiry is
-# the one cliff in this design -- when it passes, every deployed agent
-# stops accepting updates and only a reinstall fixes it -- so it is set far
-# out deliberately. The leaf being short is the point of having a leaf.
+# Twenty years on the root, one year on the leaf. The root's expiry is
+# far out because replacing it means replacing every deployed agent by
+# hand; the leaf is short because it lives in CI and expiry is the only
+# revocation this PKI has.
+#
+# It was ninety days until 2026-09-07. That was chosen when an expired
+# leaf was believed to cost only a reissue -- but the agent checked the
+# certificate chain against its OWN clock, so the day the leaf died every
+# manifest it had ever signed died with it, and any host mid rollout
+# reported "signature_invalid", naming the wrong cause. The agent now
+# judges the chain against the manifest's `signed` time, which makes
+# rotation the no-op this file always claimed it was, and makes a longer
+# leaf safe: a manifest signed while the leaf was good stays good for its
+# own stated life, and nothing NEW can be signed once the leaf is dead.
+#
+# A year is the balance Tom picked on 2026-09-07: short enough that a
+# leaked leaf stops working on a horizon anyone can wait out, long enough
+# that reissuing is an annual chore rather than a quarterly one. It pairs
+# with maxSignatureAge in internal/release/release.go, which bounds how
+# long a leaked leaf can keep being useful by backdating.
 root_days=7300
-leaf_days=90
+leaf_days=365
 
 if [ "$leaf_only" -eq 0 ]; then
     if [ -e "$dir/root.key" ]; then

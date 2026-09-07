@@ -43,7 +43,7 @@ therefore changes the hashes the manifest records.
   Losing it means every deployed agent must be replaced by hand, because the
   root is compiled in; leaking it means someone else can author releases
   your fleet installs.
-- **The leaf key does live in Actions.** It is short-lived (90 days) and
+- **The leaf key does live in Actions.** It is short-lived (one year) and
   reissuable under the same root without touching a single deployed agent,
   which is the whole reason the CA is two levels deep. A leaked leaf costs a
   reissue and a rotation of one secret.
@@ -153,13 +153,38 @@ release merges it forward — deliberately, by a person.
 
 ## Reissuing the leaf
 
-Every 90 days, or immediately if the leaf key is ever exposed. It does not
+Once a year, or immediately if the leaf key is ever exposed. It does not
 touch a deployed agent and needs no release.
 
     build/mint-signing-ca.sh --leaf-only
 
-Then update the two secrets. Old manifests keep verifying — they carry the
-leaf that signed them, and it chains to the same root.
+Then update the two secrets. **Old manifests keep verifying**: each carries
+the leaf that signed it, and the agent judges that certificate against the
+manifest's own `signed` time rather than against its own clock, so a
+manifest signed while the leaf was good stays good for its whole stated
+life.
+
+That was not true before 2026-09-07. Until then the chain was checked at
+the agent's clock, so the day the leaf expired every manifest it had ever
+signed stopped verifying — reported as `signature_invalid`, which names the
+wrong cause. This document claimed the property the code did not have. The
+leaf moved from 90 days to a year at the same time, because with the real
+behaviour in place the failure it was guarding against no longer exists.
+
+**Signing with a dead leaf now fails in CI, not in the field.**
+`sign-manifest.sh` refuses to sign with an expired leaf and warns when the
+leaf will die inside the manifest's own lifetime — because a manifest signed
+by an expired leaf looks perfect where it is made and is refused by every
+agent that fetches it.
+
+**The bound that keeps this honest** is `maxSignatureAge` in
+`internal/release/release.go` (180 days). A manifest claiming to have been
+signed longer ago than that is refused, which is what stops whoever holds an
+expired leaf from backdating into the window where it was valid. The
+exposure from a leaked leaf is its remaining validity plus that bound, so
+raising either raises the other. Keep `maxSignatureAge` comfortably above
+the manifest lifetime (90 days) and comfortably below anything that would
+make a leak survive the leaf.
 
 ## After the first release with a manifest
 
@@ -184,6 +209,11 @@ everyone, `cannot` means that particular machine or its path to the mirror.
 - **The signature is over `manifest.json`'s exact bytes.** Reformatting it —
   `jq`, an editor, a CI step that pretty-prints — invalidates it, and the
   agent reports `signature_invalid`, which names the wrong thing.
+- **A manifest keeps verifying after its signing leaf expires, but not
+  forever.** The chain is judged at the manifest's `signed` time, bounded by
+  `maxSignatureAge`. Do not remove `signed` from the signing script: the
+  manifest still verifies the day you do it, silently falling back to the
+  agent's clock, and only breaks months later when the leaf expires.
 - **`sequence` must never go backwards.** The agent refuses any manifest
   below the highest it has accepted, and there is no way to lower that floor
   remotely. The release workflow uses seconds since the epoch for this
