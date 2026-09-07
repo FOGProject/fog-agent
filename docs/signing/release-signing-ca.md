@@ -78,8 +78,20 @@ this repository, because that is where the manifest is signed and published:
 | `FOG_AGENT_SIGNING_LEAF_KEY` | contents of `~/.fog-agent-signing/leaf.key` |
 | `FOG_AGENT_SIGNING_LEAF_CRT` | contents of `~/.fog-agent-signing/leaf.crt` |
 
-Back up `root.key` offline. Delete nothing else: `leaf.key` is needed again
-at every reissue.
+Back up `root.key` offline, and **passphrase-encrypt it before the backup
+copy leaves the machine**:
+
+    openssl pkey -in ~/.fog-agent-signing/root.key -aes256 -out root.key.enc
+
+`mint-signing-ca.sh` writes it as a plaintext PEM, which is right while it
+sits on one trusted disk and wrong the moment a copy is on a VPC or a cloud
+drive. There is no revocation path for this key: its certificate is
+compiled into every agent, so a leak is fixed by replacing every deployed
+agent by hand. Keep the passphrase somewhere other than wherever the backup
+lands, and record it before you encrypt — losing it means no leaf can ever
+be issued again, which is the same disaster from the other direction.
+
+Delete nothing else: `leaf.key` is needed again at every reissue.
 
 ## Publishing the manifest
 
