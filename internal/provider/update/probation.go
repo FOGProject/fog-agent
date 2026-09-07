@@ -22,7 +22,22 @@ import (
 const (
 	probationFile = "update-probation.json"
 	sequenceFile  = "update-sequence.json"
-	prevSuffix    = ".prev"
+	// revertedFile is what a revert leaves for the binary it restores.
+	//
+	// A revert is the one outcome the agent cannot report as it happens:
+	// the process that would send it is the one being replaced, and it is
+	// about to be stopped. Worse, the reason it is being reverted is
+	// usually that it could not reach the server at all. So the fact is
+	// written down and the RESTORED binary -- which is known to work,
+	// because it is the one that was running before -- reports it on its
+	// next successful poll and then removes this file.
+	//
+	// Without it, a fleet-wide bad release is invisible from the server:
+	// every host quietly goes back to the old version and the only trace
+	// is that they stop arriving at the new one, which looks exactly like
+	// a rollout that has not finished yet.
+	revertedFile = "update-reverted.json"
+	prevSuffix   = ".prev"
 	// badSuffix keeps the binary a revert rejected, for diagnosis.
 	badSuffix = ".bad"
 )
@@ -37,6 +52,48 @@ type Probation struct {
 	To       string    `json:"to"`
 	Sequence int64     `json:"sequence"`
 	Deadline time.Time `json:"deadline"`
+}
+
+// Reverted is the record a revert leaves behind for the restored binary
+// to report. It is deliberately a different file from the probation
+// record, which Revert deletes: the whole point is that it outlives the
+// thing that caused it.
+type Reverted struct {
+	From   string    `json:"from"`
+	To     string    `json:"to"`
+	At     time.Time `json:"at"`
+	Reason string    `json:"reason"`
+}
+
+// LoadReverted reads a pending revert report, or nil when there is none.
+//
+// A corrupt record is treated as no record and removed. The alternative is
+// an agent that reports the same unreadable file on every poll forever;
+// the report is a courtesy to the server, and losing one is much cheaper
+// than never being able to make another.
+func LoadReverted(dir string) (*Reverted, error) {
+	b, err := os.ReadFile(filepath.Join(dir, revertedFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var r Reverted
+	if err := json.Unmarshal(b, &r); err != nil {
+		_ = ClearReverted(dir)
+		return nil, nil
+	}
+	return &r, nil
+}
+
+// ClearReverted removes a revert report once the server has taken it.
+func ClearReverted(dir string) error {
+	err := os.Remove(filepath.Join(dir, revertedFile))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
 }
 
 // LoadSequence is the highest manifest sequence this agent has accepted.
@@ -149,7 +206,7 @@ func Arm(cfg Config, p Probation) error {
 // successful poll, and by `fog-agent update-revert`, which is what the
 // service manager runs after the new binary has failed to start enough
 // times to stop being a transient.
-func Revert(cfg Config) (*Probation, error) {
+func Revert(cfg Config, reason string) (*Probation, error) {
 	p, err := LoadProbation(cfg.StateDir)
 	if err != nil {
 		return nil, err
@@ -189,6 +246,17 @@ func Revert(cfg Config) (*Probation, error) {
 	}
 	_ = os.Remove(filepath.Join(cfg.StateDir, probationFile))
 	_ = os.Remove(prevCfg)
+	// Last, and best-effort. Everything above has already put a working
+	// binary back; failing to write the note the restored binary will
+	// report must not turn a successful revert into an error, because the
+	// caller's response to an error is to say the revert failed and leave
+	// the machine alone. A missing report costs visibility, and the state
+	// column still shows the host stuck below its desired version.
+	if b, err := json.Marshal(Reverted{
+		From: p.From, To: p.To, At: time.Now().UTC(), Reason: reason,
+	}); err == nil {
+		_ = writeFileSync(filepath.Join(cfg.StateDir, revertedFile), b, 0o600)
+	}
 	return p, nil
 }
 

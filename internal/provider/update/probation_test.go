@@ -1,11 +1,14 @@
 package update
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/FOGProject/fog-agent/internal/provider"
 )
 
 // arm writes a probation record the way a real update would, and returns
@@ -91,5 +94,97 @@ func TestCorruptProbationDoesNotRevert(t *testing.T) {
 	}
 	if p != nil {
 		t.Fatalf("got a record %+v from a corrupt file; its zero deadline is always due, so this reverts", p)
+	}
+}
+
+// TestRevertLeavesAReportForTheRestoredBinary pins the only way the
+// server ever learns a revert happened. The process that reverts is being
+// stopped, and the usual reason it is being stopped is that it could not
+// reach the server -- so if the fact is not written down here, nothing
+// reports it, and a fleet-wide bad release looks from the server exactly
+// like a rollout that has not finished.
+func TestRevertLeavesAReportForTheRestoredBinary(t *testing.T) {
+	l := newLab(t)
+	cfg := l.cfg()
+	if res, _ := Run(context.Background(), Desired{Version: "0.4.2"}, cfg); res.Status != provider.StatusApplied {
+		t.Fatalf("setup: %+v", res)
+	}
+	if _, err := Revert(cfg, "no successful poll before 2026-01-01T00:00:00Z"); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+
+	r, err := LoadReverted(l.state)
+	if err != nil {
+		t.Fatalf("LoadReverted: %v", err)
+	}
+	if r == nil {
+		t.Fatal("a revert left no report; the server can never record agent.update.reverted")
+	}
+	// From and To are the transition that was UNDONE, in the same
+	// direction the probation record states it, so the server can render
+	// "0.4.2 -> 0.1.1" without knowing which way round a revert runs.
+	if r.To != "0.4.2" || r.From != "0.1.1" {
+		t.Errorf("report does not name the transition undone: %+v", r)
+	}
+	if r.Reason == "" {
+		t.Error("report carries no reason; refused and reverted then look identical on the server")
+	}
+	if r.At.IsZero() {
+		t.Error("report carries no timestamp")
+	}
+}
+
+// TestRevertReportIsKeptUntilItIsCleared is the delivery guarantee. The
+// report is cleared by the code that has just had it ACCEPTED by the
+// server, never by the code that read it -- a poll that fails to send
+// must find it again next time.
+func TestRevertReportIsKeptUntilItIsCleared(t *testing.T) {
+	l := newLab(t)
+	cfg := l.cfg()
+	if res, _ := Run(context.Background(), Desired{Version: "0.4.2"}, cfg); res.Status != provider.StatusApplied {
+		t.Fatalf("setup: %+v", res)
+	}
+	if _, err := Revert(cfg, "test"); err != nil {
+		t.Fatalf("revert: %v", err)
+	}
+
+	// Reading it does not consume it: this is the failed-send case.
+	if r, _ := LoadReverted(l.state); r == nil {
+		t.Fatal("setup: no report to begin with")
+	}
+	if r, _ := LoadReverted(l.state); r == nil {
+		t.Fatal("reading the report consumed it; a failed send would lose it forever")
+	}
+
+	if err := ClearReverted(l.state); err != nil {
+		t.Fatalf("ClearReverted: %v", err)
+	}
+	if r, _ := LoadReverted(l.state); r != nil {
+		t.Fatalf("the report survived the clear (%+v); the server would be told twice", r)
+	}
+	// Idempotent: a second clear is what happens when a report is taken
+	// and the agent restarts before it finishes.
+	if err := ClearReverted(l.state); err != nil {
+		t.Errorf("clearing an already-cleared report must be a no-op, got %v", err)
+	}
+}
+
+// TestCorruptRevertReportIsDiscarded keeps a truncated write from wedging
+// the agent on one unreadable file forever. The report is a courtesy;
+// losing one is much cheaper than never being able to send another.
+func TestCorruptRevertReportIsDiscarded(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, revertedFile), []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := LoadReverted(dir)
+	if err != nil {
+		t.Fatalf("a corrupt report must not be an error, got %v", err)
+	}
+	if r != nil {
+		t.Fatalf("a corrupt report must not be reported as a revert: %+v", r)
+	}
+	if _, err := os.Stat(filepath.Join(dir, revertedFile)); !os.IsNotExist(err) {
+		t.Error("the corrupt report was left on disk; every poll would retry it forever")
 	}
 }

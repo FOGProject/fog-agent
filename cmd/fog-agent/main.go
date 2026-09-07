@@ -446,6 +446,12 @@ func runAgent(ctx context.Context, args []string) error {
 			// manager already checks, but that it can still talk to the
 			// server that manages it.
 			passedProbation(st, out)
+			// A revert that already happened, reported by the binary it
+			// restored. Next to passedProbation because the two are the
+			// same fact from opposite ends -- this update worked out, or
+			// it did not -- and both are only sayable once a poll has
+			// got through.
+			reportRevert(ctx, st, client, out)
 			if resp.State != nil {
 				out.say(fmt.Sprintf("host %d (%s), server capabilities: [%s]", resp.Host.ID, resp.Host.Name, strings.Join(resp.State.Capabilities, " ")))
 			}

@@ -127,7 +127,9 @@ func checkProbation(st *enroll.State, out *sayer) bool {
 	}
 	out.say(fmt.Sprintf("update: %s did not complete a poll before %s; going back to %s",
 		p.To, p.Deadline.Format(time.RFC3339), p.From))
-	if _, err := update.Revert(updateConfig(st)); err != nil {
+	if _, err := update.Revert(updateConfig(st),
+		fmt.Sprintf("no successful poll before %s",
+			p.Deadline.Format(time.RFC3339))); err != nil {
 		// Nothing else to try. Say it loudly rather than carrying on
 		// quietly on a binary that has already failed its window.
 		out.say("update: REVERT FAILED, this host is running " + p.To + " and needs attention: " + err.Error())
@@ -152,6 +154,42 @@ func passedProbation(st *enroll.State, out *sayer) {
 	out.say(fmt.Sprintf("update: %s polled successfully; %s -> %s is now the installed version", p.To, p.From, p.To))
 }
 
+// reportRevert tells the server about a revert that has already happened.
+//
+// Called after a poll has succeeded, for the same reason passedProbation
+// is: the record was written by a binary that is no longer running, and
+// the earliest anyone can say so is once the restored one is talking to
+// the server again. It is the only way `agent.update.reverted` is ever
+// recorded, and without it a bad release is invisible from the server --
+// the hosts simply never arrive, which looks like a slow rollout.
+//
+// The record is cleared only when the server has taken the report. A
+// failed send leaves it for the next poll; reporting a revert twice would
+// be worse than reporting it late, but not sending it at all is worse than
+// either.
+func reportRevert(ctx context.Context, st *enroll.State, client *enroll.Client, out *sayer) {
+	r, err := update.LoadReverted(st.Dir)
+	if err != nil || r == nil {
+		return
+	}
+	detail := fmt.Sprintf("reverted: %s -> %s", r.To, r.From)
+	if r.Reason != "" {
+		detail += " (" + r.Reason + ")"
+	}
+	if _, err := client.Result(ctx, enroll.ResultRequest{
+		Revision:   st.Config.AppliedRevision,
+		Capability: "update",
+		Status:     provider.StatusFailed,
+		Detail:     detail,
+	}); err != nil {
+		out.say("result: " + err.Error())
+		return
+	}
+	if err := update.ClearReverted(st.Dir); err != nil {
+		out.say("update: clearing the revert report: " + err.Error())
+	}
+}
+
 // cmdUpdateRevert is what the service manager runs when the new binary
 // has failed to start enough times to stop being a transient, and what a
 // person runs with hands on the machine. It is deliberately a separate
@@ -163,7 +201,12 @@ func cmdUpdateRevert(args []string) error {
 	if err != nil {
 		return err
 	}
-	p, err := update.Revert(updateConfig(st))
+	// Named for what actually invoked this, which is the distinction
+	// that matters when reading it back: the deadline path above means
+	// the new binary ran but never reached the server, while this one
+	// means it could not stay running at all -- or that somebody was
+	// standing at the machine.
+	p, err := update.Revert(updateConfig(st), "restart limit or run by hand")
 	if err != nil {
 		return err
 	}

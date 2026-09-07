@@ -403,7 +403,7 @@ func TestRevertPutsTheBinaryAndConfigBack(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	p, err := Revert(cfg)
+	p, err := Revert(cfg, "test")
 	if err != nil {
 		t.Fatalf("revert: %v", err)
 	}
@@ -423,7 +423,7 @@ func TestRevertPutsTheBinaryAndConfigBack(t *testing.T) {
 		t.Error("the probation record survived a revert")
 	}
 	// And a second revert has nothing to do rather than doing damage.
-	if _, err := Revert(cfg); err == nil {
+	if _, err := Revert(cfg, "test"); err == nil {
 		t.Error("reverting twice must not silently do something")
 	}
 	if got := l.onDisk(l.exe); got != oldBinary {
