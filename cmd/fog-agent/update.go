@@ -26,7 +26,7 @@ import (
 // Nothing about this URL is trusted. It is where to look, not what to
 // believe: the manifest found there still has to be signed under a root
 // compiled into this binary.
-var DefaultManifestURL = "https://releases.fogproject.org/agent/stable.json"
+var DefaultManifestURL = "https://fogproject.org/version/agent-stable.json"
 
 // firstSelfUpdatingVersion is the oldest version this build will agree to
 // become, and it is the first version that carried self-update at all.

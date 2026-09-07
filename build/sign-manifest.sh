@@ -24,7 +24,16 @@
 #   build/sign-manifest.sh --version 0.4.2 --sequence 47 \
 #       --url-base https://releases.fogproject.org/agent/v0.4.2 \
 #       [--dir DIR] [--out DIR] [--channel stable] [--days 90] [--security]
-#       FILE...
+#       [--merge PREVIOUS.json] FILE...
+#
+#   --merge PREVIOUS.json  carry the versions already in PREVIOUS forward, so
+#          this manifest offers them too. WITHOUT IT A MANIFEST DESCRIBES ONE
+#          VERSION, and Manifest.Find() looks the version up by exact key --
+#          so a server naming any release but the newest gets no_artifact,
+#          and the downgrade that design 0015 sections 9 and 11 make the
+#          fleet-wide recovery from a bad build cannot be expressed at all.
+#          Needs jq. An absent or empty PREVIOUS is not an error: that is
+#          the first release.
 #
 # Each FILE is named <anything>-<goos>-<goarch>[.exe] or is an .msi, which
 # is how build/cross.sh already names them.
@@ -39,6 +48,7 @@ security=false
 version=
 sequence=
 urlbase=
+merge=
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -50,6 +60,7 @@ while [ $# -gt 0 ]; do
         --channel)  channel=$2; shift 2 ;;
         --days)     days=$2; shift 2 ;;
         --security) security=true; shift ;;
+        --merge)    merge=$2; shift 2 ;;
         -h|--help)  sed -n '2,30p' "${BASH_SOURCE[0]}"; exit 0 ;;
         -*) echo "unknown argument: $1" >&2; exit 2 ;;
         *) break ;;
@@ -133,9 +144,31 @@ expires=$(date -u -d "+$days days" +%Y-%m-%dT%H:%M:%SZ)
 notes="https://github.com/FOGProject/fog-agent/releases/tag/v$version"
 
 # Written in one shot and never touched again: the signature below is over
-# these exact bytes.
-printf '{"channel":"%s","sequence":%s,"expires":"%s","versions":{"%s":{"security":%s,"notes":"%s","artifacts":[%s]}}}' \
-    "$channel" "$sequence" "$expires" "$version" "$security" "$notes" "$artifacts" > "$manifest"
+# these exact bytes. Whichever branch writes it, nothing reformats it after.
+entry=$(printf '{"security":%s,"notes":"%s","artifacts":[%s]}' "$security" "$notes" "$artifacts")
+
+if [ -n "$merge" ] && [ -s "$merge" ]; then
+    command -v jq >/dev/null 2>&1 || { echo "--merge needs jq" >&2; exit 2; }
+    # Every version is kept, not the newest N. A trim needs an ordering, and
+    # a string sort puts 0.1.10 below 0.1.9 -- which would silently drop the
+    # newest release. Growth is about 1.8 KB per release, so a hundred of
+    # them is a 180 KB file fetched once a poll interval by hosts that are
+    # behind. A version that must never be installed again is removed by
+    # editing the published manifest before the next merge, deliberately and
+    # by a person, rather than by a rule in here.
+    jq -c -n --slurpfile prev "$merge" \
+        --arg channel "$channel" --argjson sequence "$sequence" \
+        --arg expires "$expires" --arg version "$version" \
+        --argjson entry "$entry" '
+        {channel: $channel, sequence: $sequence, expires: $expires,
+         versions: (($prev[0].versions // {}) + {($version): $entry})}
+        ' > "$manifest"
+    kept=$(jq -r '.versions | keys | length' "$manifest")
+    echo "  carried $((kept - 1)) earlier version(s) forward from ${merge##*/}"
+else
+    printf '{"channel":"%s","sequence":%s,"expires":"%s","versions":{"%s":%s}}' \
+        "$channel" "$sequence" "$expires" "$version" "$entry" > "$manifest"
+fi
 
 sig=$(openssl dgst -sha256 -sign "$signing/leaf.key" "$manifest" | openssl base64 -A)
 leaf=$(awk '/BEGIN CERTIFICATE/,/END CERTIFICATE/' "$signing/leaf.crt" | sed ':a;N;$!ba;s/\n/\\n/g')

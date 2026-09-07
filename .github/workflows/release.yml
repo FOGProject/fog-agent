@@ -160,6 +160,12 @@ jobs:
         env:
           LEAF_KEY: ${{ secrets.FOG_AGENT_SIGNING_LEAF_KEY }}
           LEAF_CRT: ${{ secrets.FOG_AGENT_SIGNING_LEAF_CRT }}
+          # Where agents look, and therefore what this release adds to. Kept
+          # as a variable rather than hardcoded so a fork or a staging run
+          # can point somewhere else without editing the workflow; it must
+          # match the URL compiled into the agent
+          # (cmd/fog-agent/update.go DefaultManifestURL).
+          FOG_AGENT_MANIFEST_URL: ${{ vars.FOG_AGENT_MANIFEST_URL || 'https://fogproject.org/version/agent-stable.json' }}
         run: |
           if [ -z "$LEAF_KEY" ] || [ -z "$LEAF_CRT" ]; then
             echo 'FOG_AGENT_MANIFEST_SIGNING is set but the leaf key/cert secrets are not.' >&2
@@ -171,6 +177,21 @@ jobs:
           d=$(mktemp -d)
           printf '%s' "$LEAF_KEY" > "$d/leaf.key"
           printf '%s' "$LEAF_CRT" > "$d/leaf.crt"
+          # The manifest this release adds to. Fetched from where agents
+          # actually look rather than from the previous release's assets:
+          # that URL is the one source of truth for what is currently on
+          # offer, and building on anything else would silently drop a
+          # version somebody published by hand. A 404 is the first release
+          # and is not an error -- sign-manifest.sh treats an absent or
+          # empty file as "nothing to carry forward".
+          #
+          # Without this the manifest describes exactly one version, and
+          # Manifest.Find() looks a version up by exact key: a server naming
+          # any release but the newest would answer no_artifact, which makes
+          # the downgrade that design 0015 sections 9 and 11 rely on as the
+          # fleet-wide recovery impossible to express.
+          curl -fsSL --max-time 30 -o published.json \
+            "${FOG_AGENT_MANIFEST_URL}" || : > published.json
           # Sequence must never go backwards for any agent that has already
           # accepted a manifest, so it is seconds since the epoch rather than
           # a counter. A counter tied to this workflow (run_number) resets if
@@ -185,6 +206,7 @@ jobs:
             --url-base "https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}" \
             --dir "$d" \
             --out dist \
+            --merge published.json \
             $(find dist -maxdepth 1 -type f ! -name 'SHA256SUMS' ! -name 'manifest.json*')
           rm -rf "$d"
           # SHA256SUMS is regenerated so it covers the manifest too. It is a
