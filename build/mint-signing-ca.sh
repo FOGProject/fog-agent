@@ -114,7 +114,15 @@ if ! openssl x509 -in "$dir/leaf.crt" -noout -text | grep -q "Code Signing"; the
     echo "the issued leaf does not carry codeSigning -- it would be refused" >&2
     exit 1
 fi
-if ! openssl verify -CAfile "$dir/root.crt" -purpose codesign "$dir/leaf.crt" >/dev/null; then
+# Chain only. `-purpose codesign` was here and is NOT portable: the purpose
+# name was added in OpenSSL 3.4, so every 3.0 and 3.2 -- which is what
+# ubuntu-latest and most distributions still ship -- fails this with
+# "Invalid purpose codesign" and reports it as the leaf not verifying,
+# naming the wrong thing in exactly the way the comment above warns about.
+# Nothing is lost by dropping it: the EKU is asserted directly by the check
+# above, on the certificate as issued, and that check works on every
+# OpenSSL. The two together say what one flag said.
+if ! openssl verify -CAfile "$dir/root.crt" "$dir/leaf.crt" >/dev/null; then
     echo "the issued leaf does not verify against the root" >&2
     exit 1
 fi
