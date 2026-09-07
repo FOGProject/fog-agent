@@ -486,7 +486,14 @@ func runAgent(ctx context.Context, args []string) error {
 						// status so the service manager starts the new
 						// one; that is the same recovery path a crashing
 						// new binary takes, deliberately (design 0015 §6).
-						out.say(err.Error())
+						//
+						// Nothing is logged here. The update provider has
+						// already said "applied (X -> Y, restarting)",
+						// which names the versions; repeating the
+						// sentinel added a second line saying the same
+						// thing in fewer words, and on Windows the
+						// service handler adds a third at the moment the
+						// process actually goes.
 						return err
 					}
 					out.say("reconcile: " + err.Error())
