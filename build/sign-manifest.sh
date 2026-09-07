@@ -67,12 +67,24 @@ manifest=$out/manifest.json
 envelope=$out/manifest.json.sig
 
 # platform_of maps a built filename to GOOS/GOARCH. cross.sh names files
-# fog-agent-<goos>-<goarch>[.exe]; the MSI is Windows amd64 by
-# construction and is named for its architecture instead.
+# fog-agent-<goos>-<goarch>[.exe].
+#
+# The MSI is deliberately NOT here. An artifact in this manifest is the
+# thing the agent RENAMES OVER ITS OWN BINARY (update.go swap()), and an
+# installer is not that. It used to map to windows/amd64, which put two
+# entries under that platform alongside fog-agent-windows-amd64.exe --
+# and Manifest.Find() returns the FIRST match, ordered by however the
+# caller listed the files. So a Windows amd64 agent could be handed the
+# installer, verify its hash perfectly well because the hash was correct,
+# swap an 11 MB MSI in as fog-agent.exe, fail to start, and revert. Not a
+# hole -- the signature and hash both hold -- but a guaranteed failed
+# update on the commonest Windows platform, decided by directory order.
+#
+# The MSI is still published as a release asset. It is how a machine gets
+# the agent in the first place; it is not how an agent replaces itself.
 platform_of() {
     local base=${1##*/}
     case "$base" in
-        *.msi) echo "windows amd64" ;;
         *)
             base=${base%.exe}
             local arch=${base##*-}
@@ -84,13 +96,31 @@ platform_of() {
 }
 
 artifacts=""
+seen=" "
 for f in "$@"; do
     [ -f "$f" ] || { echo "not a file: $f" >&2; exit 1; }
+    case "${f##*/}" in
+        *.msi)
+            echo "  skipping ${f##*/}: an installer is not a self-update artifact"
+            continue
+            ;;
+    esac
     read -r os arch <<<"$(platform_of "$f")"
     case "$os" in
         linux|windows|darwin) ;;
         *) echo "cannot tell the platform of $f (read '$os/$arch')" >&2; exit 1 ;;
     esac
+    # One artifact per platform, enforced rather than assumed. Manifest.Find()
+    # takes the first match and has no way to prefer one of two, so a
+    # duplicate does not fail loudly at the agent -- it silently makes which
+    # file a fleet installs depend on the order these arguments arrived in.
+    case "$seen" in
+        *" $os/$arch "*)
+            echo "two artifacts claim $os/$arch; the agent would take whichever came first" >&2
+            exit 1
+            ;;
+    esac
+    seen="$seen$os/$arch " 
     sum=$(sha256sum "$f" | cut -d' ' -f1)
     size=$(stat -c %s "$f")
     entry=$(printf '{"os":"%s","arch":"%s","sha256":"%s","size":%s,"url":"%s/%s"}' \
