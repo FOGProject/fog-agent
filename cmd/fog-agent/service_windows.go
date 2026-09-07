@@ -44,11 +44,11 @@ const (
 // configured, Windows simply leaves the service stopped, and the machine
 // sits with a new binary and nothing running until someone reboots it.
 func recoveryActions() ([]mgr.RecoveryAction, uint32) {
-	return []mgr.RecoveryAction{
-		{Type: mgr.ServiceRestart, Delay: 10 * time.Second},
-		{Type: mgr.ServiceRestart, Delay: time.Minute},
-		{Type: mgr.ServiceRestart, Delay: 5 * time.Minute},
-	}, 86400
+	actions := make([]mgr.RecoveryAction, 0, len(restartDelays))
+	for _, d := range restartDelays {
+		actions = append(actions, mgr.RecoveryAction{Type: mgr.ServiceRestart, Delay: d})
+	}
+	return actions, uint32(restartResetWindow / time.Second)
 }
 
 // ensureRecoveryActions puts the restart policy back if it is missing,
