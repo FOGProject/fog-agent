@@ -83,21 +83,51 @@ func ensureRecoveryActions() (bool, error) {
 	}
 	defer svcH.Close()
 
+	changed := false
+
 	want, reset := recoveryActions()
 	// A service that already restarts on failure is left alone, whatever
 	// the delays are: an admin may have tuned them, and stamping over
 	// that every start would be this code deciding it knows better.
+	restarts := false
 	if have, err := svcH.RecoveryActions(); err == nil {
 		for _, a := range have {
 			if a.Type == mgr.ServiceRestart {
-				return false, nil
+				restarts = true
+				break
 			}
 		}
 	}
-	if err := svcH.SetRecoveryActions(want, reset); err != nil {
-		return false, err
+	if !restarts {
+		if err := svcH.SetRecoveryActions(want, reset); err != nil {
+			return false, err
+		}
+		changed = true
 	}
-	return true, nil
+
+	// And the flag without which none of the above ever runs.
+	//
+	// Windows applies recovery actions only when a service terminates
+	// UNEXPECTEDLY. Self-update does not: it finishes cleanly and reports
+	// Stopped with a non-zero service-specific exit code, which Windows
+	// calls a "non-crash failure" and ignores unless this flag is set.
+	// So a service could have a perfectly good restart policy and still
+	// sit stopped after every update -- which is exactly what happened on
+	// telliottwin11 with 0.1.5: policy present, service STOPPED.
+	//
+	// This is also why killing the process was the wrong way to test it.
+	// taskkill IS a crash, so it fires the actions whether or not the flag
+	// is set, and proves nothing about the path an update takes.
+	//
+	// Checked independently of the actions above: an admin who set a
+	// restart policy by hand almost certainly did not know to set this.
+	if on, err := svcH.RecoveryActionsOnNonCrashFailures(); err == nil && !on {
+		if err := svcH.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
+			return changed, err
+		}
+		changed = true
+	}
+	return changed, nil
 }
 
 // isService reports whether the service control manager started us.
@@ -267,6 +297,12 @@ func serviceInstall(args []string) error {
 	ra, reset := recoveryActions()
 	if err := s.SetRecoveryActions(ra, reset); err != nil {
 		return fmt.Errorf("recovery actions: %w", err)
+	}
+	// Without this the actions above never run for a self-update: Windows
+	// only applies them to an unexpected termination, and the update path
+	// exits cleanly with a non-zero code. See ensureRecoveryActions.
+	if err := s.SetRecoveryActionsOnNonCrashFailures(true); err != nil {
+		return fmt.Errorf("recovery on non-crash failures: %w", err)
 	}
 	if err := s.Start(); err != nil {
 		return fmt.Errorf("start: %w", err)
