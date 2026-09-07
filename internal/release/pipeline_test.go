@@ -107,3 +107,92 @@ func TestTheReleaseScriptsProduceSomethingThisPackageAccepts(t *testing.T) {
 		t.Fatal("a modified manifest verified against a real openssl signature")
 	}
 }
+
+// TestTheManifestNeverOffersAnInstallerAsTheBinary pins the shape of a real
+// release directory, which the test above does not: a release publishes an
+// MSI next to fog-agent-windows-amd64.exe, and both are "windows amd64".
+//
+// The manifest describes the file the agent RENAMES OVER ITSELF. Find()
+// takes the first match and has no way to prefer one of two, so a manifest
+// carrying both entries does not fail anywhere an operator would see it --
+// it makes which file a Windows fleet installs depend on the order the
+// release step happened to list its files in. Half the time that is an 11 MB
+// installer swapped in as fog-agent.exe: it downloads, its hash verifies
+// because the hash is correct, the service will not start, and the host
+// reverts fifteen minutes later having reported nothing useful.
+func TestTheManifestNeverOffersAnInstallerAsTheBinary(t *testing.T) {
+	if _, err := exec.LookPath("openssl"); err != nil {
+		t.Skip("openssl is not installed; this test drives the real signing tooling")
+	}
+	root, err := filepath.Abs("../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	run := func(name string, args ...string) ([]byte, error) {
+		cmd := exec.Command(filepath.Join(root, "build", name), args...)
+		cmd.Dir = dir
+		return cmd.CombinedOutput()
+	}
+
+	// A release directory as build/cross.sh and build/msi.sh leave it.
+	var files []string
+	for _, name := range []string{
+		"fog-agent-windows-amd64.exe",
+		"fog-agent-0.1.2-x64.msi",
+		"fog-agent-linux-amd64",
+	} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("stand-in for "+name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, p)
+	}
+	if out, err := run("mint-signing-ca.sh", "--dir", dir); err != nil {
+		t.Fatalf("mint: %v\n%s", err, out)
+	}
+	args := append([]string{"--dir", dir, "--out", dir, "--version", "0.1.2",
+		"--sequence", "1", "--url-base", "https://releases.example.invalid/v0.1.2"}, files...)
+	if out, err := run("sign-manifest.sh", args...); err != nil {
+		t.Fatalf("sign-manifest: %v\n%s", err, out)
+	}
+
+	body, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m Manifest
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatal(err)
+	}
+	arts := m.Versions["0.1.2"].Artifacts
+
+	// One entry per platform. Asserted over every platform rather than by
+	// looking for the MSI, because the defect is the duplicate, and the MSI
+	// is only the way it turns up today.
+	seen := map[string]string{}
+	for _, a := range arts {
+		key := a.OS + "/" + a.Arch
+		if prev, dup := seen[key]; dup {
+			t.Fatalf("two artifacts claim %s (%s and %s); Find() would take whichever was listed first",
+				key, prev, a.URL)
+		}
+		seen[key] = a.URL
+	}
+	if len(arts) != 2 {
+		t.Errorf("want the two real binaries, got %d artifacts: %+v", len(arts), arts)
+	}
+
+	// And what a Windows amd64 agent is handed is the executable it can
+	// actually rename over itself.
+	a, err := m.Find("0.1.2", "windows", "amd64")
+	if err != nil {
+		t.Fatalf("windows/amd64 must still be offered: %v", err)
+	}
+	if filepath.Ext(a.URL) == ".msi" {
+		t.Errorf("a Windows agent would swap an installer in as its own binary: %s", a.URL)
+	}
+	if filepath.Base(a.URL) != "fog-agent-windows-amd64.exe" {
+		t.Errorf("windows/amd64 should be the exe, got %s", a.URL)
+	}
+}
