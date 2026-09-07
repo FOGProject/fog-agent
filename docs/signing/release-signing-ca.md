@@ -70,44 +70,53 @@ Run on a machine you trust, in a checkout of this repository.
     git add internal/release/roots.pem
     git commit -m 'Release: compile in the FOG Agent release signing root'
 
-Then set these in the repository so the release workflow can sign:
+Then set these two secrets in **`FOGProject/fog-version-check`** — not in
+this repository, because that is where the manifest is signed and published:
 
-| Kind | Name | Value |
-|---|---|---|
-| Variable | `FOG_AGENT_MANIFEST_SIGNING` | any non-empty value; this switches the manifest step on |
-| Secret | `FOG_AGENT_SIGNING_LEAF_KEY` | contents of `~/.fog-agent-signing/leaf.key` |
-| Secret | `FOG_AGENT_SIGNING_LEAF_CRT` | contents of `~/.fog-agent-signing/leaf.crt` |
+| Secret | Value |
+|---|---|
+| `FOG_AGENT_SIGNING_LEAF_KEY` | contents of `~/.fog-agent-signing/leaf.key` |
+| `FOG_AGENT_SIGNING_LEAF_CRT` | contents of `~/.fog-agent-signing/leaf.crt` |
 
 Back up `root.key` offline. Delete nothing else: `leaf.key` is needed again
 at every reissue.
 
 ## Publishing the manifest
 
-The release workflow builds and signs `manifest.json` and publishes it as a
-release asset. Agents do **not** read it there: they read the URL compiled
-into them, which is
+Signing and publishing both happen in
+[`FOGProject/fog-version-check`][vc], the repository behind
+`fogproject.org/version/`, which is cloned on the host at
+`/var/www/html/website/version`. After a fog-agent release finishes, run its
+**Publish the agent release manifest** workflow from the Actions tab
+(optionally naming a tag; empty means the latest release), then deploy that
+repo the way it is normally deployed:
 
-    https://fogproject.org/version/agent-stable.json
+    cd /var/www/html/website/version && git pull && systemctl reload php-fpm
 
-That path is served by [`FOGProject/fog-version-check`][vc], cloned on the
-host at `/var/www/html/website/version`. So publishing a release is two
-steps, and the second is currently by hand:
-
-    # after the release workflow finishes
-    gh release download "v$VERSION" -R FOGProject/fog-agent -p manifest.json -D /tmp
-    cp /tmp/manifest.json /path/to/fog-version-check/agent-stable.json
-    cd /path/to/fog-version-check
-    git add agent-stable.json
-    git commit -m "agent: publish the v$VERSION manifest"
-    git push
-    # then pull it on the host, the way the rest of that repo is deployed
+That workflow downloads the release's artifacts, hashes them, merges the
+versions already published, signs, and commits `agent-stable.json` and
+`agent-stable.json.sig` together.
 
 [vc]: https://github.com/FOGProject/fog-version-check
+
+**Why not in this repository's release workflow.** It was there first, and
+moving it removed a constraint rather than adding one. A manifest built
+during the release is built *before* publication, so getting it right means
+remembering that Authenticode rewrites the Windows artifacts and that the
+manifest step must therefore run after signing — a rule someone has to keep
+true forever. Built after the release exists, it hashes the files people
+actually download and the ordering cannot be got wrong. It also means the
+signing key lives in exactly one repository.
 
 **Serve it as a static file.** The signature is over the manifest's exact
 bytes, so it must not pass through anything that re-encodes JSON. Sitting
 next to `index.php` as a plain file is exactly right; being generated *by*
 `index.php` would not be.
+
+**Both files move together.** The agent fetches the manifest and then
+fetches `<url>.sig` as a second request, so anything that updates one
+without the other leaves a window in which every polling agent reads a
+mismatched pair and reports `signature_invalid`.
 
 `agent-stable.json` names its channel because that URL is **compiled into
 every agent** and cannot be changed for one already deployed. The
