@@ -141,7 +141,39 @@ for f in "$@"; do
 done
 
 expires=$(date -u -d "+$days days" +%Y-%m-%dT%H:%M:%SZ)
+# When this was signed. The agent checks the signing certificate's validity
+# against THIS, not against its own clock, so a manifest keeps verifying for
+# its whole life even if the leaf is rotated or expires in the meantime.
+signed=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 notes="https://github.com/FOGProject/fog-agent/releases/tag/v$version"
+
+# Refuse to sign with a leaf that is dead or nearly so.
+#
+# Signing with an expired leaf produces a manifest that looks perfect here
+# and is refused by every agent as "signature_invalid: not signed by a key
+# this build trusts" -- which names the wrong cause and sends whoever is
+# debugging it hunting a compromised key. Better to fail in CI, where the
+# message can say what actually happened.
+#
+# The margin is the manifest's own lifetime: a leaf that dies before the
+# manifest does still yields a manifest good for its full stated life
+# (that is the point of `signed`), but it means the NEXT release cannot be
+# signed, and finding that out at release time is too late.
+leaf_end=$(openssl x509 -in "$signing/leaf.crt" -noout -enddate | cut -d= -f2)
+leaf_end_s=$(date -u -d "$leaf_end" +%s)
+now_s=$(date -u +%s)
+if [ "$leaf_end_s" -le "$now_s" ]; then
+    echo "The signing leaf expired on $leaf_end." >&2
+    echo "Reissue it (build/mint-signing-ca.sh --leaf-only), update the two" >&2
+    echo "repository secrets, and run this again. Manifests already published" >&2
+    echo "are unaffected and keep verifying." >&2
+    exit 2
+fi
+if [ "$leaf_end_s" -le "$(( now_s + days * 86400 ))" ]; then
+    echo "  WARNING: the signing leaf expires $leaf_end, inside this" >&2
+    echo "  manifest's own ${days}-day life. This manifest is fine; the next" >&2
+    echo "  one will not be. Reissue the leaf soon." >&2
+fi
 
 # Written in one shot and never touched again: the signature below is over
 # these exact bytes. Whichever branch writes it, nothing reformats it after.
@@ -158,16 +190,17 @@ if [ -n "$merge" ] && [ -s "$merge" ]; then
     # by a person, rather than by a rule in here.
     jq -c -n --slurpfile prev "$merge" \
         --arg channel "$channel" --argjson sequence "$sequence" \
-        --arg expires "$expires" --arg version "$version" \
+        --arg expires "$expires" --arg signed "$signed" --arg version "$version" \
         --argjson entry "$entry" '
         {channel: $channel, sequence: $sequence, expires: $expires,
+         signed: $signed,
          versions: (($prev[0].versions // {}) + {($version): $entry})}
         ' > "$manifest"
     kept=$(jq -r '.versions | keys | length' "$manifest")
     echo "  carried $((kept - 1)) earlier version(s) forward from ${merge##*/}"
 else
-    printf '{"channel":"%s","sequence":%s,"expires":"%s","versions":{"%s":%s}}' \
-        "$channel" "$sequence" "$expires" "$version" "$entry" > "$manifest"
+    printf '{"channel":"%s","sequence":%s,"expires":"%s","signed":"%s","versions":{"%s":%s}}' \
+        "$channel" "$sequence" "$expires" "$signed" "$version" "$entry" > "$manifest"
 fi
 
 sig=$(openssl dgst -sha256 -sign "$signing/leaf.key" "$manifest" | openssl base64 -A)

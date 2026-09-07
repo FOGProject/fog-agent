@@ -100,8 +100,8 @@ Ordered, and every step refuses forward on failure:
 |---|---|---|
 | 1 | Compare `desired` with `main.Version`, semver. Equal → done, report nothing | a `desired` that is not a version: `failed`, detail `bad_desired_version` |
 | 2 | Refuse if anything is in flight (section 8) | not a failure; defer to the next poll, report nothing |
-| 3 | Fetch the manifest and its envelope. Verify the chain against the root compiled into this binary, then the signature over the manifest bytes | `failed`, `signature_invalid` |
-| 4 | Check the manifest's `sequence` against the highest this agent has seen (stored in `config.json`), and its `expires` against now | `failed`, `stale_manifest` |
+| 3 | Fetch the manifest and its envelope. Verify the signature over the manifest bytes, then the chain against the root compiled into this binary — judged at the manifest's `signed` time, not the agent's clock (section 3.7) | `failed`, `signature_invalid` |
+| 4 | Check the manifest's `sequence` against the highest this agent has seen (stored in `config.json`), its `signed` time against `maxSignatureAge`, and its `expires` against now | `failed`, `stale_manifest` |
 | 5 | Find the entry for (`desired`, GOOS, GOARCH). Absent → refuse | `failed`, `no_artifact` |
 | 6 | Download the artifact to `<statedir>/update/`, hashing as it streams, exactly as a snapin payload is hashed (`protocol-v1.md`, Snapins, "verify") | `failed`, `hash_mismatch` |
 | 7 | **Windows only:** verify Authenticode on the downloaded file and that the signer chains to a trusted root with the pinned subject | `failed`, `signature_invalid` |
@@ -336,6 +336,47 @@ A signature failure specifically means either a broken mirror or somebody
 trying something. It deserves more than a row in a log nobody reads, and
 whether FOG has an existing admin-notification surface worth hanging it on
 is an open question in section 14.
+
+
+### 3.7 The chain is judged at signing time, not at use time
+
+The signing leaf lives in CI and is short-lived on purpose: expiry is the
+only revocation this PKI has. But verifying the chain against the *agent's*
+clock made that rotation destructive. On the day the leaf expired, every
+manifest it had ever signed stopped verifying at once — and stopped with
+`signature_invalid`, which says "not signed by a key this build trusts" and
+sends whoever is debugging it hunting a compromised key rather than a date.
+
+The manifest therefore carries `signed`, and the certificate chain is
+verified against that. A manifest signed while the leaf was good keeps
+verifying for its whole stated life, so rotating the leaf touches nothing
+that is already published. This is what timestamping does for Authenticode,
+and it is why a binary signed in 2010 still validates.
+
+Three things make it safe to let the manifest name the time it is judged at:
+
+- **The signature is checked before `signed` is read.** Verification now
+  runs the ECDSA check over the raw bytes first, using the leaf's public
+  key without yet trusting it, and only then parses and walks the chain. By
+  the time `signed` is used it is bound to the key, so nobody without the
+  key can choose it.
+- **A claim in the future is clamped to now.** Otherwise a manifest could
+  reach forward into a certificate's validity window — and clock skew,
+  which is real, gets the conservative reading for free.
+- **A claim further back than `maxSignatureAge` is refused as stale.** This
+  is the one that matters. Honouring the signing time would otherwise let
+  whoever holds an *expired* leaf backdate into the window where it was
+  valid and sign forever. With the bound, a leaf dead longer than
+  `maxSignatureAge` has no usable claim left: every moment it was valid is
+  by now too old to honour. The exposure from a leaked leaf is its
+  remaining validity plus that bound, and nothing else.
+
+`expires` is unaffected and is always judged against the real clock: it is
+the publisher's statement about freshness, and reading it at `signed` would
+let a manifest declare itself eternally fresh.
+
+A manifest with no `signed` field is judged against now, exactly as before —
+which is what the manifests published before this existed need.
 
 ## 4. What this asks of the build pipeline
 

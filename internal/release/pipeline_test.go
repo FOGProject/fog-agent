@@ -81,6 +81,20 @@ func TestTheReleaseScriptsProduceSomethingThisPackageAccepts(t *testing.T) {
 		t.Fatalf("manifest did not carry what the script was told: %+v", m)
 	}
 
+	// The signing time has to survive the real tooling, because it is what
+	// the certificate chain is judged against. If the script stops emitting
+	// it the manifest still verifies today -- silently falling back to the
+	// agent's own clock, which is the behaviour this field exists to end --
+	// so nothing else in this test would notice.
+	if m.Signed.IsZero() {
+		t.Fatal("the signing script must record when it signed; without it " +
+			"the chain is judged against the agent's clock and every " +
+			"manifest dies the day the leaf expires")
+	}
+	if d := time.Since(m.Signed); d < -time.Minute || d > time.Hour {
+		t.Errorf("signed time is %v away from now, which is not when this ran", d)
+	}
+
 	a, err := m.Find("0.4.2", "linux", "amd64")
 	if err != nil {
 		t.Fatalf("the script must record the platform it was handed: %v", err)

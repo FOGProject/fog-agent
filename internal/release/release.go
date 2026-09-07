@@ -71,9 +71,40 @@ type Manifest struct {
 	Sequence int64 `json:"sequence"`
 	// Expires bounds how long a mirror may keep serving a copy. Expiry
 	// means "refuse to update, keep running, say so" -- never "stop".
-	Expires  time.Time          `json:"expires"`
+	Expires time.Time `json:"expires"`
+	// Signed is when this manifest was signed, and it is what the
+	// signing certificate's validity is checked against. Without it the
+	// chain is checked against the agent's clock, which means the day
+	// the signing leaf expires, every manifest it ever signed stops
+	// verifying at once -- reported as signature_invalid, which names
+	// the wrong cause entirely. This is the field that makes rotating
+	// the leaf the no-op the procedure has always claimed it was.
+	//
+	// It is deliberately NOT Sequence. Sequence is a counter that only
+	// has to increase; a publisher is free to use 1, 2, 3, and reading
+	// it as a time would put such a manifest in 1970.
+	//
+	// Absent (zero) means "check against now", which is what every
+	// manifest published before this field existed needs.
+	Signed   time.Time          `json:"signed"`
 	Versions map[string]Version `json:"versions"`
 }
+
+// maxSignatureAge bounds how far in the past a manifest may claim to have
+// been signed.
+//
+// It is what stops a leaked leaf from being useful forever. Honouring the
+// signing time means an expired leaf can no longer sign anything NEW --
+// but only if the claim is bounded, because otherwise whoever holds an
+// expired key just backdates Signed into the window where it was valid.
+// With this bound, a leaf that expired more than maxSignatureAge ago has
+// no usable claim left: every time it was valid is now too old to honour.
+//
+// So the exposure from a leaked leaf is its remaining validity plus this,
+// and the cost of raising it is exactly that. Six months against a
+// one-year leaf and ninety-day manifests leaves generous headroom while
+// keeping the total bounded.
+const maxSignatureAge = 180 * 24 * time.Hour
 
 // Version is one released version across every platform it was built for.
 type Version struct {
@@ -143,18 +174,6 @@ func Verify(manifestJSON []byte, env *Envelope, roots *x509.CertPool, now time.T
 	for _, c := range certs[1:] {
 		inter.AddCert(c)
 	}
-	// KeyUsages pins code signing: a root that also issues certificates
-	// for anything else (and the FOG PKI issues plenty) must not have
-	// one of those able to sign a release. Without this line a server or
-	// client certificate under the same root would verify here.
-	if _, err := leaf.Verify(x509.VerifyOptions{
-		Roots:         roots,
-		Intermediates: inter,
-		CurrentTime:   now,
-		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning},
-	}); err != nil {
-		return nil, ErrSignature
-	}
 	pub, ok := leaf.PublicKey.(*ecdsa.PublicKey)
 	if !ok || pub.Curve != elliptic.P256() {
 		return nil, ErrSignature
@@ -163,6 +182,13 @@ func Verify(manifestJSON []byte, env *Envelope, roots *x509.CertPool, now time.T
 	if err != nil {
 		return nil, ErrSignature
 	}
+	// The signature is checked over the bytes as fetched, BEFORE the
+	// chain is walked and before anything is parsed. On its own that
+	// proves only that whoever holds this leaf's key produced these
+	// bytes -- the chain below is what says that key is one we trust.
+	// Doing it in this order is what lets the manifest name the time
+	// the chain is checked at: by the time Signed is read it is bound
+	// to the key, so nobody without the key can choose it.
 	sum := sha256.Sum256(manifestJSON)
 	if !ecdsa.VerifyASN1(pub, sum[:], sig) {
 		return nil, ErrSignature
@@ -174,6 +200,41 @@ func Verify(manifestJSON []byte, env *Envelope, roots *x509.CertPool, now time.T
 		// on from either.
 		return nil, fmt.Errorf("release: signed manifest is not readable: %w", err)
 	}
+
+	// When the certificate's validity is judged. Absent Signed, that is
+	// now, which is what manifests published before the field existed
+	// need and is the old behaviour exactly.
+	at := now
+	if !m.Signed.IsZero() {
+		if m.Signed.After(now) {
+			// A manifest claiming the future does not get to reach
+			// forward past a leaf's expiry; clock skew lands here too,
+			// and falling back to now is the conservative reading.
+			at = now
+		} else if now.Sub(m.Signed) > maxSignatureAge {
+			// Older than we are willing to honour. Refusing here is
+			// what bounds a leaked leaf: see maxSignatureAge.
+			return nil, ErrStale
+		} else {
+			at = m.Signed
+		}
+	}
+
+	// KeyUsages pins code signing: a root that also issues certificates
+	// for anything else (and the FOG PKI issues plenty) must not have
+	// one of those able to sign a release. Without this line a server or
+	// client certificate under the same root would verify here.
+	if _, err := leaf.Verify(x509.VerifyOptions{
+		Roots:         roots,
+		Intermediates: inter,
+		CurrentTime:   at,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning},
+	}); err != nil {
+		return nil, ErrSignature
+	}
+
+	// Expiry is the publisher's own statement about freshness and is
+	// always judged against the real clock, never against Signed.
 	if !m.Expires.IsZero() && now.After(m.Expires) {
 		return nil, ErrStale
 	}
