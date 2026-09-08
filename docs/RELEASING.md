@@ -16,7 +16,7 @@ wrong procedure.
 |---|---|---|
 | Cross-compiled binaries and the MSI | `.github/workflows/release.yml`, on the tag push | the GitHub release |
 | `agent-stable.json` + `.sig` | `publish-agent-manifest.yml` in `fog-version-check`, dispatched by hand | that repo's root |
-| The served manifest | a `git pull` on the fogproject.org host | `/var/www/html/website/version` |
+| The served manifest | a `*/5` cron on the fogproject.org host, automatically | `/var/www/html/website/version` |
 
 An agent updates itself only once the third row has happened. A GitHub release
 on its own moves nothing in the field.
@@ -66,20 +66,31 @@ Both files must move together: the agent fetches the manifest and its `.sig` as
 two requests, so a half-updated pair makes every polling agent report
 `signature_invalid`.
 
-## 3. Deploy the website
+## 3. Wait five minutes, then verify it is live
 
-Nothing reaches an agent until the served files change. On the fogproject.org
-host:
+**This step is automatic.** A `*/5` cron on the fogproject.org host runs
+`/usr/local/sbin/fog-version-pull.sh`, which pulls the repo and reloads php-fpm
+only when the pull actually moved something. Worst-case publish latency is one
+cron interval. Nobody has to log in.
+
+`/version/` is served by nginx as a static file with no PHP in the path -- which
+it must be, because the signature is over the manifest's exact bytes and
+anything that re-encodes the JSON breaks it.
+
+Verify from outside. The pull log is quiet on success, so the log alone never
+proves the cron ran:
+
+    curl -fsS https://fogproject.org/version/agent-stable.json \
+      | python3 -c 'import json,sys; d=json.load(sys.stdin); print(sorted(d["versions"]), d["signed"])'
+    curl -fsSI https://fogproject.org/version/agent-stable.json.sig | head -1
+
+The new version must appear in that list. If it has not after ten minutes, the
+cron is the thing to check, and the manual equivalent is:
 
     cd /var/www/html/website/version && git pull && systemctl reload php-fpm
 
-`/var/www/html/website` is the document root, so `/var/www/html/version` is
-**not** reachable at `fogproject.org/version/`.
-
-Then confirm it from outside, rather than assuming the pull did what you meant:
-
-    curl -fsS https://fogproject.org/version/agent-stable.json | head -c 200
-    curl -fsSI https://fogproject.org/version/agent-stable.json.sig
+`/var/www/html/website` is the document root, so a clone at
+`/var/www/html/version` is **not** reachable at `fogproject.org/version/`.
 
 ## Withdrawing a version
 
