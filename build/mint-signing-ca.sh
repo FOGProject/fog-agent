@@ -19,6 +19,10 @@
 #          release. A leaf without it verifies nowhere and the failure
 #          looks like a bad signature.
 #   TRAP:  --install rewrites a tracked file. Do not commit a lab root.
+#   TRAP:  --leaf-only signs with -CAkey root.key, so if the root is
+#          passphrase-protected -- it should be -- this PROMPTS. That is
+#          fine by hand and fatal in anything non-interactive, which is
+#          part of why this script never runs in CI.
 #
 # Usage:
 #   build/mint-signing-ca.sh [--dir DIR] [--install] [--leaf-only]
