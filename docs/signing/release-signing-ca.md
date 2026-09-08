@@ -100,8 +100,12 @@ Signing and publishing both happen in
 `fogproject.org/version/`, which is cloned on the host at
 `/var/www/html/website/version`. After a fog-agent release finishes, run its
 **Publish the agent release manifest** workflow from the Actions tab
-(optionally naming a tag; empty means the latest release), then deploy that
-repo the way it is normally deployed:
+(optionally naming a tag; empty means the latest release). Deployment to
+`fogproject.org` is automatic from there: a `*/5` cron on that host runs
+`/usr/local/sbin/fog-version-pull.sh`, so the manifest is live within five
+minutes. Verify by fetching the URL -- the pull log is quiet on success and
+proves nothing on its own. The manual equivalent, if the cron is ever the
+suspect, is:
 
     cd /var/www/html/website/version && git pull && systemctl reload php-fpm
 
