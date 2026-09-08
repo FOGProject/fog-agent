@@ -158,6 +158,10 @@ touch a deployed agent and needs no release.
 
     build/mint-signing-ca.sh --leaf-only
 
+This **prompts for the root key's passphrase**: the leaf is signed with
+`-CAkey root.key`, and that key is passphrase-protected at rest. Run it in a
+terminal, never from a script that cannot answer.
+
 Then update the two secrets. **Old manifests keep verifying**: each carries
 the leaf that signed it, and the agent judges that certificate against the
 manifest's own `signed` time rather than against its own clock, so a
