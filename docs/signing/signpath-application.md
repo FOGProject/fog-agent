@@ -2,7 +2,50 @@
 
 **Submitted by Tom Elliott on 2026-09-05**, at <https://signpath.org/apply>,
 acknowledged with "Form submitted, thank you, we'll be in touch soon".
-Awaiting a decision.
+**Rejected on 2026-09-09.** Paraphrasing rather than quoting, because the
+rejection was private correspondence and this repository is public: the
+Foundation programme is for projects that have already established public trust
+and visibility, and they weigh external signals -- GitHub stars, forks and
+contributors; external articles and independent discussion; institutional
+backing; sustained activity. They judged FOG to show too few of those, said
+explicitly that this was not a comment on the work's quality, invited a
+reapplication once the project had gained broader recognition, and pointed at
+the paid SignPath.io subscription as the faster route.
+
+**The application pointed them at the wrong repository.** The Repository URL
+field was filled with `FOGProject/fog-agent` -- the thing to be signed -- and
+the GitHub API says that repository was **created 2026-09-03**: two days old at
+the time of the application, with 0 stars, 0 forks and 1 contributor. Every
+signal the rejection lists first is a GitHub repository signal, and the repository he
+would have opened has none of them. `FOGProject/fogproject`, read the same day,
+has 1,656 stars, 282 forks, 93 contributors and 54 releases going back to its
+creation on 2014-04-15 -- and the Reputation free-text box was the only place
+in the form that said so.
+
+That is a reading of the evidence, not something SignPath confirmed. But it is
+why the answer to this rejection is a reply naming the right repository, not a
+quiet wait for "broader recognition" that FOG demonstrably already has.
+
+SignPath publishes no appeals process -- their terms say in as many words that
+"there is no independent arbitration mechanism" -- so this is a request to look
+again, not a dispute. SignPath explicitly invited a reapplication and offered
+the paid SignPath.io subscription as the faster route; that route is priced at
+$500/yr minimum and bundles a GlobalSign EV certificate that SignPath's own
+terms say can be issued "in the name of a legally registered organization
+only", so it is probably not even available to FOG. See
+`code-signing-routes.md` for the alternatives if the reply does not land.
+
+**What a Foundation certificate actually is**, which the application never
+recorded and which changes what winning is worth: the certificate is issued to
+**SignPath Foundation**, and SignPath Foundation is the publisher Windows
+displays. Their terms: "we cannot issue certificates to you, your project, or
+anybody else [...] What we actually do is get certificates issued to 'SignPath
+Foundation' and let OSS projects use them." Confirmed against real signed
+binaries -- 0install and Transmission both ship as publisher "SignPath
+Foundation". So FOG would never hold the certificate and never appear as the
+publisher, which cuts both ways: no personal name is burned into it, and the
+SmartScreen reputation being borrowed is one SignPath has already built across
+every project it signs, rather than one FOG starts from zero.
 
 This file is kept as the record of what was sent and why. The field list was
 read off the live form on the day of submission; every number in it is from a
