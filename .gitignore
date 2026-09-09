@@ -2,3 +2,6 @@
 /bin/
 *.exe
 /handoff/
+
+# Unsent correspondence drafts -- private until Tom sends them
+docs/signing/*-reply-draft.md
