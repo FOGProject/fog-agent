@@ -331,7 +331,32 @@ func NewClient(serverURL string, caPEM []byte) (*Client, error) {
 	if !pool.AppendCertsFromPEM(caPEM) {
 		return nil, errors.New("enroll: CA bundle contains no certificates")
 	}
-	cfg := &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}
+	return newClient(serverURL, &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}), nil
+}
+
+// NewSystemTrustClient builds a client that verifies the server against this
+// machine's trust store and the server's name, the way a browser does. It is
+// for a server whose web UI runs on a public or corporate certificate that
+// the probe found this machine already trusts (design 0002). It is never a
+// fallback for a pinned CA that stopped verifying.
+func NewSystemTrustClient(serverURL string) *Client {
+	return newClient(serverURL, systemTrustConfig(""))
+}
+
+// systemRoots is the pool a system-trust connection verifies against. nil
+// is the operating system's own store, and on Windows and macOS the
+// platform verifier a browser on that machine uses. A variable only so a
+// test can stand a throwaway CA in for the machine's store.
+var systemRoots = func() *x509.CertPool { return nil }
+
+// systemTrustConfig verifies against systemRoots. An empty serverName is
+// filled in per connection from the address, which is what http.Transport
+// does; a raw dial has to name it.
+func systemTrustConfig(serverName string) *tls.Config {
+	return &tls.Config{RootCAs: systemRoots(), ServerName: serverName, MinVersion: tls.VersionTLS12}
+}
+
+func newClient(serverURL string, cfg *tls.Config) *Client {
 	return &Client{
 		ServerURL: strings.TrimRight(serverURL, "/"),
 		HTTP: &http.Client{
@@ -340,7 +365,7 @@ func NewClient(serverURL string, caPEM []byte) (*Client, error) {
 			CheckRedirect: refuseRedirect,
 		},
 		tlsConfig: cfg,
-	}, nil
+	}
 }
 
 // UseCertificate presents the issued certificate (the leaf and its chain,

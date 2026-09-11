@@ -98,9 +98,10 @@ func updatePayload(client *enroll.Client) func(context.Context, int, io.Writer) 
 
 // manifestClient fetches the manifest and the artifact.
 //
-// This is the one place the agent consults the system trust store, and it
-// is a deliberate, narrow exception to the rule in design 0002 that it
-// never does. The reason it costs nothing: TLS is not what is trusted
+// It consults the system trust store whatever the server is trusted by, a
+// deliberate, narrow exception to design 0002, where only a server on a
+// public or corporate certificate is verified that way. The reason it costs
+// nothing: TLS is not what is trusted
 // here. The manifest carries its own signature and the artifact carries
 // its own hash, so the transport is bandwidth and privacy hygiene rather
 // than a trust decision -- which is exactly why it is safe to let the FOG

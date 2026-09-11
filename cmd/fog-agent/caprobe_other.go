@@ -14,4 +14,6 @@ func writeInstallerKeys(*enroll.CAProbe) error {
 	return errors.New("--registry is for the Windows installer and does nothing here")
 }
 
+func writeInstallerError(error) error { return nil }
+
 func clearInstallerKeys() error { return nil }

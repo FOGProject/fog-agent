@@ -26,27 +26,29 @@ registration itself.
 | 3 | A server that does not answer at install time is not an install failure | Deployment tools install the MSI on machines that are off the network at that moment. The token is kept in the state directory and the service's first enrollment uses it; a bad CA path or an unwritable directory still fails the install |
 | 4 | The legacy property names `WEBADDRESS` and `WEBROOT` are honored | Deployment scripts written for the old client keep working with `SERVER` derived from them |
 | 5 | The log is `C:\ProgramData\FOG\fog-agent.log`, beside the state directory, not in it | The state directory is locked to SYSTEM and Administrators because it holds the key. The log must be readable by whoever is asked to post it on the forums, and this is the successor to `C:\fog.log`. Nothing secret is written to it |
-| 7 | The MSI carries a wizard, and the binary asks at the prompt | Windows Installer shows no UI of its own: with no Dialog rows a double-click ran `setup` with no server and no CA and failed 1603 with nothing on screen. Anyone who has installed Windows software expects to be asked. wixl ships the standard WiX dialog set as its `ui` extension, so the package authors one page (`FogCfgDlg`) and reuses the rest; `/qn` and `/qb` skip the InstallUISequence, so scripted installs are untouched. `service install` with no flags asks the same three questions on the console, gated on stdin being a character device so msiexec and the service never prompt |
+| 7 | The MSI carries a wizard, and the binary asks at the prompt | Windows Installer shows no UI of its own: with no Dialog rows a double-click ran `setup` with no server and no CA and failed 1603 with nothing on screen. Anyone who has installed Windows software expects to be asked. wixl ships the standard WiX dialog set as its `ui` extension, so the package authors one page (`FogCfgDlg`) and reuses the rest; `/qn` and `/qb` skip the InstallUISequence, so scripted installs are untouched. `service install` with no flags asks the same questions on the console, gated on stdin being a character device so msiexec and the service never prompt |
 | 8 | The CA file is accepted as PEM or DER | The server publishes `management/other/ca.cert.pem` and `ca.cert.der` side by side. A browser saving the `.der` one is a reasonable way to get the file onto a Windows machine, and the only symptom was "CA bundle contains no certificates", which names neither the file nor the format |
 | 10 | The wizard fetches the CA and asks the admin to confirm its fingerprint | Almost nobody installing an agent has a PEM file to hand, and telling them to go and find one is where the old flow lost people. Fetching alone would be trust on first use; the confirmation against the web UI's own Certificates tab is what makes it an out-of-band decision (0002) |
 | 11 | wixl cannot author the probe custom action either | It accepts `BinaryKey` only with `DllEntry` or `JScriptCall`; `BinaryKey` with `ExeCommand` (type 2) trips an assertion and leaves no row, and Windows Installer treats a `DoAction` naming a missing action as a no-op. `build/msi.sh` appends the row with msibuild, as it already does for the legacy Upgrade row, and `build/check-msi-ui.py` fails the build if any `DoAction` dangles |
+| 12 | The wizard has no certificate field, and a certificate the machine already trusts needs no confirmation | An admin whose server runs on Let's Encrypt was asked for a CA file they did not have (2026-09-11). The probe now settles a web UI on a public or corporate certificate on the system trust store and the server name, and the wizard shows `FogTrustedDlg` instead of a fingerprint (0002). `CA=` stays for scripts. The labels also lost their `&`, which `NoPrefix` printed as a character |
 | 9 | `AllowSameVersionUpgrades` on the MajorUpgrade | `Product Id="*"` mints a fresh ProductCode on every build while the version only moves on a release, so two builds of 0.1.0 are two products to Windows Installer. Without this the second registers beside the first: the lab host carried two "FOG Agent" rows in Add/Remove Programs on 2026-09-06 |
 | 6 | No self-upgrade in the agent yet | A newer MSI over an older one is the upgrade path on Windows for now. The lab needed a snapin plus Task Scheduler to swap a binary, which shows the gap; an agent-driven upgrade is its own slice |
 
 ## 3. What a package does not do
 
-It does not carry the CA. The CA is per server, so the package fetches it
-from the server at install time and makes somebody confirm its fingerprint
-before anything trusts it (0002, "Where the server anchor comes from"). A
-file is still accepted, and is the answer where the web UI runs on a public
-or corporate certificate.
+It does not carry the CA. The CA is per server, so the package asks the
+server at install time what to trust (0002, "Where the server anchor comes
+from"). For FOG's own CA, somebody confirms its fingerprint before anything
+trusts it. For a web UI on a public or corporate certificate that the machine
+already trusts, there is nothing to confirm, and the wizard says so. A CA file
+is still accepted as the `CA` property, for a CA the machine does not trust.
 
 The MSI-side plumbing for that is three pieces, because Windows Installer
 gives a program no way to hand a value back to the install: a second copy of
 the agent in the Binary table (the UI sequence runs before InstallFiles, so
 nothing is on disk yet), a custom action running its `ca probe --registry`,
-and an AppSearch RegistrySearch lifting the result out of HKCU into
-`CAFINGERPRINT`. The exe costs the package about 7 MB, taken deliberately
+and the `ReadProbe` script custom action lifting the result out of HKCU into
+properties. The exe costs the package about 7 MB, taken deliberately
 over a second implementation of fetch-and-hash in PowerShell or JScript: the
 fingerprint shown to the admin has to be computed exactly the way `setup`
 computes and re-checks it.
