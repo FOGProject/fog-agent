@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"runtime"
@@ -83,6 +84,15 @@ func updateConfig(st *enroll.State) update.Config {
 		// anything in the reconcile ever becomes concurrent, this is the
 		// line that has to change with it.
 		Busy: nil,
+	}
+}
+
+// updatePayload is the update provider's way to the server's copy of an
+// artifact: the payload route, over the certificate this agent polls with,
+// which is the path a snapin file already takes.
+func updatePayload(client *enroll.Client) func(context.Context, int, io.Writer) error {
+	return func(ctx context.Context, id int, w io.Writer) error {
+		return client.Payload(ctx, "update", id, w)
 	}
 }
 

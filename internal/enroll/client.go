@@ -587,7 +587,7 @@ func (c *Client) Payload(ctx context.Context, capability string, id int, w io.Wr
 	}
 	if resp.StatusCode != http.StatusOK {
 		raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return fmt.Errorf("snapin file: HTTP %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return fmt.Errorf("%s payload: HTTP %d: %s", capability, resp.StatusCode, strings.TrimSpace(string(raw)))
 	}
 	_, err = io.Copy(w, resp.Body)
 	return err
