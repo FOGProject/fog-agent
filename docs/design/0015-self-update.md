@@ -492,10 +492,15 @@ breaking the signature.
   manifest and its signature, and keeps their exact bytes. It records when
   this server first saw each version. Ring delays count from that time
   (section 7). The sync never runs inside an agent poll.
-- **It caches only what hosts need.** It downloads the target versions
-  (pinned, `latest` per ring, and host overrides) and every version a host
-  currently runs, so a rollback target is on hand. It downloads them only
-  for the OS and architecture pairs its enrolled hosts report.
+- **Where it keeps them.** Each file goes under
+  `/opt/fog/agent/versions/<version>/`, with the file name from its artifact
+  URL, owned by the web server's user. The exact manifest and signature
+  bytes are kept under `/opt/fog/agent/versions/` as well.
+- **What it keeps.** Every version a host runs or is told to run, plus the
+  newest `FOG_AGENT_KEEP_VERSIONS` versions still in the manifest (default
+  3), so a rollback works when the origin is unreachable. A version
+  withdrawn from the manifest is pruned unless a host still needs it. Files
+  are kept only for the OS and architecture pairs its enrolled hosts report.
 - **Agents fetch over mTLS.** The `update` block carries the manifest and
   signature inline, and `artifact` names the cached file. The agent fetches
   that file from `GET /agent/v1/payload/update/{id}` over its client
@@ -625,6 +630,8 @@ group column and no group resolver:
 | Global | `FOG_AGENT_UPDATE_MODE` | `off`, `pinned` or `latest` (section 2.2). `off` is the default |
 | Global | `FOG_AGENT_DESIRED_VERSION` | the fleet's version in `pinned` mode |
 | Global | `FOG_AGENT_UPDATE_RINGS` | delays in days, one per ring, in ring order. The default is `0,3,7` |
+| Global | `FOG_AGENT_MIN_VERSION` | a floor in every mode, empty by default. See below |
+| Global | `FOG_AGENT_KEEP_VERSIONS` | how many of the newest versions in the manifest the server keeps on disk, default 3 (section 5.1) |
 | The host | `hostAgentUpdateRing` | the host's ring. Empty means the last ring, so a new host is never a canary by accident |
 | The host | `hostAgentDesiredVersion` | an **override**. Non-empty wins outright over every mode, including when it is lower |
 
@@ -640,6 +647,15 @@ group column and no group resolver:
   acting.
 - A version marked `security: true` waits for its ring like any other. A fix
   that must go out now is a pin.
+
+**`FOG_AGENT_MIN_VERSION` is a floor in every mode.** It is empty by
+default. No host is told a version below it: a pin, a host override, or a
+ring whose delay would leave a host below it is raised to it. A host that
+runs a release below it is raised to it even in `off` mode. A lab build that
+is not a release version is left alone. Saving a pin or a host override
+below it is refused, and the floor must name a version in the server's
+manifest. This server setting is separate from the downgrade floor compiled
+into the agent (section 10), which refuses with `below_floor`.
 
 An override wins outright rather than being a floor because **fleet-wide
 rollback has to work**: if the resolved value were `max(global, host)`, a
