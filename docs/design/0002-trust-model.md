@@ -24,19 +24,19 @@ must keep.
 
 | Who trusts what | Anchor | Where it comes from |
 |---|---|---|
-| Agent trusts the server | the CA bundle settled at install, pinned in its state dir; the system trust store is never consulted | a file handed over with `--ca`, or the CA the server publishes, fetched and then confirmed by fingerprint (below) |
+| Agent trusts the server | settled once, at install, and kept in its state dir: a pinned CA bundle, or, for a web UI on a public or corporate certificate only, the system trust store and the server's name | a file handed over with `--ca`; the CA the server publishes, fetched and then confirmed by fingerprint; or the machine's own trust, checked by the probe (below) |
 | Web server trusts agents | **FOG Agent CA**, a new intermediate under the FOG root, published with the root as `management/other/agent-ca-bundle.pem` | installer `createAgentIntermediateCA`, key root-only under `/etc/fog/pki/agent/ca/` |
 | PHP trusts agents | the same bundle, re-verified in PHP for client-auth purpose, independently of the web server | `FOG\Agent\Principal::verify()` |
 | Server trusts a host binding | `hostAgentFingerprint` on the host row: sha256 of the key's SubjectPublicKeyInfo | written at approval, checked on every request |
 
 ### Where the server anchor comes from
 
-Two ways, and the second is the ordinary one because almost nobody installing
-an agent has a PEM file to hand:
+Three ways. With no file, the agent tries the second and then the third, so
+almost nobody installing an agent needs a PEM file:
 
 - **`--ca FILE`** (`CA=` to the MSI): a bundle carried to the machine by
-  whoever is installing. Required where the FOG web UI runs on a public or
-  corporate certificate, because the CA FOG publishes did not sign it.
+  whoever is installing. It is for a CA this machine does not trust and the
+  server does not publish, such as an offline corporate CA.
 - **fetch, then confirm the fingerprint.** The agent reads
   `management/other/ca.cert.pem` from the server with TLS verification off
   — its whole purpose is to find out what the anchor would be, so there is
@@ -46,8 +46,30 @@ an agent has a PEM file to hand:
   knows, or a person comparing the SHA-256 the installer displays against
   the one the server's own web UI prints under FOG Configuration →
   Certificates. The probe also checks that the server's own certificate is
-  actually issued by what it published, so the public-CA case is reported
-  as itself rather than failing later as a handshake error.
+  actually issued by what it published. If it is not, the published CA is
+  the wrong anchor, and the probe moves to the third way.
+- **the machine's trust store, for a web UI on a public or corporate
+  certificate.** The probe connects again with full verification against
+  the system trust store: the chain, the clock and the server name. If that
+  passes, the agent keeps no bundle and verifies every later connection the
+  same way. Nobody confirms a fingerprint, because the public or corporate
+  CA already checked who holds the name. The web UI could not show one
+  anyway: its Certificates tab shows FOG's own CA.
+
+The order matters. A FOG CA that is also in the machine's store, which the
+legacy client put there, still goes through the fingerprint. The choice is
+made once, at install. An agent that pinned a CA never falls back to the
+system store when that CA stops verifying. A fingerprint given for a server
+on a machine-trusted certificate is refused, not dropped, because whoever
+wrote it expected a pinned CA.
+
+Why not pin the public CA's root instead (decided 2026-09-11, after a report
+from a server on Let's Encrypt). Pinning Let's Encrypt's root adds almost
+nothing: anyone who can get a Let's Encrypt certificate for the name still
+passes. It also breaks every agent at once when Let's Encrypt changes its
+chain, and it is changing it: fogproject.org already serves a certificate
+from `YR2`, one of the new intermediates. The system store gets root changes
+from the operating system.
 
 The distinction that matters: **fetching is not trusting.** The old
 fog-client downloaded `ca.cert.der` and trusted it, which is trust on first
@@ -59,7 +81,9 @@ agent stores the bundle only once the two agree.
 Under the MSI the confirmation happens unelevated, in the wizard, and only
 the fingerprint crosses into the elevated half; `setup` fetches the
 certificate again as SYSTEM and checks it against that fingerprint itself,
-so a wizard that was lied to cannot hand a certificate to the install.
+so a wizard that was lied to cannot hand a certificate to the install. For a
+machine-trusted certificate nothing crosses: `setup` runs the probe again as
+SYSTEM and settles on what it finds.
 
 The Agent CA issues **client certificates only** (extended key usage clientAuth,
 CA:FALSE, one year). Nothing it signs can pose as a server, so a compromise of

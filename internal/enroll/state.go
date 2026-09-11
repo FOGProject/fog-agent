@@ -36,7 +36,13 @@ const (
 // from the server (design doc 10.3).
 type Config struct {
 	ServerURL string `json:"server_url"`
-	HostID    int    `json:"host_id,omitempty"`
+	// SystemTrust means the server is verified against this machine's trust
+	// store and its name instead of a pinned CA: its certificate is not
+	// issued by the CA it publishes, and the machine already trusted it
+	// when the agent was set up (design 0002). Only that probe sets it; a
+	// CA file clears it.
+	SystemTrust bool `json:"system_trust,omitempty"`
+	HostID      int  `json:"host_id,omitempty"`
 	// AppliedRevision is the desired-state revision every capability last
 	// converged on without failing; a poll reporting a different one is
 	// what triggers a fetch. Empty until the first reconcile.
@@ -316,9 +322,42 @@ func (st *State) SaveConfig() error {
 	return writeFile(filepath.Join(st.Dir, configFile), b, 0o600)
 }
 
-// SaveCA stores the server CA bundle the agent will trust.
+// SaveCA stores the server CA bundle the agent will trust. A pinned bundle
+// replaces system trust, so the flag goes with it.
 func (st *State) SaveCA(pemBytes []byte) error {
-	return writeFile(filepath.Join(st.Dir, caFile), pemBytes, 0o600)
+	if err := writeFile(filepath.Join(st.Dir, caFile), pemBytes, 0o600); err != nil {
+		return err
+	}
+	if st.Config.SystemTrust {
+		st.Config.SystemTrust = false
+		return st.SaveConfig()
+	}
+	return nil
+}
+
+// UseSystemTrust records that the server is verified against this machine's
+// trust store and its name, and removes any pinned bundle, so the two can
+// never disagree about what is trusted.
+func (st *State) UseSystemTrust() error {
+	if err := os.Remove(filepath.Join(st.Dir, caFile)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	st.Config.SystemTrust = true
+	return st.SaveConfig()
+}
+
+// HasTrust reports whether anything is settled to verify the server with.
+func (st *State) HasTrust() bool {
+	return st.Config.SystemTrust || len(st.CA()) > 0
+}
+
+// Client builds the client for what the state settled: the pinned bundle,
+// or this machine's trust store.
+func (st *State) Client() (*Client, error) {
+	if st.Config.SystemTrust {
+		return NewSystemTrustClient(st.Config.ServerURL), nil
+	}
+	return NewClient(st.Config.ServerURL, st.CA())
 }
 
 // ReadCABundle reads a CA file the person installing the agent pointed at

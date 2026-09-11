@@ -268,7 +268,7 @@ func serviceInstall(args []string) error {
 	// work the MSI does through `setup`; only the service registration
 	// below is particular to a hand install.
 	out := &sayer{}
-	if _, _, err := prepareState(f, out); err != nil {
+	if _, err := prepareState(f, out); err != nil {
 		return err
 	}
 	if err := postSetup(); err != nil {

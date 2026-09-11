@@ -181,7 +181,7 @@ which are ordinary TLS and none of which are bespoke:
 
 | Property | How |
 |---|---|
-| Agent only talks to its own server | Server URL and the CA bundle to trust are written at bootstrap; the agent trusts that bundle, not the OS trust store. The bundle is the FOG CA by default, or the public CA an admin configured for the web UI (`EXTERNAL_CA_AND_LETSENCRYPT.md`) |
+| Agent only talks to its own server | Server URL and what to trust are written at bootstrap. By default the agent pins the FOG CA, confirmed by fingerprint. For a web UI on a public or corporate certificate it verifies the server against the OS trust store and the server name instead, and keeps no bundle (0002) |
 | Server knows which host is calling | Apache requires and verifies a client certificate on `/agent/`; `Route` maps the fingerprint to the host. No cookies, no bearer tokens, no `mac=` |
 | Nothing secret rides a routine poll | Credentials (directory join) appear only inside a task response for a host that has that task, and the task is marked consumed when the result comes back |
 | Payloads are checked before they run | Every downloadable payload carries a sha256 in the desired state; the agent refuses a mismatch |

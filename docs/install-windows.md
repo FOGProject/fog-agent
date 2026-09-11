@@ -7,25 +7,26 @@ binary can also install itself from an administrator prompt.
 ## The MSI, by double-click
 
 Double-click `fog-agent-1.2.3-x64.msi`. The wizard asks for the server
-address, offers a box for an optional enrollment token, then fetches the
-certificate that server publishes and shows you its fingerprint to confirm.
+address and an optional enrollment token. Then it asks the server what to
+trust and shows you the answer.
 
 | The wizard asks | Example |
 |---|---|
 | Server address | `https://fog.example.org/fog` |
 | Enrollment token (optional) | leave empty to approve the machine by hand |
-| Certificate file to trust | leave empty for almost every server |
 
 The server address is the FOG web UI address with `/fog` on the end — the
 same thing you type to reach the management pages. If you reach the UI at
 `https://fog.example.org/fog/management/`, the address to give the agent is
 `https://fog.example.org/fog`.
 
-### Confirming the certificate
+### What the agent trusts
 
-The agent trusts one certificate authority and nothing else — not the
-machine's certificate store, not whatever the browser already accepts. So
-the wizard's second page shows you what the server offered:
+The agent does not trust whatever a browser would accept. The wizard's
+second page is one of two, and your server's certificate decides which.
+
+**Your server uses FOG's own certificates.** This is the default. The page
+shows the certificate authority the server publishes:
 
 ```
 Issued to:  CN=FOG Server CA
@@ -48,46 +49,62 @@ The old fog-client downloaded the certificate and simply trusted it.
 The wizard appears only on a first install. An upgrade keeps the state
 directory, so it has nothing to ask.
 
-### When the fetch is not the answer
+**Your web UI uses a public or corporate certificate** (Let's Encrypt, a
+commercial CA, your own AD CS). The page says this computer already trusts
+the certificate, and shows who issued it. There is no fingerprint to
+compare. The agent checks the server the way a browser does: against this
+computer's trust store, for the server name in the address. A renewed
+certificate keeps working. Two things follow:
 
-If your FOG web UI runs on a certificate from a public or corporate CA
-(Let's Encrypt, a commercial CA, your own AD CS), the certificate FOG
-publishes is not the one that signed it, and the wizard says so. Put that
-CA's file in the **Certificate file to trust** box instead — the agent has
-to be able to build a chain to whatever the web server presents. You can
-also fetch FOG's own copy by hand from
+- Put the name on the certificate in the server address. An IP address
+  fails, because a public certificate does not carry one.
+- The computer must trust the issuer. Windows trusts the public CAs. A
+  corporate CA has to be in the machine's store, which Group Policy
+  normally does.
+
+If neither page fits, such as an offline corporate CA the computer does not
+trust, give the CA file on the command line as the `CA` property (below).
+The wizard has no box for it. FOG's own copy is at
 `http://your-fog-server/fog/management/other/ca.cert.pem`; `ca.cert.der`
 sits beside it and the installer takes either.
 
 ## The MSI, from a script
 
 `/qn` skips the wizard entirely, so a deployment tool behaves exactly as it
-always did. Give it the fingerprint instead of a file and there is nothing
-to copy to each machine:
-
-```
-msiexec /i fog-agent-1.2.3-x64.msi /qn SERVER=https://fog.example.org/fog CAFINGERPRINT=50:02:7A:... TOKEN=... /l*v C:\fog-agent-install.log
-```
-
-Read the fingerprint once, from the Certificates tab of the web UI or with
-the agent itself on any machine:
+always did. `ca probe`, run on any machine, tells you which of the two cases
+your server is:
 
 ```
 fog-agent.exe ca probe --server https://fog.example.org/fog
 ```
 
+For a server on FOG's own certificates, give the install the fingerprint.
+There is then nothing to copy to each machine. Read the fingerprint once,
+from `ca probe` or from the Certificates tab of the web UI:
+
+```
+msiexec /i fog-agent-1.2.3-x64.msi /qn SERVER=https://fog.example.org/fog CAFINGERPRINT=50:02:7A:... TOKEN=... /l*v C:\fog-agent-install.log
+```
+
+For a web UI on a public or corporate certificate the machines already
+trust, the server address is enough:
+
+```
+msiexec /i fog-agent-1.2.3-x64.msi /qn SERVER=https://fog.example.org/fog TOKEN=... /l*v C:\fog-agent-install.log
+```
+
 | Property | Meaning |
 |---|---|
 | `SERVER` | base URL of the FOG server, the same one the web UI uses plus `/fog` |
-| `CAFINGERPRINT` | SHA-256 of the certificate the server publishes. The agent fetches that certificate itself and refuses anything whose fingerprint is not this one. Colons, spaces and case do not matter |
-| `CA` | path to a saved copy of the certificate to trust, PEM or DER — the alternative to `CAFINGERPRINT`, and the only option when the web UI uses a public or corporate CA |
+| `CAFINGERPRINT` | SHA-256 of the certificate the server publishes, for a server on FOG's own certificates. The agent fetches that certificate itself and refuses anything whose fingerprint is not this one. Colons, spaces and case do not matter. Given for a server on a machine-trusted certificate, the install fails rather than ignore it |
+| `CA` | path to a saved CA certificate to pin, PEM or DER, instead of asking the server. It is for a CA the machine does not trust |
 | `TOKEN` | enrollment token minted by an admin. Optional: without one the host is pending until an admin approves it in Host Management |
 | `WEBADDRESS`, `WEBROOT` | the legacy client's names, honored when `SERVER` is absent: `SERVER` becomes `https://WEBADDRESS` + `WEBROOT` |
 
-A silent install with no `CA` and no `CAFINGERPRINT` fails, and it should:
-there is nothing to say which certificate the machine should trust, and
-nobody there to be asked. The reason is in the msiexec log (`/l*v`) and in
-`C:\ProgramData\FOG\fog-agent.log`.
+A silent install for a server on FOG's own certificates, with no `CA` and no
+`CAFINGERPRINT`, fails, and it should: nothing says which certificate to
+trust, and nobody is there to ask. The reason is in the msiexec log (`/l*v`)
+and in `C:\ProgramData\FOG\fog-agent.log`.
 
 ## What the installer does, in order
 
@@ -96,14 +113,15 @@ nobody there to be asked. The reason is in the msiexec log (`/l*v`) and in
   server rows, and the legacy power module was seen taking an on-demand
   shutdown before the agent could
 - puts `fog-agent.exe` in `%ProgramFiles%\FOG`
-- runs `fog-agent setup` as SYSTEM, which settles the server URL and CA
-  bundle in `%ProgramData%\FOG\agent`, cuts that directory's ACL down to
+- runs `fog-agent setup` as SYSTEM, which settles the server URL and what
+  to trust in `%ProgramData%\FOG\agent`, cuts that directory's ACL down to
   SYSTEM and Administrators before the key is generated (ProgramData lets
   every user read what others create), and makes the first enrollment
   request. Where a fingerprint was confirmed rather than a file given, this
   step fetches the certificate again itself and refuses anything that does
   not match: the wizard runs unelevated and hands across the fingerprint
-  only, never the certificate. A server that does not answer at install
+  only, never the certificate. For a certificate the computer already
+  trusts, this step makes that check again itself. A server that does not answer at install
   time is not an install failure: the token is kept and the service keeps
   trying. A bad CA path, a fingerprint that does not match, or an
   unwritable directory fails the install, with the reason in the msiexec
@@ -147,18 +165,23 @@ msitools); no Windows is needed to produce it.
 From an administrator prompt:
 
 ```
-fog-agent.exe service install --server https://fog.example.org/fog --ca ca.pem [--token T]
+fog-agent.exe service install --server https://fog.example.org/fog [--token T]
 ```
 
-Run it with no flags and it asks the same questions the wizard asks,
-including showing the fingerprint for you to confirm, so this works too:
+Run it with no flags and it asks the same questions the wizard asks, so this
+works too:
 
 ```
 fog-agent.exe service install
 ```
 
-Unattended, `--ca-fingerprint` replaces `--ca` exactly as `CAFINGERPRINT`
-replaces `CA` in the MSI. Naming a `--server` on the command line turns the
+Either way, the agent then asks the server what to trust, as the wizard
+does. For FOG's own certificates it shows the fingerprint for you to
+confirm. For a certificate this computer already trusts, it needs nothing
+more.
+
+Unattended, `--ca-fingerprint` does what `CAFINGERPRINT` does in the MSI,
+and `--ca FILE` does what `CA` does. Naming a `--server` on the command line turns the
 questions off: a script that gets asked a question hangs, so anything
 missing becomes an error instead — except the certificate confirmation,
 which is a decision and is still put to whoever is at the terminal.
