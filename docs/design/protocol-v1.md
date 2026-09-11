@@ -691,9 +691,15 @@ server lists it when it has resolved an exact version for the host.
 The agent checks an inline pair exactly as it checks a downloaded one: the
 signature and chain against the root compiled into it, at the manifest's
 `signed` time; the sequence floor; the maximum signature age; `expires`; and
-the entry for `desired`, OS and architecture. A refusal carries the same
-detail as for a download. The agent does not retry a refused pair against
-`manifest_url`.
+the entry for `desired`, OS and architecture. A refused pair falls back once
+to `manifest_url`, or to the compiled URL when that is absent. The agent
+checks that copy the same way. A server whose release sync stopped holds a
+manifest that expires, and the origin still serves a current one. When the
+URL copy verifies, the agent reports nothing about the pair. When it fails
+too, the detail leads with the code of the URL attempt and names both:
+`signature_invalid: server copy: stale_manifest: the manifest has expired;
+origin: signature_invalid: …`. With no URL at all, the refusal of the pair
+is reported as it is.
 
 **The file.** With `artifact` set, the agent fetches
 `GET /agent/v1/payload/update/{artifact}` over its client certificate. It

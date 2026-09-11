@@ -506,8 +506,11 @@ breaking the signature.
   that file from `GET /agent/v1/payload/update/{id}` over its client
   certificate.
 - **The origin is the fallback.** Any failure of the server's copy falls
-  back once to the URL in the manifest entry. A host with no internet access
-  never needs the origin while its server holds a good copy.
+  back once to the URL in the manifest entry. A refused inline manifest falls
+  back once to the manifest URL, and that copy gets the same checks. So a
+  server whose release sync stopped does not stop its hosts when its manifest
+  expires. A host with no internet access never needs the origin while its
+  server holds a good copy.
 - **Trust is unchanged.** The agent verifies the inline manifest against its
   compiled root and hashes the file against the manifest entry, exactly as
   for a download. A compromised server can serve wrong bytes, and the agent

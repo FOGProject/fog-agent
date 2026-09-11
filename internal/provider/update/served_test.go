@@ -2,16 +2,27 @@ package update
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/FOGProject/fog-agent/internal/provider"
+	"github.com/FOGProject/fog-agent/internal/release"
 )
 
 const originArtifact = "/fog-agent-linux-amd64"
@@ -114,24 +125,163 @@ func TestRunVerifiesTheManifestTheServerSent(t *testing.T) {
 	}
 }
 
-// The inline pair gets no trust a download would not get. A tampered one
-// is refused as it would be from a mirror, and the refusal is not quietly
-// routed around by asking the URL instead.
-func TestRunRefusesATamperedManifestFromTheServer(t *testing.T) {
-	l := newLab(t)
-	hits := counting(l)
-	d := l.inline(Desired{Version: "0.4.2"})
+// served signs the lab's manifest, edited by change, with key under the
+// leaf certificate leafPEM, and puts the pair in d as a server sends it.
+func (l *lab) served(d Desired, key *ecdsa.PrivateKey, leafPEM string, change func(*release.Manifest)) Desired {
+	l.t.Helper()
+	var m release.Manifest
+	if err := json.Unmarshal(l.body, &m); err != nil {
+		l.t.Fatal(err)
+	}
+	change(&m)
+	body, err := json.Marshal(m)
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	sum := sha256.Sum256(body)
+	sig, err := ecdsa.SignASN1(rand.Reader, key, sum[:])
+	if err != nil {
+		l.t.Fatal(err)
+	}
+	env, _ := json.Marshal(release.Envelope{Chain: []string{leafPEM},
+		Alg: release.AlgECDSAP256SHA256, Sig: base64.StdEncoding.EncodeToString(sig)})
+	d.Manifest = base64.StdEncoding.EncodeToString(body)
+	d.Signature = base64.StdEncoding.EncodeToString(env)
+	return d
+}
+
+// stranger is a code signing key and leaf under a root this build does not
+// carry.
+func stranger(t *testing.T) (*ecdsa.PrivateKey, string) {
+	t.Helper()
+	rootKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	rootTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(9), Subject: pkix.Name{CommonName: "someone else's root"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		KeyUsage: x509.KeyUsageCertSign, BasicConstraintsValid: true, IsCA: true,
+	}
+	rootDER, _ := x509.CreateCertificate(rand.Reader, rootTmpl, rootTmpl, &rootKey.PublicKey, rootKey)
+	rootCert, _ := x509.ParseCertificate(rootDER)
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	leafTmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(10), Subject: pkix.Name{CommonName: "someone else's release signing"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, BasicConstraintsValid: true,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageCodeSigning},
+	}
+	leafDER, _ := x509.CreateCertificate(rand.Reader, leafTmpl, rootCert, &key.PublicKey, rootKey)
+	return key, string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER}))
+}
+
+func expired(m *release.Manifest) { m.Expires = time.Now().Add(-time.Hour) }
+
+func tampered(l *lab, d Desired) Desired {
+	d = l.inline(d)
 	d.Manifest = base64.StdEncoding.EncodeToString(
 		[]byte(strings.Replace(string(l.body), `"sequence":47`, `"sequence":48`, 1)))
-	res, restart := Run(context.Background(), d, l.cfg())
-	if res.Status != provider.StatusFailed || restart || !strings.HasPrefix(res.Detail, DetailSignature) {
-		t.Fatalf("a tampered inline manifest must be refused on the signature: %+v", res)
+	return d
+}
+
+// A server whose release sync stopped keeps sending the copy it holds. That
+// copy expires, or falls behind a sequence the host saw elsewhere, while the
+// origin is healthy. The pair gets no trust a download would not get, and the
+// URL's copy goes through every check the pair failed.
+func TestRunFallsBackToTheURLWhenTheServersManifestIsRefused(t *testing.T) {
+	cases := []struct {
+		name string
+		pair func(*lab, Desired) Desired
+	}{
+		{"the server's manifest has expired", func(l *lab, d Desired) Desired {
+			return l.served(d, l.leafKey, l.leafPEM, expired)
+		}},
+		{"the server's manifest is signed by a key this build does not trust", func(l *lab, d Desired) Desired {
+			key, leaf := stranger(l.t)
+			return l.served(d, key, leaf, func(*release.Manifest) {})
+		}},
+		{"the server's manifest was changed after signing", tampered},
+		{"the server's manifest is older than one this host accepted", func(l *lab, d Desired) Desired {
+			if err := SaveSequence(l.state, 45); err != nil {
+				l.t.Fatal(err)
+			}
+			return l.served(d, l.leafKey, l.leafPEM, func(m *release.Manifest) { m.Sequence = 40 })
+		}},
 	}
-	if n := hits("/manifest.json"); n != 0 {
-		t.Errorf("a refused inline manifest fell back to the URL (%d fetches)", n)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newLab(t)
+			hits := counting(l)
+			// The URL the server names, not the compiled one, is the one
+			// asked.
+			cfg := l.cfg()
+			cfg.DefaultManifestURL = l.srv.URL + "/nope.json"
+			d := tc.pair(l, Desired{Version: "0.4.2", ManifestURL: l.srv.URL + "/manifest.json"})
+			res, restart := Run(context.Background(), d, cfg)
+			if res.Status != provider.StatusApplied || !restart {
+				t.Fatalf("a refused inline manifest must fall back to a good URL copy: %+v", res)
+			}
+			if hits("/manifest.json") != 1 || hits("/manifest.json.sig") != 1 {
+				t.Errorf("want the manifest URL asked once, got manifest %d, signature %d",
+					hits("/manifest.json"), hits("/manifest.json.sig"))
+			}
+			if got := l.onDisk(l.exe); got != newBinary {
+				t.Errorf("the binary was not replaced, it holds %q", got)
+			}
+		})
 	}
-	if got := l.onDisk(l.exe); got != oldBinary {
-		t.Errorf("the running binary was touched: %q", got)
+}
+
+func TestRunNamesBothManifestsWhenNeitherIsAccepted(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(*lab, *Config)
+		want  string
+	}{
+		{"the URL copy is refused too", func(l *lab, c *Config) {
+			l.tamper = func(b []byte) []byte {
+				return []byte(strings.Replace(string(b), `"sequence":47`, `"sequence":48`, 1))
+			}
+		}, DetailSignature},
+		{"the URL cannot be fetched", func(l *lab, c *Config) {
+			c.DefaultManifestURL = l.srv.URL + "/nope.json"
+		}, DetailFetch},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			l := newLab(t)
+			cfg := l.cfg()
+			tc.setup(l, &cfg)
+			d := l.served(Desired{Version: "0.4.2"}, l.leafKey, l.leafPEM, expired)
+			res, restart := Run(context.Background(), d, cfg)
+			if res.Status != provider.StatusFailed || restart {
+				t.Fatalf("must fail: %+v", res)
+			}
+			// The URL attempt's code leads, then each attempt's own reason.
+			if lead := tc.want + ": server copy: " + DetailStale + ":"; !strings.HasPrefix(res.Detail, lead) {
+				t.Errorf("detail %q does not lead with %q", res.Detail, lead)
+			}
+			if !strings.Contains(res.Detail, "; origin: "+tc.want+":") {
+				t.Errorf("detail %q does not name the URL attempt's %s", res.Detail, tc.want)
+			}
+			if got := l.onDisk(l.exe); got != oldBinary {
+				t.Errorf("the running binary was touched: %q", got)
+			}
+		})
+	}
+}
+
+// With nowhere to fall back to, the refusal of the pair is the whole story,
+// and it reads exactly as it did before there was a fallback.
+func TestRunReportsARefusedPairAsItIsWhenThereIsNoURL(t *testing.T) {
+	l := newLab(t)
+	cfg := l.cfg()
+	cfg.DefaultManifestURL = ""
+	d := l.served(Desired{Version: "0.4.2"}, l.leafKey, l.leafPEM, expired)
+	res, restart := Run(context.Background(), d, cfg)
+	if res.Status != provider.StatusFailed || restart {
+		t.Fatalf("must fail: %+v", res)
+	}
+	if want := DetailStale + ": the manifest has expired"; res.Detail != want {
+		t.Errorf("detail %q, want %q", res.Detail, want)
 	}
 }
 

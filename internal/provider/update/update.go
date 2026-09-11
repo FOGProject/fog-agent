@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/FOGProject/fog-agent/internal/provider"
@@ -33,7 +34,8 @@ type Desired struct {
 	// envelope: base64 of the exact bytes the server downloaded. A server
 	// that syncs releases sends them, so a host with no internet access
 	// can still verify. They get no more trust than a mirror does: every
-	// check below runs on them unchanged. Used only as a pair.
+	// check below runs on them unchanged. Used only as a pair, and a pair
+	// that is refused falls back once to the manifest URL.
 	Manifest  string `json:"manifest,omitempty"`
 	Signature string `json:"signature,omitempty"`
 	// Artifact is the payload id of the server's copy of this host's
@@ -166,50 +168,9 @@ func Run(ctx context.Context, d Desired, cfg Config) (provider.Result, bool) {
 		}
 	}
 
-	// The pair the server sent, when it sent a usable one, is checked
-	// exactly as a download would be. Otherwise ask the manifest URL.
-	body, envRaw, ok := inline(d)
-	if !ok {
-		url := d.ManifestURL
-		if url == "" {
-			url = cfg.DefaultManifestURL
-		}
-		if url == "" {
-			return failed(DetailNoArtifact + ": no manifest url"), false
-		}
-		var err error
-		if body, err = fetchLimited(ctx, cfg, url, maxManifest); err != nil {
-			return failed(DetailFetch + ": manifest: " + err.Error()), false
-		}
-		if envRaw, err = fetchLimited(ctx, cfg, url+".sig", maxManifest); err != nil {
-			return failed(DetailFetch + ": signature: " + err.Error()), false
-		}
-	}
-	var env release.Envelope
-	if err := json.Unmarshal(envRaw, &env); err != nil {
-		return failed(DetailSignature + ": envelope is not readable"), false
-	}
-
-	m, err := release.Verify(body, &env, cfg.Roots, now)
-	if err != nil {
-		return failed(reasonFor(err)), false
-	}
-	seen, _ := LoadSequence(cfg.StateDir)
-	if err := release.Fresh(m, seen); err != nil {
-		return failed(fmt.Sprintf("%s: sequence %d, already accepted %d",
-			DetailStale, m.Sequence, seen)), false
-	}
-	// Raise the floor as soon as a manifest is accepted, not when an
-	// update succeeds. The floor is about which manifests may be shown to
-	// this agent again, and a download that fails afterwards does not
-	// make an old manifest acceptable once more.
-	if err := SaveSequence(cfg.StateDir, m.Sequence); err != nil {
-		return failed(DetailCannotArm + ": recording the manifest sequence: " + err.Error()), false
-	}
-	art, err := m.Find(d.Version, cfg.GOOS, cfg.GOARCH)
-	if err != nil {
-		return failed(fmt.Sprintf("%s: %s for %s/%s is not in the manifest",
-			DetailNoArtifact, d.Version, cfg.GOOS, cfg.GOARCH)), false
+	m, art, reason := manifestFor(ctx, d, cfg, now)
+	if reason != "" {
+		return failed(reason), false
 	}
 
 	staged, err := fetchArtifact(ctx, cfg, d.Artifact, art)
@@ -236,6 +197,85 @@ func Run(ctx context.Context, d Desired, cfg Config) (provider.Result, bool) {
 	}
 	return provider.Result{Status: provider.StatusApplied,
 		Detail: fmt.Sprintf("%s -> %s, restarting", cfg.Current, d.Version)}, true
+}
+
+// manifestFor returns this host's entry from a manifest that passed every
+// check, or the detail to report. The pair the server sent comes first when
+// it sent a usable one. A pair that is refused falls back once to the
+// manifest URL: a server whose release sync stopped holds a copy that
+// expires, or one older than a sequence this host has seen, while the origin
+// is healthy. The URL's bytes get the same checks, so the fallback trusts
+// nothing the pair would not have had to prove.
+func manifestFor(ctx context.Context, d Desired, cfg Config, now time.Time) (*release.Manifest, *release.Artifact, string) {
+	url := d.ManifestURL
+	if url == "" {
+		url = cfg.DefaultManifestURL
+	}
+	body, envRaw, ok := inline(d)
+	if !ok {
+		if url == "" {
+			return nil, nil, DetailNoArtifact + ": no manifest url"
+		}
+		return fromURL(ctx, d, cfg, now, url)
+	}
+	m, art, served, refused := accept(d, cfg, now, body, envRaw)
+	if !refused || url == "" {
+		return m, art, served
+	}
+	m, art, origin := fromURL(ctx, d, cfg, now, url)
+	if origin == "" {
+		return m, art, ""
+	}
+	// The code is the URL attempt's, because that is the copy this host
+	// was last unable to use. Both reasons follow, as for the artifact.
+	code, _, _ := strings.Cut(origin, ":")
+	return nil, nil, code + ": server copy: " + served + "; origin: " + origin
+}
+
+func fromURL(ctx context.Context, d Desired, cfg Config, now time.Time, url string) (*release.Manifest, *release.Artifact, string) {
+	body, err := fetchLimited(ctx, cfg, url, maxManifest)
+	if err != nil {
+		return nil, nil, DetailFetch + ": manifest: " + err.Error()
+	}
+	envRaw, err := fetchLimited(ctx, cfg, url+".sig", maxManifest)
+	if err != nil {
+		return nil, nil, DetailFetch + ": signature: " + err.Error()
+	}
+	m, art, reason, _ := accept(d, cfg, now, body, envRaw)
+	return m, art, reason
+}
+
+// accept runs every check on one manifest and its envelope and finds this
+// host's entry. refused is true when the bytes failed a check, which another
+// copy could pass. It is false for a failure of this machine's own state,
+// which no other copy would fix.
+func accept(d Desired, cfg Config, now time.Time, body, envRaw []byte) (*release.Manifest, *release.Artifact, string, bool) {
+	var env release.Envelope
+	if err := json.Unmarshal(envRaw, &env); err != nil {
+		return nil, nil, DetailSignature + ": envelope is not readable", true
+	}
+	m, err := release.Verify(body, &env, cfg.Roots, now)
+	if err != nil {
+		return nil, nil, reasonFor(err), true
+	}
+	seen, _ := LoadSequence(cfg.StateDir)
+	if err := release.Fresh(m, seen); err != nil {
+		return nil, nil, fmt.Sprintf("%s: sequence %d, already accepted %d",
+			DetailStale, m.Sequence, seen), true
+	}
+	// Raise the floor as soon as a manifest is accepted, not when an
+	// update succeeds. The floor is about which manifests may be shown to
+	// this agent again, and a download that fails afterwards does not
+	// make an old manifest acceptable once more.
+	if err := SaveSequence(cfg.StateDir, m.Sequence); err != nil {
+		return nil, nil, DetailCannotArm + ": recording the manifest sequence: " + err.Error(), false
+	}
+	art, err := m.Find(d.Version, cfg.GOOS, cfg.GOARCH)
+	if err != nil {
+		return nil, nil, fmt.Sprintf("%s: %s for %s/%s is not in the manifest",
+			DetailNoArtifact, d.Version, cfg.GOOS, cfg.GOARCH), true
+	}
+	return m, art, "", false
 }
 
 // reasonFor maps a verification error to the word the server records.
