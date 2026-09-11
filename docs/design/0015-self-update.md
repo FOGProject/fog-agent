@@ -6,6 +6,9 @@ central signed manifest, the anonymous check, the "unreachable central is a
 log line" rule and decision 1's "the admin decides, not the agent" all stand
 and are what this design is built on.
 
+Amended 2026-09-11: update modes and rings (sections 2.2 and 7), and
+server-served updates (section 5).
+
 The change to 0001 §9 is one row: **applying is a desired-state block, not a
 task an admin queues.** Everything else in the agent converges from desired
 state; making the one dangerous operation the exception would have been the
@@ -75,8 +78,10 @@ rule. No new route.
 
 | Field | Meaning |
 |---|---|
-| `desired` | An exact version. Never `latest`. See 2.2 |
-| `manifest_url` | Optional. Where the signed release manifest lives. Absent means the URL compiled into the binary. Present is how a site points at an internal mirror or an air-gapped copy |
+| `desired` | An exact version. Never `latest`: the server resolves `latest` to a version before it answers. See 2.2 |
+| `manifest_url` | Optional. Where the signed release manifest lives. Absent means the URL compiled into the binary. Present is how a site points at an internal mirror. On its own it does not serve a site with no internet access; see section 5 |
+| `manifest`, `signature` | Optional, a pair, added 2026-09-11. Base64 of the exact manifest and envelope bytes the server synced. The agent verifies them instead of fetching `manifest_url`. See section 5 |
+| `artifact` | Optional, added 2026-09-11. The payload id of the server's cached file for this host's platform. See section 5 |
 
 The capability is listed only when the resolved desired version is
 non-empty, so a server that has never set one describes no block and the
@@ -84,13 +89,39 @@ agent has nothing to do. **The feature is off until an admin turns it on**,
 which is the rule 0010 and 0011 already hold themselves to: nothing begins
 managing a machine because somebody upgraded their server.
 
-### 2.2 `latest` is refused, deliberately
+### 2.2 The agent refuses `latest`; the server resolves it
 
-`desired` is an exact version and the agent rejects anything else. `latest`
-delegates the decision to whatever central published this morning, which is
-precisely the fog-client defect design 0001 §1 names — "silent in-place
-self-update from every FOG server". The whole point of an admin-set desired
-version is that a human chose the number and can choose a different one.
+Amended 2026-09-11. `desired` is still an exact version, and the agent
+still rejects anything else. What changed is who picks the number.
+
+The first draft refused `latest` everywhere. Its reason was sound: `latest`
+hands the decision to whatever central published that morning, which is the
+fog-client defect design 0001 §1 names. The cost showed up in the field. A
+site that set 0.1.7 stayed on 0.1.7 until an admin found the setting again,
+and every release needed every admin to act.
+
+The server now holds a mode, and an admin chooses it:
+
+| `FOG_AGENT_UPDATE_MODE` | Meaning |
+|---|---|
+| `off` | The default. No host updates. Nothing starts managing agent versions because a server was upgraded |
+| `pinned` | Every host follows `FOG_AGENT_DESIRED_VERSION`, an exact version |
+| `latest` | Each host follows the newest published version whose ring delay has passed (section 7) |
+
+A human still makes the decision. In `latest` mode the decision is the
+policy and the ring delays, not each version number.
+
+**The server resolves `latest`, not the agent.** This reverses the
+2026-09-03 decision that the server does no manifest handling. The reason
+is the installed base. An agent that resolved `latest` itself would need a
+build that understands it, and agents 0.1.2 to 0.1.7 refuse `latest` as
+`bad_desired_version`. Every site already on 0.1.7 would have to pin once by
+hand. A server that resolves it sends those agents an exact version, which
+they already accept.
+
+The server gains no power from this. It already chose which published
+version a host runs. It still cannot publish one, because the agent checks
+every manifest against the root compiled into it.
 
 ### 2.3 The agent's state machine
 
@@ -440,28 +471,53 @@ their documentation on supported artifact types.
 
 ## 5. Where the artifacts come from
 
-**Central, named by the manifest. The FOG server is not a binary
-distribution point.**
+**The FOG server first, then the origin the manifest names.** Amended
+2026-09-11.
 
-Rejected: `GET /agent/v1/payload/update/{id}`.
+The first draft said the FOG server is not a binary distribution point. It
+rejected `GET /agent/v1/payload/update/{id}` and answered the bandwidth and
+air-gap cases with `manifest_url`: copy the release assets and the signed
+manifest to a web server, and point the block at it.
 
-- It passes the route rule mechanically (`update` is not in
-  `Route::$validClasses`, so `tests/agent-route-nouns.test.php` would not
-  fire), but the `{id}` names nothing. There is no row. Inventing an
-  `agentRelease` row to have an id is inventing a noun to satisfy a path,
-  which is the rule being followed backwards.
-- It makes every FOG server a software distribution point again — the
-  first row of the "what is wrong with fog-client" table in 0001 §1.
-- The server would have to fetch and store 10 MB per platform per version,
-  and the payload route's existing implementation streams from a storage
-  node over FTP (`Agent/Snapins.php:205`), which is the wrong plumbing for
-  a file that did not come from a storage node.
+**That answer was wrong for an air gap.** The manifest carries each
+artifact's URL inside its signed bytes, and the agent downloaded from that
+URL (`download()` in `internal/provider/update/update.go` used `art.URL`).
+So a mirror moved the manifest fetch and nothing else. Every host still went
+to GitHub for the file, and a mirror cannot rewrite those URLs without
+breaking the signature.
 
-The bandwidth and air-gap cases are answered by `manifest_url` instead: an
-admin copies the release assets and the signed manifest to any static
-webserver — including the FOG server's own `management/other/` — and points
-the block at it. The mirror is untrusted by construction, so this needs no
-review, no permission model and no code beyond the setting.
+### 5.1 Server-served updates
+
+- **A daemon syncs releases.** `FOGAgentReleaseSync` fetches the signed
+  manifest and its signature, and keeps their exact bytes. It records when
+  this server first saw each version. Ring delays count from that time
+  (section 7). The sync never runs inside an agent poll.
+- **It caches only what hosts need.** It downloads the target versions
+  (pinned, `latest` per ring, and host overrides) and every version a host
+  currently runs, so a rollback target is on hand. It downloads them only
+  for the OS and architecture pairs its enrolled hosts report.
+- **Agents fetch over mTLS.** The `update` block carries the manifest and
+  signature inline, and `artifact` names the cached file. The agent fetches
+  that file from `GET /agent/v1/payload/update/{id}` over its client
+  certificate.
+- **The origin is the fallback.** Any failure of the server's copy falls
+  back once to the URL in the manifest entry. A host with no internet access
+  never needs the origin while its server holds a good copy.
+- **Trust is unchanged.** The agent verifies the inline manifest against its
+  compiled root and hashes the file against the manifest entry, exactly as
+  for a download. A compromised server can serve wrong bytes, and the agent
+  refuses them.
+
+The first draft's three objections, and why they no longer hold:
+
+| Objection | Now |
+|---|---|
+| The `{id}` names nothing; a row invented to have an id is the route rule followed backwards | The server has to know which files it holds and which to delete. The id names one of those files |
+| It makes every FOG server a software distribution point again, the first row of 0001 §1 | The fog-client defect was an unverified in-place update. The server now hands out files the agent verifies against a root the server does not hold, and it already chose the version |
+| 10 MB per platform per version, streamed from a storage node over FTP (`Agent/Snapins.php`) | The server stores only the platforms its hosts report. The FTP plumbing is the snapin implementation; the `update` payload streams from the server's own cache |
+
+Agents older than these fields ignore them and download from the origin, as
+before.
 
 **TLS for the manifest and artifact fetch** uses the system roots plus the
 FOG CA, which is the exception design 0003 already made for the Chocolatey
@@ -543,7 +599,10 @@ hand.
 
 ## 7. Staged rollout
 
-Yes, and it needs no new mechanism — but not the one I first reached for.
+Amended 2026-09-11. The first draft staged a rollout by mass-editing host
+overrides, and it said no wave machinery was needed. `pinned` mode still
+works that way. `latest` mode needs rings, because a version that reaches
+every host at once is the one failure nothing recovers from (section 6.2).
 
 **A group is the tag concept** (fogproject ADR 0038 decision 16), so the
 obvious move is a `groupAgentDesiredVersion` column resolved across a host's
@@ -557,12 +616,30 @@ imperative half is *leaving* the group page for mass edit driven from the
 host list (ADR 0038 decision 8). Adding a group scalar now would be adding a
 column to the pile that ADR is removing.
 
-So the shape is two values, no group column, no resolver:
+The same test decides where a ring lives: a host is in exactly one ring.
+So the shape is settings on the server and columns on the host, with no
+group column and no group resolver:
 
-| Source | Column | Rule |
+| Source | Setting or column | Rule |
 |---|---|---|
-| Global | `FOG_AGENT_DESIRED_VERSION` | the fleet's version. Empty means the feature is off |
-| The host | `hostAgentDesiredVersion` | an **override**. Non-empty wins outright, including when it is lower |
+| Global | `FOG_AGENT_UPDATE_MODE` | `off`, `pinned` or `latest` (section 2.2). `off` is the default |
+| Global | `FOG_AGENT_DESIRED_VERSION` | the fleet's version in `pinned` mode |
+| Global | `FOG_AGENT_UPDATE_RINGS` | delays in days, one per ring, in ring order. The default is `0,3,7` |
+| The host | `hostAgentUpdateRing` | the host's ring. Empty means the last ring, so a new host is never a canary by accident |
+| The host | `hostAgentDesiredVersion` | an **override**. Non-empty wins outright over every mode, including when it is lower |
+
+**How the server resolves `latest` for one host:**
+
+- It records when it first saw each version in the manifest.
+- A version is eligible once that time plus the host's ring delay has
+  passed. The target is the newest eligible version.
+- If no version is eligible yet, the host stays where it is.
+- The target is never below the version the host runs, unless that version
+  has left the manifest. Withdrawing a release deletes its key from the
+  manifest (`docs/RELEASING.md`), so hosts on it drop back with nobody
+  acting.
+- A version marked `security: true` waits for its ring like any other. A fix
+  that must go out now is a pin.
 
 An override wins outright rather than being a floor because **fleet-wide
 rollback has to work**: if the resolved value were `max(global, host)`, a
@@ -571,7 +648,22 @@ and section 9's whole recovery story dies on the machines most likely to
 need it.
 
 **Groups are still the lever, exactly as Tom said — they are the
-*selection*, not the storage.** A rollout is:
+*selection*, not the storage.**
+
+In `latest` mode a rollout is set up once:
+
+1. Filter the host list by the canary tag. Select all. Mass edit
+   `hostAgentUpdateRing` to 0.
+2. Repeat with the next tag and ring 1. Every other host stays in the last
+   ring.
+3. Each new release then moves by itself: ring 0 once the server first sees
+   it, and each later ring after its delay. Watch the version column and the
+   update-state column while it moves.
+
+To stop a bad release in `latest` mode, switch to `pinned` at the good
+version, or set overrides on the hosts that already have it.
+
+In `pinned` mode a rollout is the first draft's:
 
 1. Filter the host list by the tag. Select all. Mass edit
    `hostAgentDesiredVersion` to 0.4.2. Those hosts move; nothing else does.
@@ -589,10 +681,11 @@ holds a machine back. That is the copy problem ADR 0038 exists to complain
 about, and the mitigation is visibility, not cleverness: **the host list's
 update-state column says `override` when `hostAgentDesiredVersion` is set**,
 so "show me every host not following the fleet" is a filter, and clearing
-them is one mass edit.
+them is one mass edit. `hostAgentUpdateRing` has the same cost: a host added
+to a canary tag later needs one more mass edit.
 
-**No new wave or percentage machinery.** One setting, one column, and the
-mass edit and tag filter that already exist.
+**No percentage machinery.** Rings are a list of delays, and a host's ring
+is one column, set with the mass edit and tag filter that already exist.
 
 One agent-side addition: **jitter the artifact fetch by up to one poll
 interval.** 500 machines learning about a new version in the same 5-minute
@@ -694,6 +787,11 @@ Two things make the middle option carry its weakness:
 - The default is empty: a server that never sets a desired version never
   updates anything. Nobody gets this behavior by upgrading into it.
 
+Amended 2026-09-11: `latest` mode (section 2.2) is not the rejected first
+row. The agent does not take what central publishes. The server resolves a
+version after an admin chose the mode and the ring delays, and a release
+reaches the fleet ring by ring, not all at once. The default is still `off`.
+
 ## 12. Surfacing
 
 | Where | What | Cost |
@@ -764,7 +862,7 @@ it explicitly.
 | **Self-update by running the MSI on Windows** (`msiexec /i /qn`, which `build/upgrade-lab.ps1` proves works) | Keeps Add/Remove Programs honest and lets Windows Installer handle the service stop/start and its own transactional rollback. Rejected because **rollback is remove-then-install**: MajorUpgrade will not go backwards, so reverting means `/x` the new product then `/i` the old one, with a window where no agent is installed at all. That is the wrong tradeoff on the one path that exists to recover from a bad build. A binary rename is atomic and takes microseconds |
 | **A queued task, per 0001 §9's "Applying" row** | A task is a one-shot instruction; desired version is a *state* a host should hold. A task cannot express "and stay there", so a re-imaged machine coming back on an old version would need the task re-queued. Every other capability in this agent converges; this one should too |
 | **A new `/agent/v1/update` route** | Fails the route rule on its own terms: no new transport shape, no new trust boundary, no new verb. It is a new value in the existing poll answer |
-| **`GET /agent/v1/payload/update/{id}`** for the bytes | Section 5 |
+| **`GET /agent/v1/payload/update/{id}`** for the bytes | Rejected in the first draft, adopted 2026-09-11. Section 5 |
 | **Waiting for SignPath before shipping self-update** | Section 3.1. The agent is the verifier and trusts what was compiled into it, so a self-signed project root is a full-strength anchor for this job. SignPath solves Defender, which is a different problem on a different schedule |
 | **A bare Ed25519 public key compiled in, per 0001 §9's "minisign key"** | What this design said in its first draft, and what it was corrected from. It cannot rotate: the compiled-in thing and the signing thing are the same object, so a leaked key or a lost key is a new build for the entire installed base, and it forces a "compile in two keys" workaround for the loss case. A CA separates the two (3.3) for the same stdlib cost |
 | **Signing the manifest with the customer's FOG server CA** | Section 3.2. Per-installation, so it cannot verify across servers, and it is the key a compromised server holds |

@@ -666,6 +666,55 @@ hourly poll would otherwise warn somebody a minute before an event that
 already happened. It also produces no result on the poll that carries it:
 an idle timeout has no outcome until it fires.
 
+### Update
+
+Capability `update`, design 0015. No legacy module stands behind it. The
+server lists it when it has resolved an exact version for the host.
+
+```json
+"update": {
+  "desired": "0.1.8",
+  "manifest_url": "https://mirror.example.org/agent-stable.json",
+  "manifest": "eyJjaGFubmVsIjoic3RhYmxlIiwi...",
+  "signature": "eyJjaGFpbiI6WyItLS0tLUJFR0lO...",
+  "artifact": 12
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `desired` | An exact version. The agent refuses anything else, `latest` included, with `bad_desired_version`. The server turns its update mode and rings into a version before it answers (design 0015 §2.2) |
+| `manifest_url` | Optional. Where the signed manifest and its `.sig` live. Absent means the URL compiled into the agent |
+| `manifest`, `signature` | Optional, and a pair. Standard base64 of the exact bytes of the signed manifest and of its detached envelope, as the server downloaded them. With both present and both decodable, the agent verifies these bytes and does not fetch `manifest_url`. With either one missing or not decodable, the agent ignores both and fetches `manifest_url` |
+| `artifact` | Optional. The payload id of the server's copy of the file for this host's OS and architecture. Absent or 0 means the server holds no copy |
+
+The agent checks an inline pair exactly as it checks a downloaded one: the
+signature and chain against the root compiled into it, at the manifest's
+`signed` time; the sequence floor; the maximum signature age; `expires`; and
+the entry for `desired`, OS and architecture. A refusal carries the same
+detail as for a download. The agent does not retry a refused pair against
+`manifest_url`.
+
+**The file.** With `artifact` set, the agent fetches
+`GET /agent/v1/payload/update/{artifact}` over its client certificate. It
+hashes the bytes as they stream, against the size and sha256 in the manifest
+entry. Any failure of that copy (transport, status, size or hash) falls back
+once to the `url` in the manifest entry. The agent reports a failure only
+when the fallback fails too, and the detail names both attempts:
+
+| Server copy and origin | Detail code |
+|---|---|
+| both served bytes the manifest does not describe | `hash_mismatch` |
+| any other pair of failures | `fetch_failed` |
+
+The server's copy is not secret. The same bytes are on the release page, and
+the agent trusts them only once the hash matches.
+
+A server that sends none of `manifest`, `signature` or `artifact` gets the
+behavior agents had before these fields existed. An agent older than these
+fields ignores them and downloads from the manifest URL. That is why the
+origin URL stays inside the signed manifest.
+
 ## POST /agent/v1/result
 
 What one provider did at one revision, or what happened to one thing

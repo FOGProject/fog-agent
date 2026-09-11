@@ -793,7 +793,9 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 			// window where a half-applied update meets a reboot.
 			out.say("update: deferred, a reboot is pending")
 		} else {
-			r, restart := update.Run(ctx, *desired.Update, updateConfig(st))
+			cfg := updateConfig(st)
+			cfg.Payload = updatePayload(client)
+			r, restart := update.Run(ctx, *desired.Update, cfg)
 			out.say(fmt.Sprintf("update: %s (%s)", r.Status, r.Detail))
 			if _, err := client.Result(ctx, enroll.ResultRequest{
 				Revision: desired.Revision, Capability: "update", Status: r.Status, Detail: r.Detail,
