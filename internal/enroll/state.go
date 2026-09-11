@@ -217,8 +217,14 @@ func Load(dir string) (*State, error) {
 // carries the original machine's key, and the SMBIOS tuple is how the copy
 // finds out it is not that machine. The live identity is always recorded so
 // the next start compares against what was actually presented.
+//
+// A new key also resets config.json to how to reach the server. Everything
+// else in it -- host id, applied revision, fact hashes, queued reboots and
+// session closures -- describes the host record the old key was bound to.
+// A clone that kept the hashes would never send its own software list,
+// because it matches the one the original machine already sent.
 func (st *State) EnsureKey(live identity.Host) (regenerated bool, err error) {
-	if st.Key != nil && st.Identity != nil && sameMachine(*st.Identity, live) {
+	if st.Key != nil && st.Identity != nil && (sameMachine(*st.Identity, live) || unreadable(live)) {
 		return false, nil
 	}
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -243,18 +249,33 @@ func (st *State) EnsureKey(live identity.Host) (regenerated bool, err error) {
 	// A new key means any old certificate is for a key we no longer hold.
 	_ = os.Remove(filepath.Join(st.Dir, certFile))
 	st.Key, st.Identity, st.Cert = key, &live, nil
+	st.Config = Config{ServerURL: st.Config.ServerURL, PendingToken: st.Config.PendingToken}
+	if err := st.SaveConfig(); err != nil {
+		return true, err
+	}
 	return true, nil
 }
 
 // sameMachine compares only the SMBIOS tuple. MACs change with docks and
-// USB adapters and must not trigger a re-enroll. Two hosts whose tuple is
-// entirely empty or placeholder (some VMs) compare equal here; the server's
-// resolver, not this guard, is what separates those.
+// USB adapters and must not trigger a re-enroll. Two machines whose tuple is
+// entirely empty or the same placeholder (some VMs, some white-box boards)
+// compare equal here, so a clone between them keeps the key; nothing on the
+// wire separates those, and the image must be captured without the key.
 func sameMachine(a, b identity.Host) bool {
 	return a.SystemUUID == b.SystemUUID &&
 		a.SystemSerial == b.SystemSerial &&
 		a.BoardSerial == b.BoardSerial &&
 		a.ChassisAsset == b.ChassisAsset
+}
+
+// unreadable is a read that returned no identity and said why. That is a
+// firmware call that failed, not evidence of another machine. Now the guard
+// runs on every start, treating it as a clone would throw away a working
+// enrollment and leave the host waiting for an admin. An empty tuple with
+// no warning is a real reading and is compared like any other.
+func unreadable(h identity.Host) bool {
+	return h.SystemUUID == "" && h.SystemSerial == "" && h.BoardSerial == "" &&
+		h.ChassisAsset == "" && len(h.Warnings) > 0
 }
 
 // CSR builds a certificate request for the key. The subject is a

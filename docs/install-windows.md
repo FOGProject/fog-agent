@@ -116,6 +116,29 @@ re-enroll. On an upgrade the properties are optional. Uninstalling removes
 the service and the binary and leaves the state directory (this machine's
 key and certificate) in place, so a reinstall picks the same identity up.
 
+## Capturing an image with the agent installed
+
+Capture the machine as it is. Sysprep is not needed, and it changes nothing
+the agent uses.
+
+The image carries the state directory: the key, the certificate, and the
+host they were issued to. On every start the agent compares the machine's
+SMBIOS identity (UUID, system serial, board serial, asset tag) with the
+identity the key was made for. On another machine they differ. The agent
+then discards the key, the certificate and that host's settings, and
+enrolls as itself. The server finds the host by SMBIOS, then by MAC. If this
+server deployed to that host in the last `FOG_AGENT_ENROLL_DEPLOY_WINDOW`
+hours (24 by default), the request is approved with no click. Otherwise it
+waits under Hosts > Pending Agents.
+
+Before v0.1.7 the agent made this check only when it had no certificate. So
+every clone polled as the captured machine and took its name.
+
+The check cannot separate machines whose firmware has no UUID or serial of
+its own: all empty, or all the same placeholder. For those, stop the
+service and delete `key.pem` and `cert.pem` from `%ProgramData%\FOG\agent`
+immediately before capture.
+
 The MSI is built on Linux with `build/msi.sh` (needs `wixl` from
 msitools); no Windows is needed to produce it.
 
