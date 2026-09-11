@@ -201,10 +201,14 @@ func openState(f commonFlags) (*enroll.State, []byte, error) {
 	return st, caPEM, nil
 }
 
+// readIdentity reads the live SMBIOS identity. A variable so a test can
+// present a machine other than the one it runs on.
+var readIdentity = identity.Read
+
 // enrollRequest reads the machine's identity, settles the key for it and
 // builds the request protocol-v1.md describes.
 func enrollRequest(st *enroll.State, token string, out *sayer) (enroll.Request, error) {
-	live := identity.Read()
+	live := readIdentity()
 	regen, err := st.EnsureKey(live)
 	if err != nil {
 		return enroll.Request{}, err
@@ -331,6 +335,22 @@ func runAgent(ctx context.Context, args []string) error {
 		return err
 	}
 	out := &sayer{}
+	// The clone and reimage guard (design doc 4.4) runs on every start, not
+	// only on the way into an enrollment. A captured image carries the
+	// certificate as well as the key, so a clone never went that way: it
+	// polled as the machine the image was captured from, and applied that
+	// host's name, tasks and snapins to itself.
+	hadKey := st.Key != nil
+	regen, err := st.EnsureKey(readIdentity())
+	if err != nil {
+		return err
+	}
+	switch {
+	case regen && hadKey:
+		out.say("this state was made on another machine (a cloned or reimaged disk); generated a new key and enrolling as this machine")
+	case regen:
+		out.say("generated a new key for this machine's identity")
+	}
 	watch := &sessionWatcher{}
 	for {
 		// Checked every time round, not only at start. A binary that
