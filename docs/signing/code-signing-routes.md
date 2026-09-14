@@ -87,6 +87,12 @@ name.
 The cost of trying: one email. Nothing is burning while we wait -- v0.1.x is
 pre-release and `release.yml` labels the artifacts unsigned.
 
+**Status 2026-09-14:** the reply went out the week of 2026-09-07 and has had
+no answer. Silence is not a second rejection; the reply is a request for a
+re-review, and that is slower than a form triage. Send one short follow-up on
+the same thread. If there is still no answer by 2026-09-28, stop waiting and
+start the Azure route below.
+
 ## The fallback if that fails: Azure Artifact Signing
 
 Cheapest of the routes that actually sign unattended, and the only one with a
