@@ -44,6 +44,7 @@ later restarts reputation from zero.
 | GlobalSign | not published | **No -- organization only** | -- |
 | SignPath.io paid (Starter) | $500 | **No -- EV cert is org-only** | Yes |
 | Go back to SignPath Foundation | free | n/a | Yes |
+| **OSSign** | free | n/a -- signs with its own certificate | Yes, but it builds in its own repo |
 
 Azure Artifact Signing is the former "Azure Trusted Signing", renamed in 2026
 (<https://learn.microsoft.com/azure/artifact-signing/>). The $9.99/month Basic
@@ -53,9 +54,9 @@ JavaScript and the number was **not** read off it -- confirm before budgeting.
 Ruled out entirely: **sigstore does not produce Authenticode signatures** --
 Fulcio is not in the Microsoft Trusted Root Program, so a sigstore-signed
 binary still shows "Unknown Publisher". No Linux Foundation, Google or GitHub
-free Authenticode programme was found. SignPath Foundation remains the only
-free Authenticode CA programme for open source, which is why its rejection
-costs us.
+free Authenticode programme was found. The 2026-09-09 research said SignPath
+Foundation was the only free programme. That was wrong: OSSign is a second
+one (see below).
 
 SignPath's own paid tiers are published at
 <https://docs.signpath.io/change-subscription>: Starter $500/yr, Basic Single
@@ -92,6 +93,57 @@ no answer. Silence is not a second rejection; the reply is a request for a
 re-review, and that is slower than a form triage. Send one short follow-up on
 the same thread. If there is still no answer by 2026-09-28, stop waiting and
 start the Azure route below.
+
+## The second free route: OSSign
+
+Read from primary sources on 2026-09-14: the rendered <https://ossign.org>
+page, the `OSSign` GitHub organization, and the signature on a binary it
+signed.
+
+**Applications are suspended.** The live page says: "Applications are
+currently suspended due to a high workload and large backlog ... Please check
+back in a few weeks." The contact form does not take applications.
+
+What it is: a volunteer project in Sweden with one listed maintainer
+(`scheibling`), backed by Scheibling Consulting AB and Cloudyne Systems. The
+GitHub organization dates from 2025-03.
+
+**The publisher Windows shows is Cloudyne Systems.** The x64 installer of
+`vadimgrn/usbip-win2` v.0.9.8.0 carries an EV certificate for
+`CN=Cloudyne Systems (Scheibling Consulting AB)`, issued by
+`GlobalSign GCC R45 EV CodeSigning CA 2020`, valid until 2027-05-03. Like
+SignPath Foundation, it puts no maintainer's name on the artifact. Their FAQ
+says projects sign under the shared certificate, and a dedicated one is only
+for large, long-standing projects.
+
+Their criteria, checked against fog-agent:
+
+| Criterion | fog-agent |
+|---|---|
+| OSI-approved license | Yes -- GPL-3.0 |
+| "an absolute minimum of 6 months of activity on your account, organization and project" | The account and `FOGProject` (2014) pass. `FOGProject/fog-agent` was created 2026-09-03. If "project" means that repository, it qualifies on 2027-03-03. This is the SignPath trap again: point the application at `FOGProject/fogproject`. |
+| Public build pipeline with code quality checks | Yes -- `ci.yml` runs gofmt, go vet on every platform, and go test |
+| No political or offensive-security purpose | Yes |
+
+**Their build model differs from SignPath's.** OSSign sets up a companion
+repository in its own organization. That repository fetches our source,
+builds it, signs the result, and hands it back. Our workflow dispatches the
+request and polls with `OSSIGN_USER` / `OSSIGN_TOKEN`. So the binary that gets
+signed comes from a build OSSign controls, not from our `release.yml` run. It
+is public, but it is a second pipeline to review, and the `build` -> `sign`
+split in `release.yml` does not carry over as is.
+
+The risks against SignPath Foundation:
+
+- One listed maintainer. If the project stops, the publisher changes, and
+  SmartScreen reputation starts again from zero.
+- The publisher is a private consultancy, not a known foundation. An
+  administrator sees an unfamiliar Swedish company sign a LocalSystem service
+  that writes firmware variables.
+
+Order of preference: SignPath Foundation, then OSSign, then Azure. Both free
+routes keep a maintainer's name off the certificate. SignPath wins on its
+nonprofit publisher name and because it signs our own CI artifact.
 
 ## The fallback if that fails: Azure Artifact Signing
 
