@@ -7,6 +7,7 @@
 package snapin
 
 import (
+	"archive/zip"
 	"context"
 	"crypto/sha512"
 	"encoding/hex"
@@ -36,7 +37,16 @@ type Task struct {
 	Timeout     int    `json:"timeout"` // seconds, 0 for none
 	Action      string `json:"action"`  // "", "reboot", "shutdown"
 	AbortOnFail bool   `json:"abort_on_fail"`
+	// Pack marks a snapin pack: File is a zip, and the run is RunWith
+	// with RunWithArgs inside the unzipped folder, which Placeholder
+	// names. Args is not used, as in the legacy client.
+	Pack bool `json:"pack"`
 }
+
+// Placeholder is the token a pack's RunWith and RunWithArgs use for the
+// folder the pack is unzipped to. The server's pack templates put the
+// separator after it ("[FOG_SNAPIN_PATH]\setup.exe").
+const Placeholder = "[FOG_SNAPIN_PATH]"
 
 // Statuses: whether the payload ran at all. The exit code is the program's
 // own and is only meaningful for StatusRan; the server maps it to an
@@ -94,13 +104,25 @@ func Run(ctx context.Context, t Task, dir string, fetch Fetch) Result {
 		runCtx, cancel = context.WithTimeout(ctx, time.Duration(t.Timeout)*time.Second)
 	}
 	defer cancel()
-	cmd, err := command(runCtx, t, path)
+	var cmd *exec.Cmd
+	if t.Pack {
+		// A pack runs in its own unzipped folder, as the legacy client
+		// ran it, so a script can reach its siblings by relative path.
+		pack := filepath.Join(work, "pack")
+		if err = unzip(path, pack); err != nil {
+			return Result{Fetched: true, Status: StatusCannotRun, Details: "unzip: " + err.Error()}
+		}
+		if cmd, err = packCommand(runCtx, t, pack); err == nil {
+			cmd.Dir = pack
+		}
+	} else if cmd, err = command(runCtx, t, path); err == nil {
+		cmd.Dir = work
+	}
 	if err != nil {
 		return Result{Fetched: true, Status: StatusCannotRun, Details: err.Error()}
 	}
 	out := procs.NewTail(MaxDetails)
 	cmd.Stdout, cmd.Stderr = out, out
-	cmd.Dir = work
 	// A payload that spawned children and was killed leaves them holding
 	// the output pipe; do not wait on them past the kill.
 	cmd.WaitDelay = 2 * time.Second
@@ -140,6 +162,56 @@ func download(ctx context.Context, path string, fetch Fetch) (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// unzip extracts the pack at path into dir. An entry whose name would
+// land outside dir is refused, not skipped: the pack is not what it
+// claims to be, and running part of it is worse than running none.
+func unzip(path, dir string) error {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		name := filepath.FromSlash(f.Name)
+		if !filepath.IsLocal(name) {
+			return fmt.Errorf("entry %q leaves the pack folder", f.Name)
+		}
+		target := filepath.Join(dir, name)
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0o700); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+			return err
+		}
+		if err := extract(f, target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// extract writes one entry, keeping its permission bits so a packed
+// script stays executable on Unix.
+func extract(f *zip.File, target string) error {
+	r, err := f.Open()
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	w, err := os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, f.Mode().Perm()|0o600)
+	if err != nil {
+		return err
+	}
+	_, err = io.Copy(w, r)
+	if cerr := w.Close(); err == nil {
+		err = cerr
+	}
+	return err
 }
 
 // tail keeps the last max bytes written: the end of the output is where

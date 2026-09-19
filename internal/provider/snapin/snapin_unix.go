@@ -7,6 +7,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/procs"
 	"os"
 	"os/exec"
+	"strings"
 )
 
 // command builds the run: the interpreter with its own arguments, then
@@ -27,6 +28,20 @@ func command(ctx context.Context, t Task, path string) (*exec.Cmd, error) {
 	// Its own process group, killed as a group on timeout: a script's
 	// children (an installer it launched) go with it, and cannot keep the
 	// task alive past the deadline the snapin was given.
+	procs.Attach(cmd)
+	return cmd, nil
+}
+
+// packCommand builds a pack's run: RunWith with RunWithArgs, the
+// placeholder replaced by dir. It is replaced after the split, so a dir
+// with a space in it stays one argument even where the admin left the
+// placeholder unquoted.
+func packCommand(ctx context.Context, t Task, dir string) (*exec.Cmd, error) {
+	args := splitArgs(t.RunWithArgs)
+	for i := range args {
+		args[i] = strings.ReplaceAll(args[i], Placeholder, dir)
+	}
+	cmd := exec.CommandContext(ctx, strings.ReplaceAll(t.RunWith, Placeholder, dir), args...)
 	procs.Attach(cmd)
 	return cmd, nil
 }

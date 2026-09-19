@@ -331,7 +331,8 @@ deduplicated. The agent runs them in that order and never re-sorts.
   "snapins": [
     {"task": 41, "snapin": 7, "name": "Install 7-Zip", "file": "7z.msi",
      "size": 1834496, "sha512": "…", "args": "/qn", "run_with": "msiexec.exe",
-     "run_with_args": "/i", "timeout": 600, "action": "", "abort_on_fail": false}
+     "run_with_args": "/i", "timeout": 600, "action": "", "abort_on_fail": false,
+     "pack": false}
   ]
 }
 ```
@@ -342,7 +343,7 @@ For each task, in order:
 |---|---|---|
 | fetch | `GET /agent/v1/payload/snapin/{task}` | the task must belong to this host's own job (404 otherwise, the same message as "no such task"); marks the task, the job and the host's task in progress; streams the bytes from the storage node over the web tier's own FTP session, so the agent trusts only the server's certificate |
 | verify | | the agent hashes as it downloads and refuses a sha512 that is not the one declared. That refusal is reported as status `hash_mismatch`, not retried: the file the server has is not the file it described, and the admin needs to see it |
-| run | | `run_with run_with_args file args`, or the file itself when `run_with` is empty (made executable on Unix); `timeout` seconds then the whole process group is killed, status `timeout`; a payload that could not start is `cannot_run` |
+| run | | `run_with run_with_args file args`, or the file itself when `run_with` is empty (made executable on Unix). A `pack` is a zip: it is unzipped, `[FOG_SNAPIN_PATH]` in `run_with` and `run_with_args` becomes that folder, and `run_with run_with_args` runs inside it; `args` is not used, as in the legacy client. On Windows the arguments reach CreateProcess as typed, `%VAR%` expanded, never split and re-quoted. `timeout` seconds then the whole process group is killed, status `timeout`; a payload that could not start, or a pack that will not unzip, is `cannot_run` |
 | report | `POST /agent/v1/result` with `item: {id: task, status, exit_code, details}` | `status` is `ran` or one of the three above; `exit_code` is the program's own, untouched, meaningful only for `ran`; `details` the last 4 KB of output. The server answers `{"status":"ok","outcome":…}` |
 
 **Outcome, decided by the server.** A raw exit code says nothing by
