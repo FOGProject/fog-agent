@@ -11,3 +11,7 @@ import (
 func command(context.Context, Task, string) (*exec.Cmd, error) {
 	return nil, errors.New("snapins are not supported on this platform")
 }
+
+func packCommand(context.Context, Task, string) (*exec.Cmd, error) {
+	return nil, errors.New("snapins are not supported on this platform")
+}

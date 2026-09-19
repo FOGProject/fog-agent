@@ -3,6 +3,8 @@
 package snapin
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/sha512"
 	"encoding/hex"
@@ -85,6 +87,54 @@ func TestRunCleansUp(t *testing.T) {
 	Run(context.Background(), Task{ID: 6, File: "x.sh", SHA512: sum}, dir, fetch)
 	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
 		t.Fatalf("payload left behind: %v", entries)
+	}
+}
+
+// packOf zips files (name -> body) into a pack payload.
+func packOf(t *testing.T, files map[string]string) (Fetch, string) {
+	t.Helper()
+	var b bytes.Buffer
+	zw := zip.NewWriter(&b)
+	for name, body := range files {
+		w, err := zw.Create(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.WriteString(w, body)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return payload(b.String())
+}
+
+// TestRunPack: a pack is unzipped, the placeholder names that folder in
+// RunWith and RunWithArgs, the run starts inside it, and Args is not
+// passed, as in the legacy client (forum topic 18251).
+func TestRunPack(t *testing.T) {
+	fetch, sum := packOf(t, map[string]string{
+		"setup.sh":      ". ./lib/helper.sh; echo arg:$1 cwd:$(basename \"$PWD\") $(helper)\n",
+		"lib/helper.sh": "helper() { echo helped; }\n",
+	})
+	r := Run(context.Background(), Task{ID: 7, File: "office.zip", SHA512: sum, Pack: true,
+		RunWith: "sh", RunWithArgs: `"[FOG_SNAPIN_PATH]/setup.sh" one`, Args: "ignored"}, t.TempDir(), fetch)
+	if r.Status != StatusRan || r.ExitCode != 0 || !strings.Contains(r.Details, "arg:one cwd:pack helped") {
+		t.Fatalf("got %+v", r)
+	}
+}
+
+// TestRunPackRefusesAnEscapingEntry: a zip entry that climbs out of the
+// pack folder stops the whole pack before anything runs.
+func TestRunPackRefusesAnEscapingEntry(t *testing.T) {
+	dir := t.TempDir()
+	fetch, sum := packOf(t, map[string]string{"../evil.sh": "exit 0\n", "setup.sh": "exit 0\n"})
+	r := Run(context.Background(), Task{ID: 8, File: "p.zip", SHA512: sum, Pack: true,
+		RunWith: "sh", RunWithArgs: "[FOG_SNAPIN_PATH]/setup.sh"}, filepath.Join(dir, "snapins"), fetch)
+	if r.Status != StatusCannotRun || !strings.Contains(r.Details, "leaves the pack folder") {
+		t.Fatalf("got %+v", r)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "snapins", "evil.sh")); err == nil {
+		t.Fatal("escaping entry was written")
 	}
 }
 
