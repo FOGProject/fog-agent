@@ -24,6 +24,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/netboot"
 	"github.com/FOGProject/fog-agent/internal/printers"
 	"github.com/FOGProject/fog-agent/internal/provider"
+	"github.com/FOGProject/fog-agent/internal/provider/activation"
 	"github.com/FOGProject/fog-agent/internal/provider/autologout"
 	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
@@ -639,6 +640,15 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 			}
 			r = hostname.Ensure(*desired.Hostname)
 			force = desired.Hostname.Enforce
+		case "activation":
+			// Design 0016: install the host's product key and activate.
+			// A failed install holds the revision and is tried again next
+			// poll; an activation Windows could not finish is applied,
+			// because Windows retries that itself.
+			if desired.Activation == nil {
+				continue
+			}
+			r = activation.Ensure(ctx, *desired.Activation)
 		case "taskreboot":
 			// Not a provider: a waiting task is a reboot request, and
 			// a cancelled one withdraws it. The coordinator acts on it

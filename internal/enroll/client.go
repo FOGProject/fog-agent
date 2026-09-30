@@ -21,6 +21,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/inventory"
 	"github.com/FOGProject/fog-agent/internal/network"
 	"github.com/FOGProject/fog-agent/internal/printers"
+	"github.com/FOGProject/fog-agent/internal/provider/activation"
 	"github.com/FOGProject/fog-agent/internal/provider/autologout"
 	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
 	"github.com/FOGProject/fog-agent/internal/provider/hostname"
@@ -264,6 +265,11 @@ type DesiredState struct {
 	// capability is off for this host, which is different from a policy of
 	// zero minutes only in that it also clears whatever was stored.
 	AutoLogout *autologout.Policy `json:"autologout,omitempty"`
+	// Activation is the host's Windows product key (design 0016). Present
+	// only when the host has a valid key and enrolled as Windows; absent
+	// means do nothing, never uninstall. The key redacts itself the way
+	// the directory credential does.
+	Activation *activation.Desired `json:"activation,omitempty"`
 }
 
 // ResultRequest is what the agent reports for one capability.

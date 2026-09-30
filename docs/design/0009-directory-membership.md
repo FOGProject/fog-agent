@@ -419,7 +419,8 @@ through the same probe the LDAP plugin uses), `FOG_DIRECTORY_BASE_DN`,
   object, one parent, one operation.
 - **Not product-key activation.** `hostProductKey` rides the same legacy
   module by historical accident and has nothing to do with directories. It
-  belongs with `hostname` or on its own; either way, not here.
+  belongs with `hostname` or on its own; either way, not here. Design 0016
+  gives it its own capability.
 - **Not a replacement for `hostname`.** The rename stays where 0001 §7 put
   it. A rename of a joined machine has its own directory consequences and is
   a separate problem.

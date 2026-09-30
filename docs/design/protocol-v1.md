@@ -667,6 +667,30 @@ hourly poll would otherwise warn somebody a minute before an event that
 already happened. It also produces no result on the poll that carries it:
 an idle timeout has no outcome until it fires.
 
+### Activation
+
+Capability `activation` (module short name `hostnamechanger`, the module the
+legacy client activated from), design 0016. The host's product key:
+
+```json
+"activation": {"key": "XXXXX-XXXXX-XXXXX-XXXXX-XXXXX"}
+```
+
+`key` is the host's `hostProductKey`, decoded and sent in the hyphenated
+29-character form. The block is present only when that key is valid and the
+host enrolled as `windows`. An absent block means do nothing; the agent
+never uninstalls a key.
+
+The key is a secret on the agent, like the directory password: never logged,
+never stored, never in a result. It reaches the Software Licensing classes on
+stdin, not on a command line.
+
+| Result | When |
+|---|---|
+| `unchanged` | The installed key ends with the same five characters and Windows is licensed |
+| `applied` | The agent installed the key, activated, or both. An activation error after a good install is still `applied`, with the code in `detail`: Windows retries activation itself |
+| `failed` | The install was refused (wrong edition, bad key), or the platform is not Windows |
+
 ### Update
 
 Capability `update`, design 0015. No legacy module stands behind it. The
