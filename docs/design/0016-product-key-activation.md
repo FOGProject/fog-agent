@@ -1,7 +1,8 @@
 # 0016: Product-key activation
 
-Status: PROPOSED, 2026-09-30. Answers issue #23. Agreed in outline with Tom
-2026-09-30; no code yet.
+Status: BUILT 2026-09-30, not yet proven on a lab host. Answers issue #23.
+Agent `internal/provider/activation`; server `FOG\Agent\State` capability
+`activation` (fogproject PR #1804).
 
 The legacy client installed the host's product key and activated Windows.
 The agent has no equivalent. 0001 §7 has no row for it, and 0009 §9 excluded
