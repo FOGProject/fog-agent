@@ -1,6 +1,10 @@
 # 0016: Product-key activation
 
-Status: BUILT 2026-09-30, not yet proven on a lab host. Answers issue #23.
+Status: BUILT and PROVEN 2026-09-30 on lab host 211 (Windows 11 Pro): the
+agent installed the public Pro KMS client key and reported `applied (installed
+the key ending T83GX; activation pending: 0x8007007B)`, no KMS host being
+reachable; Windows then showed the VOLUME_KMSCLIENT channel, and the key was in
+neither the agent log nor its config. Answers issue #23.
 Agent `internal/provider/activation`; server `FOG\Agent\State` capability
 `activation` (fogproject PR #1804).
 
