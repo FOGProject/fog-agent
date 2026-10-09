@@ -1,6 +1,7 @@
 package reboot
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -87,5 +88,22 @@ func TestModeRebootWinsAMix(t *testing.T) {
 	d = Decide([]Reason{{Source: "snapin", Detail: "a", Mode: ModeShutdown}, {Source: SourceTask, Detail: "task 7"}}, 0, policy)
 	if !d.Reboot || d.Mode != ModeReboot {
 		t.Fatalf("mixed: got %+v", d)
+	}
+}
+
+// TestExecuteTakesAShutdownInProgressAsDone pins the double reboot measured
+// on the Windows lab host: a second request inside the warning got "a
+// shutdown is in progress", the caller restored its reasons, and the
+// machine rebooted again after it came up.
+func TestExecuteTakesAShutdownInProgressAsDone(t *testing.T) {
+	old := execute
+	t.Cleanup(func() { execute = old })
+	execute = func(string, time.Duration, string) error { return ErrInProgress }
+	if err := Execute(ModeReboot, time.Minute, "m"); err != nil {
+		t.Fatalf("in progress: want nil, got %v", err)
+	}
+	execute = func(string, time.Duration, string) error { return errors.New("access denied") }
+	if err := Execute(ModeReboot, time.Minute, "m"); err == nil {
+		t.Fatal("a real failure must still be returned")
 	}
 }

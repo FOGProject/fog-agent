@@ -15,6 +15,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"time"
 
@@ -618,6 +619,26 @@ func renew(ctx context.Context, st *enroll.State, client *enroll.Client, out *sa
 // reporting each result. The revision is recorded as applied only
 // when nothing failed: a failed provider is retried on the next poll
 // rather than forgotten.
+// capabilityOrder is the server's order, with one exception: a rename in
+// the domain runs `directory` before `hostname` (design 0017). The rename
+// leaves the new name pending, and hostname then reports the reboot in the
+// same poll instead of failing first. A join keeps the server's order,
+// hostname first, so the join runs under the name already pending.
+func capabilityOrder(desired *enroll.DesiredState) []string {
+	caps := desired.Capabilities
+	if desired.Directory == nil || strings.TrimSpace(desired.Directory.RenameTo) == "" ||
+		!slices.Contains(caps, "directory") {
+		return caps
+	}
+	out := []string{"directory"}
+	for _, c := range caps {
+		if c != "directory" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // errUpdated is how reconcile says the binary under this process is no
 // longer the one that started it. Not an error in the ordinary sense: the
 // process must now exit non-zero so the service manager starts the new
@@ -630,7 +651,7 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 		st.Config.RebootGrace = desired.Reboot.Grace
 	}
 	allOK := true
-	for _, capability := range desired.Capabilities {
+	for _, capability := range capabilityOrder(desired) {
 		var r provider.Result
 		force := false
 		switch capability {
@@ -1082,7 +1103,9 @@ func runDirectory(ctx context.Context, st *enroll.State, client *enroll.Client, 
 		return reportDirectory(ctx, st, client, revision, r, out)
 	}
 
-	r := directoryjoin.Converge(ctx, directoryjoin.Native(), policy, observed)
+	current, _ := hostname.Current()
+	names := directoryjoin.Names{Current: current, Pending: hostname.Pending()}
+	r := directoryjoin.Converge(ctx, directoryjoin.Native(), policy, observed, names)
 	return reportDirectory(ctx, st, client, revision, r, out)
 }
 
@@ -1124,7 +1147,8 @@ func reportDirectory(ctx context.Context, st *enroll.State, client *enroll.Clien
 	// membership did. Re-collecting the other facts once after a join is
 	// the price, and a join is rare.
 	if r.Status == directoryjoin.StatusJoined ||
-		r.Status == directoryjoin.StatusAlreadyJoined {
+		r.Status == directoryjoin.StatusAlreadyJoined ||
+		r.Status == directoryjoin.StatusRenamed {
 		st.Config.FactsChecked = time.Time{}
 	}
 	if r.Reboot {
@@ -1280,6 +1304,12 @@ func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, ou
 		}
 	}
 	st.Config.PendingReboot = withheld
+	// A reboot finishes a rename or a join, so the facts gathered before it
+	// are about to be stale. Collect on the first poll after the boot, not
+	// an hour later: the server decides whether to send a rename's
+	// credential from the reported machine account (design 0017 section
+	// 3.2), and an hour of the old account is an hour of a second rename.
+	st.Config.FactsChecked = time.Time{}
 	if err := st.SaveConfig(); err != nil {
 		return err
 	}

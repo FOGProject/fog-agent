@@ -1,8 +1,9 @@
 # 0017: Renaming a domain-joined machine
 
-Status: §2 BUILT 2026-10-09 (the join flag). §3 PROPOSED, waiting on the
-credential decision in §5. Proven in the lab so far: a joined Windows machine
-cannot rename its own computer object (§1.3).
+Status: BUILT and PROVEN 2026-10-09. §2 (the join flag) shipped in #25. §3
+(rename a joined machine) is built: agent `internal/provider/directoryjoin`
+and `internal/provider/hostname`, server `FOG\Agent\DirectoryJoin`. Tom
+approved the credential decision in §5 on 2026-10-09. The proof is in §6.
 
 The `hostname` capability renames a machine. On a machine that is in a
 domain, it renames only the machine, and the computer object in the directory
@@ -192,10 +193,57 @@ machine.
 | `hostname` defers to `directory` when joined | fog-agent | unit test; lab: a joined host with no credential reports `refused` and keeps its name |
 | Minimal delegation | lab | a second join account with only the standard delegation; record what the rename needs |
 
-## 5. The decision this needs
+## 5. The decision — approved 2026-10-09
 
 §3.2 sends a domain credential to a machine that is already joined. 0009 §6
 rules that out today. The exposure is the same one a join already has: one
 credential, on one machine, for one attempt, over the authenticated channel.
 It happens once per rename instead of once per join. The alternative is §3.1
 C alone, and a joined machine then cannot be renamed through FOG at all.
+
+## 6. Proof
+
+On 2026-10-09, lab host 105 (telliottwin11, Windows 11, joined to fogad.lab)
+ran agent 0.1.12 from this branch, against the server branch deployed with
+`copybacktrunk.sh`. The host was renamed in FOG and back again. Both
+directions are the same sequence:
+
+```
+server  block=keys:domain,netbios,ou,username,password,reboot,rename_to rename_to=TELLIOTTWIN11R
+agent   directory: renamed (renaming telliottwin11 to TELLIOTTWIN11R in fogad.lab)
+agent   hostname: pending_reboot (telliottwin11 -> TELLIOTTWIN11R, renamed in the domain)
+agent   reboot: applied (1 user(s) logged in, 60s warning (...), mode reboot)
+```
+
+After the reboot, as SYSTEM:
+
+```
+name=TELLIOTTWIN11R domain=fogad.lab part_of_domain=True
+secure_channel=True
+Trusted DC Connection Status Status = 0 0x0 NERR_Success
+```
+
+On the DC, `sAMAccountName` was `TELLIOTTWIN11R$` and `dNSHostName` was
+`TELLIOTTWIN11R.fogad.lab`. The object kept its DN and its SID: it is the
+same object, renamed, not a new one. The server's next fact report read
+`account=TELLIOTTWIN11R$`, and it then sent no block.
+
+Three things the proof found:
+
+- **The object's CN does not change.** The DN stayed
+  `CN=TELLIOTTWIN11,OU=Workstations,...` on the Samba DC. The rename call
+  changes the account name and the DNS name, not the RDN. *Not tested:*
+  whether a Windows DC renames the CN. Nothing in FOG keys on the CN:
+  placement (0009 §5) reads the DN that the agent reports.
+- **The machine rebooted twice, and that is fixed.** A poll inside the
+  60-second warning asked for the reboot again. Windows answered
+  `A system shutdown is in progress.(1115)`. The coordinator treated that as
+  a failed reboot, put the reason back, and rebooted again after the boot.
+  `reboot.Execute` now takes 1115 as success. This was not specific to a
+  rename: any reboot with a warning had the same window.
+- **Facts are now re-collected on the first poll after a reboot.** Without
+  that, the server read the old machine account for up to an hour and could
+  send the rename again.
+
+Not proven: the minimum delegation (§3.4). The lab's join account holds
+write to every property in its OU.

@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -120,5 +121,23 @@ func TestASettledJoinMakesTheFactsDueAgain(t *testing.T) {
 				t.Errorf("factsDue = %t, want %t", got, tc.due)
 			}
 		})
+	}
+}
+
+// TestCapabilityOrderRunsARenameFirst pins design 0017: a rename in the
+// domain runs directory before hostname, so hostname sees the new name
+// pending and reports the reboot; a join keeps the server's order, so it
+// runs under the name hostname has just set.
+func TestCapabilityOrderRunsARenameFirst(t *testing.T) {
+	caps := []string{"hostname", "taskreboot", "directory", "printers"}
+	join := &enroll.DesiredState{Capabilities: caps, Directory: &directoryjoin.Policy{Domain: "corp.example.com"}}
+	if got := capabilityOrder(join); !slices.Equal(got, caps) {
+		t.Fatalf("join: order changed to %v", got)
+	}
+	rename := &enroll.DesiredState{Capabilities: caps,
+		Directory: &directoryjoin.Policy{Domain: "corp.example.com", RenameTo: "WS-NEW"}}
+	want := []string{"directory", "hostname", "taskreboot", "printers"}
+	if got := capabilityOrder(rename); !slices.Equal(got, want) {
+		t.Fatalf("rename: got %v, want %v", got, want)
 	}
 }

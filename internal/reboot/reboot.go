@@ -6,6 +6,7 @@
 package reboot
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -135,9 +136,22 @@ func LoggedIn() (int, error) {
 // message to whoever is logged in. It returns once the request is
 // accepted; the action itself is asynchronous, so callers persist their
 // state before calling this.
+//
+// A shutdown already in progress is success, not failure: the machine is
+// going down and every reason is about to be satisfied. Reported as a
+// failure, the caller would put the reasons back, and the machine would
+// reboot a second time after it came up. Measured on the Windows lab host
+// on 2026-10-09: a poll inside the 60-second warning asked again, got
+// "A system shutdown is in progress.(1115)", and rebooted twice.
 func Execute(mode string, delay time.Duration, message string) error {
 	if mode == "" {
 		mode = ModeReboot
 	}
-	return execute(mode, delay, message)
+	if err := execute(mode, delay, message); err != nil && !errors.Is(err, ErrInProgress) {
+		return err
+	}
+	return nil
 }
+
+// ErrInProgress is the OS saying a shutdown or reboot is already under way.
+var ErrInProgress = errors.New("a shutdown is already in progress")
