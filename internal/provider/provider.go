@@ -9,7 +9,12 @@ const (
 	StatusApplied       = "applied"
 	StatusUnchanged     = "unchanged"
 	StatusPendingReboot = "pending_reboot"
-	StatusFailed        = "failed"
+	// StatusPending is work that waits on something outside the agent,
+	// such as a rename the server holds in its join cooldown. Nothing
+	// failed. Sent only when the server said why it waits, so a server
+	// that does not know the status never receives it.
+	StatusPending = "pending"
+	StatusFailed  = "failed"
 )
 
 // Result is what a provider reports after one reconcile.

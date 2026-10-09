@@ -5,6 +5,7 @@ package hostname
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/FOGProject/fog-agent/internal/provider"
 )
@@ -17,6 +18,10 @@ type Desired struct {
 	// reboots; a rename that needs one is reported as pending_reboot and
 	// the reboot coordinator, when it exists, will consult this.
 	Enforce bool `json:"enforce"`
+	// WaitUntil is set while the server holds a rename of a domain member
+	// in its join cooldown (design 0017): the UTC time, RFC 3339, after
+	// which the rename may go ahead. Empty otherwise.
+	WaitUntil string `json:"wait_until"`
 }
 
 // current and set are the OS-specific halves, replaced in tests. joined
@@ -63,9 +68,15 @@ func Ensure(d Desired) provider.Result {
 			return provider.Result{Status: provider.StatusPendingReboot,
 				Detail: detail + ", renamed in the domain"}
 		}
+		if when := waitText(d.WaitUntil); when != "" {
+			return provider.Result{Status: provider.StatusPending,
+				Detail: detail + ": the server holds domain renames for an hour after a join or rename; " +
+					"this one runs after " + when}
+		}
 		return provider.Result{Status: provider.StatusFailed,
-			Detail: detail + ": this machine is in a domain, so its computer object must be renamed too; " +
-				"that needs the host's AD credentials (see the directory result)"}
+			Detail: detail + ": this machine is in a domain, so its computer object must be renamed too, " +
+				"and the server sent no rename. That needs FOG 1.6.0-RC-8 or later and the host's AD domain, " +
+				"username and password"}
 	}
 	reboot, err := set(want)
 	if err != nil {
@@ -76,4 +87,19 @@ func Ensure(d Desired) provider.Result {
 		return provider.Result{Status: provider.StatusPendingReboot, Detail: detail}
 	}
 	return provider.Result{Status: provider.StatusApplied, Detail: detail}
+}
+
+// waitText renders the server's wait time in this machine's local time, so
+// it reads like the log lines around it. An unparsable value is shown as
+// sent rather than dropped: it still says the rename waits.
+func waitText(utc string) string {
+	utc = strings.TrimSpace(utc)
+	if utc == "" {
+		return ""
+	}
+	t, err := time.Parse(time.RFC3339, utc)
+	if err != nil {
+		return utc
+	}
+	return t.Local().Format("2006-01-02 15:04 MST")
 }

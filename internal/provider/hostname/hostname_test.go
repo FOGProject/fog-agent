@@ -2,6 +2,7 @@ package hostname
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/FOGProject/fog-agent/internal/provider"
@@ -80,5 +81,17 @@ func TestEnsureReportsADomainRenameAsPendingReboot(t *testing.T) {
 	r := Ensure(Desired{Name: "new"})
 	if r.Status != provider.StatusPendingReboot || *got != "" {
 		t.Fatalf("joined, rename pending: want pending_reboot and no set, got %+v set=%q", r, *got)
+	}
+}
+
+// TestEnsureReportsAHeldRenameAsPending pins the field report of
+// 2026-10-09: a rename held by the server's join cooldown is pending, with
+// the time it may go ahead, not failed with no reason.
+func TestEnsureReportsAHeldRenameAsPending(t *testing.T) {
+	got := fake(t, "old", true, nil)
+	fakeJoined(t, "")
+	r := Ensure(Desired{Name: "new", WaitUntil: "2026-10-09T19:20:00Z"})
+	if r.Status != provider.StatusPending || *got != "" || !strings.Contains(r.Detail, "runs after") {
+		t.Fatalf("held: want pending with the time and no set, got %+v set=%q", r, *got)
 	}
 }
