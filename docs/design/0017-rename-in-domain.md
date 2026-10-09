@@ -158,6 +158,13 @@ in memory only, never logged, zeroed after the attempt.
   see the rename until the machine reboots and reports `NEWNAME$`.
 - **A block with an empty credential** is reported as `refused`, with the
   missing fields named. This is the C half of §3.1.
+- **A rename held by the cooldown** is `pending`, not `failed`. The server
+  puts `wait_until` in the hostname block while a rename is due but the
+  join cooldown holds it, and the agent reports the time it runs. Added
+  2026-10-09 after a field host renamed twice within the hour logged
+  `failed` at every poll with no reason. The hint is in the hostname block
+  because a 0.1.12 agent answers a directory block with no credential with
+  `refused`, and that report restarts the cooldown.
 - New statuses on the wire: `renamed` (the call succeeded and a reboot is
   pending), plus the existing `failed` and `refused`.
 

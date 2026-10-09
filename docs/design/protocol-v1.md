@@ -254,7 +254,7 @@ it.
 
 | Block | Source | Provider |
 |---|---|---|
-| `hostname` | the host record's name; `enforce` is the host's "Enforce Hostname / AD Join Reboots" flag, the admin's permission to reboot to finish a rename | `ensure hostname`: compares case-insensitively, sets only on a difference. Linux `hostnamectl` (no reboot), Windows `SetComputerNameEx` (reboot pending), macOS `scutil`. A Windows domain member is never renamed alone: the `directory` block renames it in the domain (design 0017), and until then this reports `failed` with the reason |
+| `hostname` | the host record's name; `enforce` is the host's "Enforce Hostname / AD Join Reboots" flag, the admin's permission to reboot to finish a rename | `ensure hostname`: compares case-insensitively, sets only on a difference. Linux `hostnamectl` (no reboot), Windows `SetComputerNameEx` (reboot pending), macOS `scutil`. A Windows domain member is never renamed alone: the `directory` block renames it in the domain (design 0017). While the server's join cooldown holds that rename, the block carries `wait_until` (UTC, RFC 3339) and the agent reports `pending` with the time. With no rename and no `wait_until`, it reports `failed` with the reason |
 
 Two more blocks serve the reboot coordinator (design 0001 section 6):
 
