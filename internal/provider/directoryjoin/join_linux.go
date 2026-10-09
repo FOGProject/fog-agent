@@ -46,6 +46,14 @@ func (Linux) Available() (bool, string) {
 	return false, "neither adcli nor realm is installed; this machine cannot be joined"
 }
 
+// Rename is not done on Linux (design 0017 section 3.5): the machine keeps
+// working under its old principal after hostnamectl, and the server never
+// sends a rename to a Linux host.
+func (Linux) Rename(context.Context, Policy) Result {
+	return Result{Status: StatusUnsupported,
+		Error: "renaming the computer object is not implemented on Linux"}
+}
+
 // Join adds the machine to the domain.
 func (Linux) Join(ctx context.Context, p Policy) Result {
 	ctx, cancel := context.WithTimeout(ctx, Timeout)

@@ -66,6 +66,12 @@ func osReboot(mode string, delay time.Duration, message string) error {
 	}
 	out, err := exec.Command(path, flag, "/f", "/t", fmt.Sprint(int(delay/time.Second)), "/d", "p:0:0", "/c", message).CombinedOutput()
 	if err != nil {
+		// shutdown.exe exits with the Win32 error code.
+		// ERROR_SHUTDOWN_IN_PROGRESS is 1115.
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1115 {
+			return ErrInProgress
+		}
 		return errors.New(strings.TrimSpace(string(out)))
 	}
 	return nil

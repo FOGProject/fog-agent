@@ -1,8 +1,9 @@
 // Package directoryjoin is the directory capability's acting half (design
 // 0009 §6): joining a machine to the domain the host record asks for.
 //
-// It only ever JOINS. It never unjoins, and it never re-joins a machine that
-// is already in the target domain. Leaving a domain stays a deliberate,
+// It JOINS, and it RENAMES a member of the target domain (design 0017). It
+// never unjoins, and it never re-joins a machine that is already in the
+// target domain. Leaving a domain stays a deliberate,
 // separately-expressed act, because the cost is real and asymmetric: a
 // rejoin resets the computer account's password and, where the object is
 // recreated, gives the machine a new SID -- losing its group memberships,
@@ -33,6 +34,10 @@ const (
 	// StatusAlreadyJoined is the resting state: the machine is in the
 	// domain it should be in and nothing was attempted.
 	StatusAlreadyJoined = "already_joined"
+	// StatusRenamed is a rename in the domain that is done and waits on a
+	// restart: this run performed it, or an earlier one did and the
+	// machine has not restarted yet.
+	StatusRenamed = "renamed"
 	// StatusFailed is an attempt that did not work; the message says why.
 	StatusFailed = "failed"
 	// StatusUnsupported is no join tooling on this platform.
@@ -74,6 +79,20 @@ type Policy struct {
 	// the host's existing "Enforce Hostname | AD Join Reboots" flag; the
 	// reboot coordinator still owns the when.
 	Reboot bool `json:"reboot"`
+	// RenameTo is set only for a machine already in this domain whose
+	// computer object does not carry the host's name (design 0017). The
+	// server sends the credential to a joined machine for this and nothing
+	// else. Empty means "join".
+	RenameTo string `json:"rename_to"`
+}
+
+// Names is what the machine is called now and after its next boot.
+type Names struct {
+	// Current is the name the machine runs under.
+	Current string
+	// Pending is the name set for the next boot; empty when none is, or
+	// when the platform has no such thing.
+	Pending string
 }
 
 // Action is what convergence decided.
@@ -88,6 +107,11 @@ const (
 	// Refuse is "do not act, and say why" -- distinct from None, which is
 	// a good resting state, and from a failed attempt.
 	Refuse
+	// Rename is "rename the machine and its computer object together".
+	Rename
+	// Renamed is "that rename is already done and waits on a restart":
+	// report it, and do not make the call again.
+	Renamed
 )
 
 func (a Action) String() string {
@@ -96,6 +120,10 @@ func (a Action) String() string {
 		return "join"
 	case Refuse:
 		return "refuse"
+	case Rename:
+		return "rename"
+	case Renamed:
+		return "renamed"
 	}
 	return "none"
 }
@@ -116,6 +144,9 @@ type Backend interface {
 	Available() (bool, string)
 	// Join adds the machine to the domain.
 	Join(ctx context.Context, p Policy) Result
+	// Rename renames a member of the domain and its computer object to
+	// p.RenameTo.
+	Rename(ctx context.Context, p Policy) Result
 }
 
 // Decide is the rule, pure so every row of it is a test case.
@@ -132,13 +163,28 @@ type Backend interface {
 //     somebody's domain controller, repeated once a poll.
 //   - An empty domain is refused for the same reason it is on the server:
 //     there is nothing to join, and guessing is worse than saying so.
-func Decide(p Policy, observed directory.Directory) (Action, string) {
+//
+// A rename is decided against names, not against the server's belief: the
+// server cannot see a rename until the machine restarts and reports its new
+// account, so it may send the same rename twice. A name already pending is
+// reported, not renamed again.
+func Decide(p Policy, observed directory.Directory, names Names) (Action, string) {
 	want := strings.ToLower(strings.TrimSpace(p.Domain))
 	if want == "" {
 		return Refuse, "no domain to join: set one on the host"
 	}
 	if observed.Joined && sameDomain(observed, want, p.Netbios) {
-		return None, "already in " + want
+		to := strings.TrimSpace(p.RenameTo)
+		switch {
+		case to == "" || strings.EqualFold(names.Current, to):
+			return None, "already in " + want
+		case names.Pending != "" && strings.EqualFold(names.Pending, to):
+			return Renamed, "renamed to " + to + " in " + want + "; a restart finishes it"
+		case strings.TrimSpace(p.Username) == "" || p.Password.Empty():
+			return Refuse, "no credential to rename this machine in " + want +
+				": set the AD username and password on the host"
+		}
+		return Rename, "renaming " + names.Current + " to " + to + " in " + want
 	}
 	if observed.Joined {
 		// The one that must never become an unjoin.
@@ -205,19 +251,29 @@ type Report struct {
 // reaches the caller's copy. A value receiver would zero a copy this
 // function is about to discard anyway, which looks like the credential was
 // dropped and is not.
-func Converge(ctx context.Context, backend Backend, p *Policy, observed directory.Directory) Report {
+func Converge(ctx context.Context, backend Backend, p *Policy, observed directory.Directory, names Names) Report {
 	defer p.Password.Zero()
 
-	action, why := Decide(*p, observed)
+	action, why := Decide(*p, observed, names)
 	switch action {
 	case Refuse:
 		return Report{Status: StatusRefused, Error: truncate(why), Detail: why}
 	case None:
 		return Report{Status: StatusAlreadyJoined, Detail: why}
+	case Renamed:
+		return Report{Status: StatusRenamed, Detail: why}
 	}
 
 	if ok, missing := backend.Available(); !ok {
 		return Report{Status: StatusUnsupported, Error: truncate(missing), Detail: missing}
+	}
+
+	if action == Rename {
+		// No reboot asked for here. The hostname capability sees the new
+		// name pending and asks for it under the host's enforce flag, as
+		// it does for any rename.
+		res := backend.Rename(ctx, *p)
+		return Report{Status: res.Status, Error: truncate(res.Error), Detail: why}
 	}
 
 	res := backend.Join(ctx, *p)

@@ -33,13 +33,13 @@ func unjoined() directory.Directory {
 }
 
 func TestDecideJoinsAnUnjoinedMachine(t *testing.T) {
-	if got, why := Decide(policy(), unjoined()); got != Join {
+	if got, why := Decide(policy(), unjoined(), Names{}); got != Join {
 		t.Fatalf("got %s (%s), want join", got, why)
 	}
 }
 
 func TestDecideLeavesAJoinedMachineAlone(t *testing.T) {
-	got, why := Decide(policy(), joined("corp.example.com", "CORP"))
+	got, why := Decide(policy(), joined("corp.example.com", "CORP"), Names{})
 	if got != None {
 		t.Fatalf("got %s, want none", got)
 	}
@@ -75,7 +75,7 @@ func TestDecideRecognizesTheDomainInEitherForm(t *testing.T) {
 		{"case differs", joined("CORP.EXAMPLE.COM", "corp"), policy()},
 	}
 	for _, c := range cases {
-		if got, why := Decide(c.policy, c.observed); got != None {
+		if got, why := Decide(c.policy, c.observed, Names{}); got != None {
 			t.Errorf("%s: got %s (%s), want none", c.name, got, why)
 		}
 	}
@@ -86,7 +86,7 @@ func TestDecideRecognizesTheDomainInEitherForm(t *testing.T) {
 func TestDecideDoesNotMatchTwoEmptyShortNames(t *testing.T) {
 	observed := directory.Directory{Joined: true, Domain: "other.example.com"}
 	p := Policy{Domain: "corp.example.com", Username: "u", Password: secret.New(pw)}
-	if got, _ := Decide(p, observed); got == None {
+	if got, _ := Decide(p, observed, Names{}); got == None {
 		t.Fatal("two empty netbios names matched each other")
 	}
 }
@@ -96,7 +96,7 @@ func TestDecideDoesNotMatchTwoEmptyShortNames(t *testing.T) {
 // the computer account's password and can cost it its SID, its BitLocker
 // escrow and its certificates.
 func TestDecideRefusesToMoveBetweenDomains(t *testing.T) {
-	got, why := Decide(policy(), joined("old.example.com", "OLD"))
+	got, why := Decide(policy(), joined("old.example.com", "OLD"), Names{})
 	if got != Refuse {
 		t.Fatalf("got %s, want refuse -- this must never become an unjoin", got)
 	}
@@ -117,7 +117,7 @@ func TestDecideRefusesWithoutACredential(t *testing.T) {
 		{"blank password", Policy{Domain: "corp.example.com", Username: "u", Password: secret.New("  ")}},
 		{"no username", Policy{Domain: "corp.example.com", Password: secret.New(pw)}},
 	} {
-		got, why := Decide(c.p, unjoined())
+		got, why := Decide(c.p, unjoined(), Names{})
 		if got != Refuse {
 			t.Errorf("%s: got %s, want refuse", c.name, got)
 		}
@@ -128,7 +128,7 @@ func TestDecideRefusesWithoutACredential(t *testing.T) {
 }
 
 func TestDecideRefusesWithNoDomain(t *testing.T) {
-	got, why := Decide(Policy{Username: "u", Password: secret.New(pw)}, unjoined())
+	got, why := Decide(Policy{Username: "u", Password: secret.New(pw)}, unjoined(), Names{})
 	if got != Refuse || !strings.Contains(why, "no domain") {
 		t.Fatalf("got %s (%s)", got, why)
 	}
@@ -136,6 +136,7 @@ func TestDecideRefusesWithNoDomain(t *testing.T) {
 
 type fakeBackend struct {
 	calls     int
+	renames   int
 	available bool
 	missing   string
 	result    Result
@@ -148,10 +149,15 @@ func (f *fakeBackend) Join(_ context.Context, p Policy) Result {
 	f.sawPass = p.Password.Reveal()
 	return f.result
 }
+func (f *fakeBackend) Rename(_ context.Context, p Policy) Result {
+	f.renames++
+	f.sawPass = p.Password.Reveal()
+	return f.result
+}
 
 func TestConvergeJoinsAndAsksForTheReboot(t *testing.T) {
 	b := &fakeBackend{available: true, result: Result{Status: StatusJoined, Reboot: true}}
-	r := Converge(context.Background(), b, ptr(policy()), unjoined())
+	r := Converge(context.Background(), b, ptr(policy()), unjoined(), Names{})
 	if r.Status != StatusJoined || !r.Reboot {
 		t.Fatalf("got %+v", r)
 	}
@@ -166,7 +172,7 @@ func TestConvergeDoesNotAskForARebootTheHostForbids(t *testing.T) {
 	p := policy()
 	p.Reboot = false
 	b := &fakeBackend{available: true, result: Result{Status: StatusJoined, Reboot: true}}
-	if r := Converge(context.Background(), b, &p, unjoined()); r.Reboot {
+	if r := Converge(context.Background(), b, &p, unjoined(), Names{}); r.Reboot {
 		t.Fatal("rebooted against the host's policy")
 	}
 }
@@ -174,7 +180,7 @@ func TestConvergeDoesNotAskForARebootTheHostForbids(t *testing.T) {
 // The server reads already_joined as "still true" and silence as unknown.
 func TestConvergeReportsTheRestingStateWithoutTouchingTheBackend(t *testing.T) {
 	b := &fakeBackend{available: true}
-	r := Converge(context.Background(), b, ptr(policy()), joined("corp.example.com", "CORP"))
+	r := Converge(context.Background(), b, ptr(policy()), joined("corp.example.com", "CORP"), Names{})
 	if r.Status != StatusAlreadyJoined {
 		t.Fatalf("status = %q", r.Status)
 	}
@@ -187,7 +193,7 @@ func TestConvergeRefusesBeforeItLooksForTooling(t *testing.T) {
 	// A refusal is about the policy, not the machine: it must not be
 	// reported as "unsupported" on a host that happens to lack adcli.
 	b := &fakeBackend{available: false, missing: "no adcli"}
-	r := Converge(context.Background(), b, ptr(policy()), joined("old.example.com", "OLD"))
+	r := Converge(context.Background(), b, ptr(policy()), joined("old.example.com", "OLD"), Names{})
 	if r.Status != StatusRefused {
 		t.Fatalf("status = %q, want refused", r.Status)
 	}
@@ -198,7 +204,7 @@ func TestConvergeRefusesBeforeItLooksForTooling(t *testing.T) {
 
 func TestConvergeReportsMissingTooling(t *testing.T) {
 	b := &fakeBackend{available: false, missing: "neither adcli nor realm is installed"}
-	r := Converge(context.Background(), b, ptr(policy()), unjoined())
+	r := Converge(context.Background(), b, ptr(policy()), unjoined(), Names{})
 	if r.Status != StatusUnsupported {
 		t.Fatalf("status = %q", r.Status)
 	}
@@ -213,7 +219,7 @@ func TestConvergeReportsMissingTooling(t *testing.T) {
 func TestConvergeTruncatesAToolsNovel(t *testing.T) {
 	b := &fakeBackend{available: true,
 		result: Result{Status: StatusFailed, Error: strings.Repeat("x", 4000)}}
-	r := Converge(context.Background(), b, ptr(policy()), unjoined())
+	r := Converge(context.Background(), b, ptr(policy()), unjoined(), Names{})
 	if len(r.Error) != MaxError {
 		t.Fatalf("kept %d bytes; the server column holds %d", len(r.Error), MaxError)
 	}
@@ -225,7 +231,7 @@ func TestConvergeTruncatesAToolsNovel(t *testing.T) {
 func TestConvergeZeroesTheCredential(t *testing.T) {
 	p := policy()
 	Converge(context.Background(), &fakeBackend{available: true,
-		result: Result{Status: StatusJoined}}, &p, unjoined())
+		result: Result{Status: StatusJoined}}, &p, unjoined(), Names{})
 	if !p.Password.Empty() {
 		t.Fatalf("the credential survived the attempt: %q", p.Password.Reveal())
 	}
@@ -239,11 +245,78 @@ func TestNoReportFieldCarriesTheCredential(t *testing.T) {
 	} {
 		b := &fakeBackend{available: true,
 			result: Result{Status: StatusFailed, Error: "adcli: Insufficient access"}}
-		r := Converge(context.Background(), b, ptr(policy()), observed)
-		for _, field := range []string{r.Status, r.Error, r.Detail} {
+		r := Converge(context.Background(), b, ptr(policy()), observed, Names{Current: "WS-OLD"})
+		rr := Converge(context.Background(), b, ptr(renaming()), observed, Names{Current: "WS-OLD"})
+		for _, field := range []string{r.Status, r.Error, r.Detail, rr.Status, rr.Error, rr.Detail} {
 			if strings.Contains(field, pw) {
 				t.Fatalf("a report field carried the credential: %q", field)
 			}
 		}
+	}
+}
+
+// renaming is a policy for a machine already in corp.example.com whose
+// object should be called WS-NEW.
+func renaming() Policy {
+	p := policy()
+	p.RenameTo = "WS-NEW"
+	return p
+}
+
+// TestDecideRenamesAMemberWhoseNameIsWrong pins design 0017 section 3.3:
+// a member of the right domain, sent a rename, renames.
+func TestDecideRenamesAMemberWhoseNameIsWrong(t *testing.T) {
+	got, why := Decide(renaming(), joined("corp.example.com", "CORP"), Names{Current: "WS-OLD"})
+	if got != Rename {
+		t.Fatalf("want rename, got %v (%s)", got, why)
+	}
+}
+
+// TestDecideDoesNotRenameTwice pins the window the server cannot see: the
+// rename is done, the machine has not restarted, and the server sends the
+// rename again. It is reported, not repeated, and an already-right name is
+// left alone in any case.
+func TestDecideDoesNotRenameTwice(t *testing.T) {
+	if got, why := Decide(renaming(), joined("corp.example.com", "CORP"),
+		Names{Current: "WS-OLD", Pending: "ws-new"}); got != Renamed {
+		t.Fatalf("pending: want renamed, got %v (%s)", got, why)
+	}
+	if got, why := Decide(renaming(), joined("corp.example.com", "CORP"),
+		Names{Current: "ws-new"}); got != None {
+		t.Fatalf("already named: want none, got %v (%s)", got, why)
+	}
+}
+
+// TestDecideRefusesARenameWithoutACredential pins the C half of design 0017
+// section 3.1: no credential, no attempt, and the reason names the fix.
+func TestDecideRefusesARenameWithoutACredential(t *testing.T) {
+	p := renaming()
+	p.Password = secret.New("")
+	got, why := Decide(p, joined("corp.example.com", "CORP"), Names{Current: "WS-OLD"})
+	if got != Refuse || !strings.Contains(why, "AD username and password") {
+		t.Fatalf("want refuse naming the fields, got %v (%s)", got, why)
+	}
+}
+
+// TestDecideNeverRenamesIntoAnotherDomain pins that a rename block does not
+// loosen the one refusal that must hold: a member of a different domain is
+// never acted on.
+func TestDecideNeverRenamesIntoAnotherDomain(t *testing.T) {
+	if got, _ := Decide(renaming(), joined("old.example.com", "OLD"), Names{Current: "WS-OLD"}); got != Refuse {
+		t.Fatalf("other domain: want refuse, got %v", got)
+	}
+}
+
+// TestConvergeRenamesThroughTheBackend pins that a rename reaches the
+// backend's Rename, never its Join, with the credential, and zeroes it.
+func TestConvergeRenamesThroughTheBackend(t *testing.T) {
+	b := &fakeBackend{available: true, result: Result{Status: StatusRenamed, Reboot: true}}
+	p := renaming()
+	r := Converge(context.Background(), b, &p, joined("corp.example.com", "CORP"), Names{Current: "WS-OLD"})
+	if r.Status != StatusRenamed || b.renames != 1 || b.calls != 0 {
+		t.Fatalf("got %+v, renames=%d joins=%d", r, b.renames, b.calls)
+	}
+	if b.sawPass != pw || !p.Password.Empty() {
+		t.Fatalf("credential: backend saw %q, zeroed=%v", b.sawPass, p.Password.Empty())
 	}
 }

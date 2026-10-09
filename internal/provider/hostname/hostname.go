@@ -19,11 +19,24 @@ type Desired struct {
 	Enforce bool `json:"enforce"`
 }
 
-// current and set are the OS-specific halves, replaced in tests.
+// current and set are the OS-specific halves, replaced in tests. joined
+// and pending matter on Windows only, where a domain member must not be
+// renamed alone (design 0017): joined says the machine is in an AD
+// domain, and pending is the name it will have after its next boot, or
+// empty.
 var (
 	current = osCurrent
 	set     = osSet
+	joined  = osJoined
+	pending = osPending
 )
+
+// Current is the name the machine runs under now.
+func Current() (string, error) { return current() }
+
+// Pending is the name the machine will have after its next boot, or empty
+// where the platform has no such thing or nothing is pending.
+func Pending() string { return pending() }
 
 // Ensure reconciles the machine's name with d and reports. Names compare
 // case-insensitively: DNS and NetBIOS both do, and a rename that only
@@ -39,6 +52,20 @@ func Ensure(d Desired) provider.Result {
 	}
 	if strings.EqualFold(have, want) {
 		return provider.Result{Status: provider.StatusUnchanged, Detail: have}
+	}
+	if joined() {
+		// A domain member renamed alone comes back under a name its
+		// computer object does not carry, and its secure channel fails.
+		// The directory capability renames both together, with the
+		// credential only it is sent, and leaves the new name pending.
+		detail := fmt.Sprintf("%s -> %s", have, want)
+		if p := pending(); p != "" && strings.EqualFold(p, want) {
+			return provider.Result{Status: provider.StatusPendingReboot,
+				Detail: detail + ", renamed in the domain"}
+		}
+		return provider.Result{Status: provider.StatusFailed,
+			Detail: detail + ": this machine is in a domain, so its computer object must be renamed too; " +
+				"that needs the host's AD credentials (see the directory result)"}
 	}
 	reboot, err := set(want)
 	if err != nil {

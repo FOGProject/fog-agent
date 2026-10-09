@@ -20,9 +20,16 @@ import (
 type Windows struct{}
 
 var (
-	netapi32          = syscall.NewLazyDLL("netapi32.dll")
-	procNetJoinDomain = netapi32.NewProc("NetJoinDomain")
+	netapi32                     = syscall.NewLazyDLL("netapi32.dll")
+	procNetJoinDomain            = netapi32.NewProc("NetJoinDomain")
+	procNetRenameMachineInDomain = netapi32.NewProc("NetRenameMachineInDomain")
+	kernel32                     = syscall.NewLazyDLL("kernel32.dll")
+	procSetComputerNameEx        = kernel32.NewProc("SetComputerNameExW")
 )
+
+// computerNamePhysicalDnsHostname is the COMPUTER_NAME_FORMAT that sets the
+// DNS host name and, with it, the NetBIOS name, for the next boot.
+const computerNamePhysicalDnsHostname = 5
 
 // NetJoinDomain options.
 const (
@@ -101,6 +108,61 @@ func (Windows) Join(ctx context.Context, p Policy) Result {
 	// Windows always needs one: the machine is not actually operating as a
 	// domain member until it restarts.
 	return Result{Status: StatusJoined, Reboot: true}
+}
+
+// Rename renames the machine and its computer object together.
+//
+// NetRenameMachineInDomain with the join credential, as Rename-Computer
+// -DomainCredential does and as the legacy client did. The machine cannot do
+// this as itself: its own account may not rename its object (design 0017
+// section 1.3, measured as access denied). NETSETUP_ACCT_CREATE is the flag
+// that renames the account in the domain and not only the machine.
+//
+// SetComputerNameEx follows it, as it did in the legacy client, so the DNS
+// host name pending for the next boot is the new name whatever the rename
+// call wrote: that pending name is what the hostname capability and the
+// next Decide read to know the rename is done.
+func (Windows) Rename(ctx context.Context, p Policy) Result {
+	name, err := syscall.UTF16PtrFromString(p.RenameTo)
+	if err != nil {
+		return Result{Status: StatusFailed, Error: "new name is not usable: " + err.Error()}
+	}
+	account, err := syscall.UTF16PtrFromString(p.Username)
+	if err != nil {
+		return Result{Status: StatusFailed, Error: "username is not usable: " + err.Error()}
+	}
+	password, err := syscall.UTF16PtrFromString(p.Password.Reveal())
+	if err != nil {
+		// As in Join: the error would quote the password.
+		return Result{Status: StatusFailed, Error: "the join password contains a NUL and cannot be used"}
+	}
+	status, _, _ := procNetRenameMachineInDomain.Call(
+		0, // lpServer: nil, this machine
+		uintptr(unsafe.Pointer(name)),
+		uintptr(unsafe.Pointer(account)),
+		uintptr(unsafe.Pointer(password)),
+		uintptr(netsetupAcctCreate),
+	)
+	if status != 0 {
+		return Result{Status: StatusFailed, Error: renameError(uint32(status))}
+	}
+	if r, _, e := procSetComputerNameEx.Call(computerNamePhysicalDnsHostname, uintptr(unsafe.Pointer(name))); r == 0 {
+		// The object is renamed; only the local DNS name lagged. Reported
+		// as a failure so it is seen, and the next attempt finds the
+		// object already named and finishes this half.
+		return Result{Status: StatusFailed, Error: "renamed in the domain, but setting the local name failed: " + e.Error()}
+	}
+	return Result{Status: StatusRenamed, Reboot: true}
+}
+
+// renameError names the rename failures worth expecting. Access denied is
+// the one a narrowly delegated join account hits (design 0017 section 3.4).
+func renameError(status uint32) string {
+	switch status {
+	case 5:
+		return "access denied; the AD account may not rename computer objects in this OU (ERROR_ACCESS_DENIED)"
+	}
+	return joinError(status)
 }
 
 // joinError turns a NET_API_STATUS into something an admin can act on.

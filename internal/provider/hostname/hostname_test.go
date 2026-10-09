@@ -48,3 +48,37 @@ func TestEnsureSetsAndReportsHowItEnded(t *testing.T) {
 		t.Fatalf("empty desired name must fail without setting: got %+v set=%q", r, *got)
 	}
 }
+
+// fakeJoined makes the machine a domain member with the given name pending.
+func fakeJoined(t *testing.T, pendingName string) {
+	t.Helper()
+	oldJoined, oldPending := joined, pending
+	joined = func() bool { return true }
+	pending = func() string { return pendingName }
+	t.Cleanup(func() { joined, pending = oldJoined, oldPending })
+}
+
+// TestEnsureNeverRenamesADomainMemberAlone pins design 0017 section 3.3: a
+// joined machine renamed locally comes back under a name its computer
+// object does not carry. The directory capability renames both; until it
+// has, this provider fails with the reason and sets nothing.
+func TestEnsureNeverRenamesADomainMemberAlone(t *testing.T) {
+	got := fake(t, "old", true, nil)
+	fakeJoined(t, "")
+	r := Ensure(Desired{Name: "new"})
+	if r.Status != provider.StatusFailed || *got != "" {
+		t.Fatalf("joined, nothing pending: want failed and no set, got %+v set=%q", r, *got)
+	}
+}
+
+// TestEnsureReportsADomainRenameAsPendingReboot pins the other half: once
+// the directory has renamed the machine, the new name is pending and the
+// reboot is this provider's to ask for, under the host's enforce flag.
+func TestEnsureReportsADomainRenameAsPendingReboot(t *testing.T) {
+	got := fake(t, "old", true, nil)
+	fakeJoined(t, "NEW")
+	r := Ensure(Desired{Name: "new"})
+	if r.Status != provider.StatusPendingReboot || *got != "" {
+		t.Fatalf("joined, rename pending: want pending_reboot and no set, got %+v set=%q", r, *got)
+	}
+}

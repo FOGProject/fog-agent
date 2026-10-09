@@ -19,3 +19,8 @@ func (unsupported) Join(context.Context, Policy) Result {
 	return Result{Status: StatusUnsupported,
 		Error: "joining a directory is not implemented on this platform"}
 }
+
+func (unsupported) Rename(context.Context, Policy) Result {
+	return Result{Status: StatusUnsupported,
+		Error: "renaming in a directory is not implemented on this platform"}
+}

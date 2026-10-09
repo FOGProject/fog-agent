@@ -254,7 +254,7 @@ it.
 
 | Block | Source | Provider |
 |---|---|---|
-| `hostname` | the host record's name; `enforce` is the host's "Enforce Hostname / AD Join Reboots" flag, the admin's permission to reboot to finish a rename | `ensure hostname`: compares case-insensitively, sets only on a difference. Linux `hostnamectl` (no reboot), Windows `SetComputerNameEx` (reboot pending), macOS `scutil` |
+| `hostname` | the host record's name; `enforce` is the host's "Enforce Hostname / AD Join Reboots" flag, the admin's permission to reboot to finish a rename | `ensure hostname`: compares case-insensitively, sets only on a difference. Linux `hostnamectl` (no reboot), Windows `SetComputerNameEx` (reboot pending), macOS `scutil`. A Windows domain member is never renamed alone: the `directory` block renames it in the domain (design 0017), and until then this reports `failed` with the reason |
 
 Two more blocks serve the reboot coordinator (design 0001 section 6):
 
@@ -597,6 +597,14 @@ politeness: a join that fails on a bad password is a failed authentication
 against a domain controller, and one per host per poll is how a service
 account with a lockout policy gets locked out.
 
+One case sends it to a **joined** host (design 0017): a Windows host in the
+right domain whose reported machine account is not the host's name (its
+first 15 characters, plus `$`). The block then carries
+`"rename_to": "<name>"`, and the agent renames the machine and its computer
+object together with `NetRenameMachineInDomain`. The machine cannot rename
+its own object without the credential. Without `rename_to`, the block means
+"join". Same cooldown.
+
 The agent holds the credential in memory only. It is never written to the
 state directory and never logged — it redacts itself under every printer and
 marshaler in the process, so `run --once` output shows `[redacted]`, and it
@@ -610,7 +618,7 @@ Modify DN and the machine is not involved (design 0009 §5).
 
 | Step | Route | Notes |
 |---|---|---|
-| report | `POST /agent/v1/result` with `item: {id, status, details}` | `id` is the agent's own host id — the row is its own membership; `status` is `joined`, `already_joined`, `failed`, `unsupported` or `refused`; `details` is the tool's message, kept only for the three that did not settle |
+| report | `POST /agent/v1/result` with `item: {id, status, details}` | `id` is the agent's own host id — the row is its own membership; `status` is `joined`, `already_joined`, `renamed`, `failed`, `unsupported` or `refused`; `details` is the tool's message, kept only for the three that did not settle |
 
 An item report and not a plain one because the join has its own vocabulary
 and the outer `status` already carries the capability's
