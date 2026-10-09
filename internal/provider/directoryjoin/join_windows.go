@@ -32,6 +32,15 @@ const (
 	// already there. Harmless when the account was pre-staged, which is
 	// the normal arrangement in a locked-down forest.
 	netsetupAcctCreate = 0x00000002
+	// NETSETUP_JOIN_WITH_NEW_NAME: join under the name the machine will
+	// have after its next boot, not the one it runs under now. The
+	// hostname capability runs before this one in the same poll, so a
+	// machine renamed and joined together has its new name pending here.
+	// Without the flag the computer object is created under the OLD name,
+	// and after the reboot the machine and its object disagree (design
+	// 0017 section 2). With no rename pending the two names are the same.
+	// The legacy client set it on every join.
+	netsetupJoinWithNewName = 0x00000400
 )
 
 // Available reports whether the join API is here. It is, on every Windows
@@ -84,7 +93,7 @@ func (Windows) Join(ctx context.Context, p Policy) Result {
 		uintptr(unsafe.Pointer(ou)),
 		uintptr(unsafe.Pointer(account)),
 		uintptr(unsafe.Pointer(password)),
-		uintptr(netsetupJoinDomain|netsetupAcctCreate),
+		uintptr(netsetupJoinDomain|netsetupAcctCreate|netsetupJoinWithNewName),
 	)
 	if status != 0 {
 		return Result{Status: StatusFailed, Error: joinError(uint32(status))}
