@@ -1152,12 +1152,15 @@ func reportDirectory(ctx context.Context, st *enroll.State, client *enroll.Clien
 		st.Config.FactsChecked = time.Time{}
 	}
 	if r.Reboot {
-		// Not forced. A domain join is not urgent the way an imaging task
-		// is, and the machine works exactly as it did until it restarts --
-		// so a logged-in user gets the grace the coordinator gives them.
+		// Forced. r.Reboot is true only when the host's "Enforce Hostname |
+		// AD Join Reboots" flag is set (Converge gates it), and that flag
+		// means "even if someone is logged in" (protocol-v1, the reboot
+		// coordinator). A logged-in user still gets FOG_GRACE_TIMEOUT of
+		// warning; unforced, the reboot waited for a logoff that a
+		// workstation may never see.
 		st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{
 			Source: "directory", Detail: "joined a domain; a restart finishes it",
-			Mode: reboot.ModeReboot,
+			Force: true, Mode: reboot.ModeReboot,
 		})
 	}
 	return true

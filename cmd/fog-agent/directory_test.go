@@ -141,3 +141,24 @@ func TestCapabilityOrderRunsARenameFirst(t *testing.T) {
 		t.Fatalf("rename: got %v, want %v", got, want)
 	}
 }
+
+// A join asks for a reboot only when the host's "Enforce Hostname | AD Join
+// Reboots" flag is set (Converge gates Report.Reboot on it). That flag means
+// "even if someone is logged in" (protocol-v1, the reboot coordinator), so
+// the reason must be forced: an unforced one waits forever on a workstation
+// where a user never logs off. Seen on host 3163, 2026-10-13.
+func TestAJoinRebootIsForced(t *testing.T) {
+	client := joinTestClient(t)
+	st := &enroll.State{Config: enroll.Config{HostID: 3163}}
+	ok := reportDirectory(context.Background(), st, client, "3f1c9a0b2d4e5f60",
+		directoryjoin.Report{Status: directoryjoin.StatusJoined, Reboot: true}, &sayer{})
+	if !ok {
+		t.Fatal("the result did not land")
+	}
+	if len(st.Config.PendingReboot) != 1 {
+		t.Fatalf("PendingReboot = %v, want one directory reason", st.Config.PendingReboot)
+	}
+	if !st.Config.PendingReboot[0].Force {
+		t.Error("the join's reboot reason is not forced; it waits for logged-in users to leave")
+	}
+}
