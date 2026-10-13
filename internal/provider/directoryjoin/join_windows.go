@@ -35,9 +35,10 @@ const computerNamePhysicalDnsHostname = 5
 const (
 	// NETSETUP_JOIN_DOMAIN: join a domain rather than a workgroup.
 	netsetupJoinDomain = 0x00000001
-	// NETSETUP_ACCT_CREATE: create the computer account if it is not
-	// already there. Harmless when the account was pre-staged, which is
-	// the normal arrangement in a locked-down forest.
+	// NETSETUP_ACCT_CREATE: create the computer account. When the join
+	// cannot use one already there by that name (a reimaged machine), it
+	// fails with NERR_UserExists, and joinOrReuse retries without this
+	// flag to reuse it.
 	netsetupAcctCreate = 0x00000002
 	// NETSETUP_JOIN_WITH_NEW_NAME: join under the name the machine will
 	// have after its next boot, not the one it runs under now. The
@@ -94,16 +95,28 @@ func (Windows) Join(ctx context.Context, p Policy) Result {
 		}
 	}
 
-	status, _, _ := procNetJoinDomain.Call(
-		0, // lpServer: nil, let Windows locate a domain controller
-		uintptr(unsafe.Pointer(domain)),
-		uintptr(unsafe.Pointer(ou)),
-		uintptr(unsafe.Pointer(account)),
-		uintptr(unsafe.Pointer(password)),
-		uintptr(netsetupJoinDomain|netsetupAcctCreate|netsetupJoinWithNewName),
-	)
+	status := joinOrReuse(func(create bool) uint32 {
+		options, accountOU := uintptr(netsetupJoinDomain|netsetupJoinWithNewName), ou
+		if create {
+			options |= netsetupAcctCreate
+		} else {
+			// Taking over an existing object: it stays where it is, so
+			// there is no container to create it in. The server's
+			// placement half moves it if the OU differs.
+			accountOU = nil
+		}
+		r, _, _ := procNetJoinDomain.Call(
+			0, // lpServer: nil, let Windows locate a domain controller
+			uintptr(unsafe.Pointer(domain)),
+			uintptr(unsafe.Pointer(accountOU)),
+			uintptr(unsafe.Pointer(account)),
+			uintptr(unsafe.Pointer(password)),
+			options,
+		)
+		return uint32(r)
+	})
 	if status != 0 {
-		return Result{Status: StatusFailed, Error: joinError(uint32(status))}
+		return Result{Status: StatusFailed, Error: joinError(status)}
 	}
 	// Windows always needs one: the machine is not actually operating as a
 	// domain member until it restarts.
@@ -189,6 +202,13 @@ func joinError(status uint32) string {
 		return "the OU does not exist or the account may not create objects in it (ERROR_DS_NO_SUCH_OBJECT)"
 	case 5:
 		return "access denied; the join account lacks rights on the target OU (ERROR_ACCESS_DENIED)"
+	case nerrUserExists:
+		return "the computer object already exists and could not be reused (NERR_UserExists)"
+	case 2732:
+		// KB5020276: reuse is allowed only to the object's creator, a
+		// domain admin, or an account the GPO "Domain controller: Allow
+		// computer account re-use during domain join" lists.
+		return "the computer object exists and domain policy blocks this account from reusing it (NERR_AccountReuseBlockedByPolicy)"
 	}
 	return syscall.Errno(status).Error()
 }
