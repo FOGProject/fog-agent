@@ -320,3 +320,34 @@ func TestConvergeRenamesThroughTheBackend(t *testing.T) {
 		t.Fatalf("credential: backend saw %q, zeroed=%v", b.sawPass, p.Password.Empty())
 	}
 }
+
+// A reimaged machine finds its computer object still in the domain. The join
+// must take that object over, not fail on it.
+func TestJoinReusesAnExistingComputerObject(t *testing.T) {
+	var calls []bool
+	status := joinOrReuse(func(create bool) uint32 {
+		calls = append(calls, create)
+		if create {
+			return nerrUserExists
+		}
+		return 0
+	})
+	if status != 0 {
+		t.Fatalf("status = %d, want 0", status)
+	}
+	if len(calls) != 2 || !calls[0] || calls[1] {
+		t.Fatalf("calls = %v, want [true false]", calls)
+	}
+}
+
+// Any other failure is the answer; a retry without create would only hide it.
+func TestJoinDoesNotRetryOtherFailures(t *testing.T) {
+	calls := 0
+	status := joinOrReuse(func(create bool) uint32 {
+		calls++
+		return 1326
+	})
+	if status != 1326 || calls != 1 {
+		t.Fatalf("status = %d after %d calls, want 1326 after 1", status, calls)
+	}
+}
