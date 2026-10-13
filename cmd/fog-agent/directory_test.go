@@ -141,3 +141,25 @@ func TestCapabilityOrderRunsARenameFirst(t *testing.T) {
 		t.Fatalf("rename: got %v, want %v", got, want)
 	}
 }
+
+// The join's reboot follows the host's "Enforce Hostname | AD Join Reboots"
+// flag: set, it is forced past logged-in users; unset, it waits for them.
+// Unforced under enforce, it waited forever on a workstation where nobody
+// logs off. Seen on host 3163, 2026-10-13.
+func TestAJoinRebootFollowsTheEnforceFlag(t *testing.T) {
+	client := joinTestClient(t)
+	for _, enforce := range []bool{true, false} {
+		st := &enroll.State{Config: enroll.Config{HostID: 3163}}
+		ok := reportDirectory(context.Background(), st, client, "3f1c9a0b2d4e5f60",
+			directoryjoin.Report{Status: directoryjoin.StatusJoined, Reboot: true, Force: enforce}, &sayer{})
+		if !ok {
+			t.Fatal("the result did not land")
+		}
+		if len(st.Config.PendingReboot) != 1 {
+			t.Fatalf("enforce=%t: PendingReboot = %v, want one directory reason", enforce, st.Config.PendingReboot)
+		}
+		if got := st.Config.PendingReboot[0].Force; got != enforce {
+			t.Errorf("enforce=%t: reason Force = %t", enforce, got)
+		}
+	}
+}
