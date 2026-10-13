@@ -166,14 +166,17 @@ func TestConvergeJoinsAndAsksForTheReboot(t *testing.T) {
 	}
 }
 
-// The host's "Enforce Hostname | AD Join Reboots" flag is a permission, and
-// a platform needing a reboot does not override an admin saying no.
-func TestConvergeDoesNotAskForARebootTheHostForbids(t *testing.T) {
-	p := policy()
-	p.Reboot = false
-	b := &fakeBackend{available: true, result: Result{Status: StatusJoined, Reboot: true}}
-	if r := Converge(context.Background(), b, &p, unjoined(), Names{}); r.Reboot {
-		t.Fatal("rebooted against the host's policy")
+// The host's "Enforce Hostname | AD Join Reboots" flag decides whether the
+// join's reboot is forced past logged-in users, not whether it happens.
+func TestConvergeForcesTheRebootOnlyUnderEnforce(t *testing.T) {
+	for _, enforce := range []bool{true, false} {
+		p := policy()
+		p.Reboot = enforce
+		b := &fakeBackend{available: true, result: Result{Status: StatusJoined, Reboot: true}}
+		r := Converge(context.Background(), b, &p, unjoined(), Names{})
+		if !r.Reboot || r.Force != enforce {
+			t.Errorf("enforce=%t: Reboot=%t Force=%t, want true, %t", enforce, r.Reboot, r.Force, enforce)
+		}
 	}
 }
 

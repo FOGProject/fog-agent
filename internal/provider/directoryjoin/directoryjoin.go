@@ -75,9 +75,10 @@ type Policy struct {
 	// every printer and marshaler in the process (internal/secret): it is
 	// never written to the state directory and never logged.
 	Password secret.Secret `json:"password"`
-	// Reboot says whether the agent may reboot to finish the join. It is
-	// the host's existing "Enforce Hostname | AD Join Reboots" flag; the
-	// reboot coordinator still owns the when.
+	// Reboot is the host's "Enforce Hostname | AD Join Reboots" flag: the
+	// join's reboot is forced, even with a user logged in. Unset, the
+	// reboot still happens, once nobody is logged in. The reboot
+	// coordinator owns the when.
 	Reboot bool `json:"reboot"`
 	// RenameTo is set only for a machine already in this domain whose
 	// computer object does not carry the host's name (design 0017). The
@@ -235,8 +236,11 @@ type Report struct {
 	// the credential: nothing here formats the Policy.
 	Detail string
 	// Reboot is set when the platform needs one for the join to take
-	// effect, and the host's policy allows it.
+	// effect.
 	Reboot bool
+	// Force is the host's enforce flag (Policy.Reboot): reboot even if
+	// someone is logged in.
+	Force bool
 }
 
 // Converge joins the machine if it should be, and reports what happened
@@ -281,9 +285,10 @@ func Converge(ctx context.Context, backend Backend, p *Policy, observed director
 		Status: res.Status,
 		Error:  truncate(res.Error),
 		Detail: why,
-		// Only when the host said the agent may. The reboot coordinator
-		// still decides when, and whether a logged-in user gets a grace.
-		Reboot: res.Reboot && p.Reboot,
+		// The host's enforce flag decides whether the reboot waits for
+		// logged-in users; the reboot coordinator decides when.
+		Reboot: res.Reboot,
+		Force:  p.Reboot,
 	}
 }
 
