@@ -91,6 +91,14 @@ func osReboot(mode string, delay time.Duration, message string) error {
 		minutes := int((delay + time.Minute - 1) / time.Minute)
 		out, err := exec.Command(path, flag, fmt.Sprintf("+%d", minutes), message).CombinedOutput()
 		if err != nil {
+			// logind refuses a scheduled shutdown while a block inhibitor
+			// lock is held (issue #30). The refusal reads "Operation denied
+			// due to active block inhibitor" or "Access denied", depending
+			// on the systemd version, so any refusal tries the countdown
+			// that does not go through logind.
+			if terr := scheduleIgnoringInhibitors(unit, delay, message); terr == nil || errors.Is(terr, ErrInProgress) {
+				return terr
+			}
 			return errors.New(strings.TrimSpace(string(out)))
 		}
 		return nil
@@ -98,10 +106,64 @@ func osReboot(mode string, delay time.Duration, message string) error {
 	if path, err := exec.LookPath("systemctl"); err == nil {
 		out, err := exec.Command(path, unit).CombinedOutput()
 		if err != nil {
+			// A block inhibitor lock makes logind refuse (issue #30).
+			// The coordinator has already applied the reboot policy, and
+			// Windows overrides the same way with shutdown.exe /f; a lock
+			// nobody releases would otherwise hold the machine, and any
+			// task waiting on it, forever.
+			if ferr := exec.Command(path, forceArgs(unit)...).Run(); ferr == nil {
+				return nil
+			}
 			return errors.New(strings.TrimSpace(string(out)))
 		}
 		return nil
 	}
 	syscall.Sync()
 	return syscall.Reboot(kernel)
+}
+
+// timerUnit names the countdown scheduleIgnoringInhibitors starts, so an
+// admin can cancel it with `systemctl stop fog-agent-reboot.timer`.
+const timerUnit = "fog-agent-reboot"
+
+// forceArgs are the systemctl arguments that reboot or power off without
+// asking logind, which is where inhibitor locks are enforced. Root cannot
+// skip them through logind either: `systemctl -i` there becomes a polkit
+// question that needs an interactive answer (measured on systemd 257).
+// Starting the target is what logind itself does once it agrees, so the
+// shutdown is the normal, orderly one.
+func forceArgs(unit string) []string {
+	return []string{"start", "--no-block", "--job-mode=replace-irreversibly", unit + ".target"}
+}
+
+// scheduleIgnoringInhibitors is the delayed action for a machine with a
+// block inhibitor lock. logind's ScheduleShutdown, which shutdown(8) uses,
+// enforces the lock, so the countdown runs as a transient timer owned by
+// PID 1 instead. It survives an agent restart and ends in forceArgs. wall
+// sends the warning shutdown(8) would have sent.
+func scheduleIgnoringInhibitors(unit string, delay time.Duration, message string) error {
+	run, err := exec.LookPath("systemd-run")
+	if err != nil {
+		return err
+	}
+	ctl, err := exec.LookPath("systemctl")
+	if err != nil {
+		return err
+	}
+	seconds := int((delay + time.Second - 1) / time.Second)
+	args := append([]string{"--unit=" + timerUnit,
+		fmt.Sprintf("--on-active=%ds", seconds), "--timer-property=AccuracySec=1s", ctl},
+		forceArgs(unit)...)
+	out, err := exec.Command(run, args...).CombinedOutput()
+	if err != nil {
+		// A countdown from an earlier poll is still running.
+		if bytes.Contains(out, []byte("already loaded")) {
+			return ErrInProgress
+		}
+		return errors.New(strings.TrimSpace(string(out)))
+	}
+	if w, err := exec.LookPath("wall"); err == nil {
+		_ = exec.Command(w, message).Run()
+	}
+	return nil
 }
