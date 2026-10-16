@@ -252,7 +252,7 @@ func fetch(ctx context.Context, c *http.Client, target string) ([]byte, error) {
 	}
 	resp, err := c.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, explainUnreachable(err, target)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

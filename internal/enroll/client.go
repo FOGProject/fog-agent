@@ -428,7 +428,7 @@ func (c *Client) Poll(ctx context.Context, req PollRequest) (*PollResponse, erro
 	}
 	resp, err := c.HTTP.Do(hr)
 	if err != nil {
-		return nil, err
+		return nil, explainUnreachable(err, c.ServerURL)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -520,7 +520,7 @@ func (c *Client) Renew(ctx context.Context, csrPEM []byte) (*Response, error) {
 	hr.Header.Set("Accept", "application/json")
 	resp, err := c.HTTP.Do(hr)
 	if err != nil {
-		return nil, err
+		return nil, explainUnreachable(err, c.ServerURL)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -565,7 +565,7 @@ func (c *Client) authed(ctx context.Context, method, path string, in any, out an
 	hr.Header.Set("Accept", "application/json")
 	resp, err := c.HTTP.Do(hr)
 	if err != nil {
-		return 0, err
+		return 0, explainUnreachable(err, c.ServerURL)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
@@ -610,7 +610,7 @@ func (c *Client) Payload(ctx context.Context, capability string, id int, w io.Wr
 	}
 	resp, err := c.HTTP.Do(hr)
 	if err != nil {
-		return err
+		return explainUnreachable(err, c.ServerURL)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -649,7 +649,7 @@ func (c *Client) Enroll(ctx context.Context, req Request) (*Response, error) {
 	hr.Header.Set("Accept", "application/json")
 	resp, err := c.HTTP.Do(hr)
 	if err != nil {
-		return nil, err
+		return nil, explainUnreachable(err, c.ServerURL)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
