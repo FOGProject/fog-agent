@@ -15,6 +15,7 @@ import (
 var (
 	wtsapi32                 = syscall.NewLazyDLL("wtsapi32.dll")
 	procWTSEnumerateSessions = wtsapi32.NewProc("WTSEnumerateSessionsW")
+	procWTSQuerySessionInfo  = wtsapi32.NewProc("WTSQuerySessionInformationW")
 	procWTSFreeMemory        = wtsapi32.NewProc("WTSFreeMemory")
 )
 
@@ -25,30 +26,47 @@ type wtsSessionInfo struct {
 	state      uint32
 }
 
-const (
-	wtsActive       = 0
-	wtsDisconnected = 4
-)
+const wtsUserName = 5
 
-// osLoggedIn counts interactive sessions that hold a user: active ones and
-// disconnected ones, since a disconnected RDP session still has that
-// person's work open. Session 0 (services) never appears as either.
+// osLoggedIn counts active and disconnected interactive sessions with a
+// user name. A disconnected RDP session still holds that person's work.
 func osLoggedIn() (int, error) {
 	var info *wtsSessionInfo
 	var count uint32
 	r, _, e := procWTSEnumerateSessions.Call(0, 0, 1, uintptr(unsafe.Pointer(&info)), uintptr(unsafe.Pointer(&count)))
 	if r == 0 {
-		return 0, e
+		return 0, wtsCallError("WTSEnumerateSessionsW", e)
 	}
 	defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(info)))
 	sessions := unsafe.Slice(info, count)
-	n := 0
-	for _, s := range sessions {
-		if s.state == wtsActive || s.state == wtsDisconnected {
-			n++
-		}
+	portable := make([]session, len(sessions))
+	for i, s := range sessions {
+		portable[i] = session{id: s.sessionID, state: s.state}
 	}
-	return n, nil
+	return countLoggedInSessions(portable, wtsUserNameForSession)
+}
+
+func wtsUserNameForSession(sessionID uint32) (string, error) {
+	var buffer *uint16
+	var bytes uint32
+	r, _, e := procWTSQuerySessionInfo.Call(0, uintptr(sessionID), wtsUserName, uintptr(unsafe.Pointer(&buffer)), uintptr(unsafe.Pointer(&bytes)))
+	if buffer != nil {
+		defer procWTSFreeMemory.Call(uintptr(unsafe.Pointer(buffer)))
+	}
+	if r == 0 {
+		return "", wtsCallError("WTSQuerySessionInformationW", e)
+	}
+	if buffer == nil || bytes < 2 || bytes%2 != 0 {
+		return "", errMalformedWTSUserName
+	}
+	return decodeWTSUserName(unsafe.Slice(buffer, bytes/2), bytes)
+}
+
+func wtsCallError(operation string, callErr error) error {
+	if callErr == nil || callErr == syscall.Errno(0) {
+		return fmt.Errorf("%s failed", operation)
+	}
+	return fmt.Errorf("%s failed: %w", operation, callErr)
 }
 
 // osReboot goes through shutdown.exe, which enables SeShutdownPrivilege for
