@@ -7,35 +7,34 @@ import (
 	"testing"
 )
 
-func validMJ1Plan() RejoinPlan {
+func validDirectoryPlan() RejoinPlan {
 	target := &RejoinObject{
 		GUID:    "22222222-2222-2222-2222-222222222222",
 		SID:     "S-1-5-21-2",
 		Account: "WORKSTATION$",
 	}
 	return RejoinPlan{
-		AttemptID:      strings.Repeat("a", 32),
-		HostID:         17,
-		ConfigRevision: strings.Repeat("b", 32),
-		Phase:          "planned",
-		Name:           "WORKSTATION",
-		Domain:         "corp.example.com",
-		Mode:           "existing",
-		DC:             "dc01.corp.example.com",
-		Source: RejoinObject{
-			GUID:    "11111111-1111-1111-1111-111111111111",
-			SID:     "S-1-5-21-1",
-			Account: "SOURCE$",
-		},
-		Target: target,
+		Version:         2,
+		Operation:       "rebind",
+		ExpectedCurrent: "OLDNAME",
+		ExpectedPending: "OLDNAME",
+		AttemptID:       strings.Repeat("a", 32),
+		HostID:          17,
+		ConfigRevision:  strings.Repeat("b", 32),
+		Phase:           "planned",
+		Name:            "WORKSTATION",
+		Domain:          "corp.example.com",
+		Mode:            "existing",
+		DC:              "dc01.corp.example.com",
+		Target:          target,
 	}
 }
 
-func validMJ1Attempt() *Attempt {
+func validDirectoryAttempt() *Attempt {
 	return &Attempt{
-		Version:     1,
+		Version:     2,
 		Fingerprint: strings.Repeat("c", 64),
-		Plan:        validMJ1Plan(),
+		Plan:        validDirectoryPlan(),
 		Phase:       "reserved",
 		BeforeBoot: BootObservation{
 			Marker:  "boot-a",
@@ -45,15 +44,12 @@ func validMJ1Attempt() *Attempt {
 }
 
 func validV2Plan(operation, mode string) RejoinPlan {
-	p := validMJ1Plan()
-	p.Version = 2
+	p := validDirectoryPlan()
 	p.Operation = operation
 	p.Mode = mode
-	p.ExpectedCurrent = "OLDNAME"
-	p.ExpectedPending = p.Name
-	if operation == "rebind" {
-		p.ExpectedCurrent = "OLDNAME"
-		p.ExpectedPending = "OLDNAME"
+	// validDirectoryPlan is a rebind: current and pending are both OLDNAME.
+	if operation != "rebind" {
+		p.ExpectedPending = p.Name
 	}
 	if operation == "rename" {
 		p.Target = nil
@@ -62,28 +58,31 @@ func validV2Plan(operation, mode string) RejoinPlan {
 }
 
 func TestRejoinPlanValidateExistingAndCreate(t *testing.T) {
-	existing := validMJ1Plan()
+	existing := validDirectoryPlan()
 	if err := existing.Validate(existing.HostID); err != nil {
 		t.Fatalf("valid existing plan rejected: %v", err)
 	}
 
-	create := validMJ1Plan()
+	create := validDirectoryPlan()
 	create.Mode = "create"
+	create.Phase = "ready"
 	create.Target = nil
 	if err := create.Validate(create.HostID); err != nil {
 		t.Fatalf("valid create plan rejected: %v", err)
 	}
 }
 
-func TestRejoinPlanRejectsSourceEqualToTarget(t *testing.T) {
-	plan := validMJ1Plan()
-	plan.Source.GUID = plan.Target.GUID
-	if err := plan.Validate(plan.HostID); err == nil {
-		t.Fatal("existing plan accepted the same directory object as source and target")
+func TestRejoinPlanRejectsAnyVersionButTwo(t *testing.T) {
+	for _, version := range []int{0, 1, 3} {
+		plan := validDirectoryPlan()
+		plan.Version = version
+		if err := plan.Validate(plan.HostID); err == nil {
+			t.Fatalf("plan version %d accepted", version)
+		}
 	}
 }
 
-func TestV2PlanValidatesWithoutSource(t *testing.T) {
+func TestV2PlanValidates(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		plan RejoinPlan
@@ -99,7 +98,6 @@ func TestV2PlanValidatesWithoutSource(t *testing.T) {
 		}()},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			tc.plan.Source = RejoinObject{}
 			if err := tc.plan.Validate(tc.plan.HostID); err != nil {
 				t.Fatalf("valid v2 plan rejected: %v", err)
 			}
@@ -136,9 +134,8 @@ func TestV2PlanRejectsInvalidOperationTargetAndExpectedNames(t *testing.T) {
 	}
 }
 
-func TestV2PlanJSONOmitsSourceAndKeepsExplicitVersion(t *testing.T) {
+func TestV2PlanJSONKeepsExplicitVersion(t *testing.T) {
 	p := validV2Plan("rename", "rename")
-	p.Source = RejoinObject{GUID: "legacy-guid", SID: "legacy-sid"}
 	b, err := json.Marshal(p)
 	if err != nil {
 		t.Fatal(err)
@@ -148,7 +145,7 @@ func TestV2PlanJSONOmitsSourceAndKeepsExplicitVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, ok := fields["source"]; ok {
-		t.Fatal("v2 JSON exposed legacy source metadata")
+		t.Fatal("v2 JSON carries a source field")
 	}
 	if string(fields["version"]) != "2" {
 		t.Fatalf("v2 JSON version = %s, want 2", fields["version"])
@@ -161,11 +158,11 @@ func TestV2PlanJSONOmitsSourceAndKeepsExplicitVersion(t *testing.T) {
 
 func TestReserveAttemptIsExclusive(t *testing.T) {
 	dir := t.TempDir()
-	first := validMJ1Attempt()
+	first := validDirectoryAttempt()
 	if err := ReserveAttempt(dir, first); err != nil {
 		t.Fatalf("reserve first attempt: %v", err)
 	}
-	second := validMJ1Attempt()
+	second := validDirectoryAttempt()
 	second.Plan.AttemptID = strings.Repeat("d", 32)
 	if err := ReserveAttempt(dir, second); err == nil {
 		t.Fatal("second reservation replaced an existing mutation marker")
@@ -177,7 +174,7 @@ func TestReserveAttemptIsExclusive(t *testing.T) {
 }
 
 func TestLoadAttemptRejectsCorruptUnknownOversizedAndTrailingJSON(t *testing.T) {
-	valid, err := json.Marshal(validMJ1Attempt())
+	valid, err := json.Marshal(validDirectoryAttempt())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,25 +200,10 @@ func TestLoadAttemptRejectsCorruptUnknownOversizedAndTrailingJSON(t *testing.T) 
 	}
 }
 
-func TestLoadAttemptPreservesLegacyUnknownAndAcceptsV2(t *testing.T) {
-	t.Run("legacy v1 unknown retains source", func(t *testing.T) {
-		a := validMJ1Attempt()
-		a.Phase = "unknown"
-		b, err := json.Marshal(a)
-		if err != nil {
-			t.Fatal(err)
-		}
-		dir := t.TempDir()
-		if err := os.WriteFile(AttemptPath(dir), b, 0600); err != nil {
-			t.Fatal(err)
-		}
-		got, err := LoadAttempt(dir)
-		if err != nil || got == nil || got.Phase != "unknown" || got.Plan.Source.GUID != a.Plan.Source.GUID {
-			t.Fatalf("legacy unknown marker not preserved: attempt=%+v err=%v", got, err)
-		}
-	})
-	t.Run("current server v1 plan version", func(t *testing.T) {
-		a := validMJ1Attempt()
+func TestLoadAttemptAcceptsV2AndRejectsOtherVersions(t *testing.T) {
+	t.Run("v1 marker rejected", func(t *testing.T) {
+		a := validDirectoryAttempt()
+		a.Version = 1
 		a.Plan.Version = 1
 		b, err := json.Marshal(a)
 		if err != nil {
@@ -231,13 +213,12 @@ func TestLoadAttemptPreservesLegacyUnknownAndAcceptsV2(t *testing.T) {
 		if err := os.WriteFile(AttemptPath(dir), b, 0600); err != nil {
 			t.Fatal(err)
 		}
-		if got, err := LoadAttempt(dir); err != nil || got == nil || got.Plan.Version != 1 {
-			t.Fatalf("current v1 marker not accepted: attempt=%+v err=%v", got, err)
+		if got, err := LoadAttempt(dir); err == nil || got != nil || !strings.Contains(err.Error(), "unsupported directory marker version") {
+			t.Fatalf("v1 marker accepted or wrong error: attempt=%+v err=%v", got, err)
 		}
 	})
-	t.Run("v2 unknown source-free marker", func(t *testing.T) {
+	t.Run("v2 unknown marker", func(t *testing.T) {
 		p := validV2Plan("rename", "rename")
-		p.Source = RejoinObject{}
 		a := &Attempt{Version: 2, Fingerprint: strings.Repeat("c", 64), Plan: p, Phase: "unknown"}
 		b, err := json.Marshal(a)
 		if err != nil {
@@ -268,7 +249,7 @@ func TestLoadAttemptPreservesLegacyUnknownAndAcceptsV2(t *testing.T) {
 		}
 	})
 	t.Run("unknown marker version", func(t *testing.T) {
-		a := validMJ1Attempt()
+		a := validDirectoryAttempt()
 		a.Version = 3
 		b, err := json.Marshal(a)
 		if err != nil {

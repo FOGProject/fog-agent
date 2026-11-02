@@ -127,9 +127,16 @@ var logOut io.Writer = os.Stderr
 // same state every few minutes writes one line per change of state, not
 // one per iteration (design doc 5.1: informative, never noisy). Under
 // the service each line is stamped, since nothing else dates it.
-type sayer struct{ last string }
+type sayer struct {
+	last string
+	// quiet drops every message; a repeated retry must not fill the log.
+	quiet bool
+}
 
 func (s *sayer) say(msg string) {
+	if s.quiet {
+		return
+	}
 	if msg != s.last {
 		if logOut != os.Stderr {
 			msg = time.Now().Format(time.RFC3339) + " " + msg
@@ -219,13 +226,7 @@ var readIdentity = identity.Read
 // builds the request protocol-v1.md describes.
 func enrollRequest(st *enroll.State, token string, out *sayer) (enroll.Request, error) {
 	live := readIdentity()
-	regen := false
-	var err error
-	if runtime.GOOS != "windows" {
-		regen, err = st.EnsureKey(live)
-	} else if st.Key == nil {
-		err = errors.New("directory identity must be prepared before enrollment")
-	}
+	regen, err := st.EnsureKey(live)
 	if err != nil {
 		return enroll.Request{}, err
 	}
@@ -238,7 +239,7 @@ func enrollRequest(st *enroll.State, token string, out *sayer) (enroll.Request, 
 	}
 	hostname, _ := os.Hostname()
 	var features []string
-	if runtime.GOOS == "windows" {
+	if directoryOn {
 		features = []string{enroll.DirectoryJoinTargetFeature}
 	}
 	return enroll.Request{
@@ -312,9 +313,6 @@ func cmdEnroll(args []string) error {
 		if e != nil {
 			return e
 		}
-		if e = probe.RequireDirectoryFeatures(context.Background()); e != nil {
-			return e
-		}
 		if *reset {
 			if e = allowIdentityReset(); e != nil {
 				return e
@@ -324,7 +322,9 @@ func cmdEnroll(args []string) error {
 				return e
 			}
 		}
-		if e = prepareDirectoryIdentity(context.Background(), st, probe); e != nil {
+		// Off is not an error here: enrollRequest settles the key as it did
+		// before the feature.
+		if directoryOn, _, e = prepareDirectoryIdentity(context.Background(), st, probe, out); e != nil {
 			return e
 		}
 	} else if *reset {
@@ -386,18 +386,16 @@ func runAgent(ctx context.Context, args []string) error {
 	// polled as the machine the image was captured from, and applied that
 	// host's name, tasks and snapins to itself.
 	if runtime.GOOS == "windows" {
-		if err = prepareWindowsRun(ctx, st, client, out); err != nil {
+		if directoryOn, directoryRetry, err = prepareWindowsRun(ctx, st, client, out); err != nil {
 			return err
 		}
-	} else {
-		hadKey := st.Key != nil
-		regen, e := st.EnsureKey(readIdentity())
-		if e != nil {
-			return e
+		if !directoryOn {
+			if err = legacyIdentity(st, out); err != nil {
+				return err
+			}
 		}
-		if regen && hadKey {
-			out.say("cloned or reimaged disk: enrolling this machine")
-		}
+	} else if err = legacyIdentity(st, out); err != nil {
+		return err
 	}
 	identityVerified := false
 	identitySignature := ""
@@ -413,6 +411,22 @@ func runAgent(ctx context.Context, args []string) error {
 		// nobody logs into is "until somebody notices".
 		if checkProbation(st, out) {
 			return errUpdated
+		}
+		// A service often starts before the network is up. Ask again, once a
+		// poll, while the only reason directory rejoin is off is that the
+		// server could not be asked. Quiet, so a down server adds no log
+		// lines. This runs before enrollment: an identity mismatch drops the
+		// certificate, and the enrollment below then replaces it.
+		if runtime.GOOS == "windows" && !directoryOn && directoryRetry {
+			on, retry, e := prepareDirectoryIdentity(ctx, st, client, &sayer{quiet: true})
+			if e != nil {
+				return e
+			}
+			directoryOn, directoryRetry = on, retry
+			if on {
+				out.say("directory rejoin: the server now offers it; on")
+				identityVerified = false
+			}
 		}
 		if len(st.Cert) == 0 {
 			// A token setup kept for us outranks nothing on the command
@@ -436,23 +450,27 @@ func runAgent(ctx context.Context, args []string) error {
 		if err := client.UseCertificate(st.Cert, st.Key); err != nil {
 			return err
 		}
-		if runtime.GOOS == "windows" {
+		// skipDirectory is set when this poll's identity check failed: the
+		// normal poll still runs, the directory work waits for the next one.
+		skipDirectory := false
+		if directoryOn {
 			live := readIdentity()
 			encoded, _ := json.Marshal(live)
 			if !identityVerified || identitySignature != string(encoded) {
 				a, e := client.CheckIdentity(ctx, live)
 				if e != nil {
-					return e
-				}
-				if a.Identity.Status == "mismatch" {
+					out.say("directory rejoin: the server could not confirm this machine's identity; trying again next poll. Check that the server is reachable")
+					skipDirectory = true
+				} else if a.Identity.Status == "mismatch" {
 					if e = st.RotateIdentity(live); e != nil {
 						return e
 					}
 					identityVerified = false
 					continue
+				} else {
+					identityVerified = true
+					identitySignature = string(encoded)
 				}
-				identityVerified = true
-				identitySignature = string(encoded)
 			}
 		}
 		wait := 5 * time.Minute
@@ -461,7 +479,9 @@ func runAgent(ctx context.Context, args []string) error {
 		// with the state only when that is not current. A build that
 		// learned a capability sends nothing, so it gets the state once.
 		req := enroll.PollRequest{AgentVersion: Version, AppliedRevision: st.Config.AppliedRevision, WantState: driftMayBeDue(st)}
-		attachDirectoryContext(st, &req)
+		if !skipDirectory {
+			attachDirectoryContext(st, &req)
+		}
 		if st.Config.AppliedWith != supportedCapabilities {
 			req.AppliedRevision = ""
 		}
@@ -472,7 +492,15 @@ func runAgent(ctx context.Context, args []string) error {
 		sent := attachFacts(st, &req, now, out)
 		sessionDigest, sessionsSent := watch.attach(st, &req, now)
 		resp, err := client.Poll(ctx, req)
-		if err == nil && runtime.GOOS == "windows" {
+		directoryHeld := false
+		if err == nil && skipDirectory && resp.State != nil {
+			// The identity is unverified, so no directory or hostname
+			// change may apply and the revision must come back next poll.
+			resp.State.Directory = nil
+			resp.State.Hostname = nil
+			directoryHeld = true
+		}
+		if err == nil && directoryOn && !skipDirectory {
 			if changed, e := refreshDirectoryCheck(st, resp.DirectoryCheck); e != nil {
 				out.say("directory observation: " + e.Error())
 			} else {
@@ -486,6 +514,7 @@ func runAgent(ctx context.Context, args []string) error {
 			if (resp.DirectoryHold || operationBlocked || resp.DirectoryRejoin != nil) && resp.State != nil {
 				resp.State.Directory = nil
 				resp.State.Hostname = nil
+				directoryHeld = true
 			}
 		}
 		switch {
@@ -586,7 +615,7 @@ func runAgent(ctx context.Context, args []string) error {
 			case needsReconcile(st.Config, resp.Revision) && resp.State == nil:
 				out.say("poll: the revision moved but the server sent no state")
 			case needsReconcile(st.Config, resp.Revision):
-				if err := reconcile(ctx, st, client, resp.State, out); err != nil {
+				if err := reconcileHeld(ctx, st, client, resp.State, out, directoryHeld); err != nil {
 					if errors.Is(err, errUpdated) {
 						// The binary under this process is no longer the
 						// one that started it. Leave with a non-zero
@@ -725,6 +754,21 @@ func capabilityOrder(desired *enroll.DesiredState) []string {
 // binary, which is the same mechanism that recovers from a new binary
 // that crashes on start (design 0015 section 6).
 var errUpdated = errors.New("the agent replaced itself; restarting")
+
+// reconcileHeld runs reconcile. When held is true the directory and hostname
+// changes were stripped from desired, so a clean reconcile must not leave the
+// revision marked applied.
+func reconcileHeld(ctx context.Context, st *enroll.State, client *enroll.Client, desired *enroll.DesiredState, out *sayer, held bool) error {
+	prevRev, prevWith := st.Config.AppliedRevision, st.Config.AppliedWith
+	err := reconcile(ctx, st, client, desired, out)
+	if err == nil && held {
+		// A held directory/hostname change was not applied, so the
+		// revision must come back next poll.
+		st.Config.AppliedRevision, st.Config.AppliedWith = prevRev, prevWith
+		return st.SaveConfig()
+	}
+	return err
+}
 
 func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, desired *enroll.DesiredState, out *sayer) error {
 	if desired.Reboot != nil {
@@ -1309,8 +1353,15 @@ func drift(ctx context.Context, st *enroll.State, client *enroll.Client, desired
 // a result, and reboots when allowed. It is the only caller of
 // reboot.Execute in the agent.
 func coordinate(ctx context.Context, st *enroll.State, client *enroll.Client, out *sayer) error {
-	return coordinateForPlatform(ctx, st, client, out, runtime.GOOS == "windows")
+	// The directory-rejoin filter runs on every Windows machine, whether or
+	// not directory mode is on: a persisted rejoin reason must never reach
+	// the reboot path unless its marker allows it.
+	return coordinateForPlatform(ctx, st, client, out, coordinateWindows)
 }
+
+// coordinateWindows says whether the coordinator applies the Windows
+// directory-rejoin filter. A variable so a test can drive it off Windows.
+var coordinateWindows = runtime.GOOS == "windows"
 
 var rebootUsers = reboot.LoggedIn
 var requestReboot = reboot.Execute
@@ -1320,7 +1371,6 @@ func coordinateForPlatform(ctx context.Context, st *enroll.State, client *enroll
 		return nil
 	}
 	pending := st.Config.PendingReboot
-	var rejoinWithheld []reboot.Reason
 	var attempt *directoryjoin.Attempt
 	var rejoinRebootClaimed bool
 	if windows {
@@ -1330,14 +1380,10 @@ func coordinateForPlatform(ctx context.Context, st *enroll.State, client *enroll
 		for _, reason := range st.Config.PendingReboot {
 			// A completed/archived operation cannot authorize another reboot.
 			// Only an unrequested awaiting_reboot latch can be acquired below.
-			if reason.Source == "directory-rejoin" && (markerErr != nil || attempt == nil || attempt.Phase != "awaiting_reboot" || attempt.RebootRequested) {
+			if reason.Source == reboot.SourceDirectoryRejoin && (markerErr != nil || attempt == nil || attempt.Phase != "awaiting_reboot" || attempt.RebootRequested) {
 				continue
 			}
-			if reason.Source == reboot.SourceTask && (markerErr != nil || (attempt != nil && attempt.Phase != "verified")) {
-				rejoinWithheld = append(rejoinWithheld, reason)
-			} else {
-				pending = append(pending, reason)
-			}
+			pending = append(pending, reason)
 		}
 	}
 	users, err := rebootUsers()
@@ -1364,10 +1410,6 @@ func coordinateForPlatform(ctx context.Context, st *enroll.State, client *enroll
 		arming = findErr == nil
 	}
 	reasons, withheld, refusal := planReboot(pending, findErr)
-	withheld = append(withheld, rejoinWithheld...)
-	if len(rejoinWithheld) > 0 && len(reasons) == 0 {
-		refusal = "directory rejoin verification holds imaging"
-	}
 	if refusal != "" {
 		out.say("netboot: " + refusal)
 	} else if findErr != nil && hasTaskReason(st.Config.PendingReboot) {
@@ -1413,7 +1455,7 @@ func coordinateForPlatform(ctx context.Context, st *enroll.State, client *enroll
 	// them back.
 	if attempt != nil && !attempt.RebootRequested {
 		for _, reason := range reasons {
-			if reason.Source == "directory-rejoin" {
+			if reason.Source == reboot.SourceDirectoryRejoin {
 				if e := directoryjoin.SetAttemptRebootRequested(st.Dir, attempt, true); e != nil {
 					return e
 				}
@@ -1594,21 +1636,21 @@ func cmdRenew(args []string) error {
 	if err := client.UseCertificate(st.Cert, st.Key); err != nil {
 		return err
 	}
-	if runtime.GOOS == "windows" {
-		if e := client.RequireDirectoryFeatures(context.Background()); e != nil {
-			return e
-		}
+	// Only a server that offers the directory features is asked; any other
+	// answer renews as it did before the feature.
+	out := &sayer{}
+	if runtime.GOOS == "windows" && client.RequireDirectoryFeatures(context.Background()) == nil {
 		a, e := client.CheckIdentity(context.Background(), readIdentity())
-		if e != nil {
-			return e
-		}
-		if a.Identity.Status != "matched" {
-			return errors.New("identity mismatch: renewal stopped")
+		switch {
+		case e != nil:
+			// Not proof of a different machine: renew as before the feature.
+			out.say("renew: the server could not confirm this machine's identity; renewing without that check. Check that the server is reachable")
+		case a.Identity.Status == "mismatch":
+			return errors.New("renew: this machine is not the host this certificate belongs to; the service re-enrolls it on its next start")
 		}
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	out := &sayer{}
 	if err := renew(ctx, st, client, out); err != nil {
 		return err
 	}
@@ -1754,11 +1796,8 @@ func prepareState(f commonFlags, out *sayer) (*enroll.State, error) {
 		return nil, err
 	}
 	if runtime.GOOS == "windows" {
-		if err = prepareDirectoryIdentity(context.Background(), st, client); err != nil {
-			if errors.Is(err, enroll.ErrDirectoryFeaturesUnavailable) {
-				out.say("directory feature check unavailable; service staged without enrollment")
-				return st, nil
-			}
+		directoryOn, _, err = prepareDirectoryIdentity(context.Background(), st, client, out)
+		if err != nil {
 			return nil, err
 		}
 	}

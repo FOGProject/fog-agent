@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"runtime"
 	"strings"
 	"time"
 
@@ -24,10 +23,13 @@ var renameDirectory = func(ctx context.Context, policy directoryjoin.Policy, pla
 
 // A failed network gate must never prevent a due local update rollback.
 // Keep this boundary independent of GOOS so its ordering is testable offline.
-func prepareWindowsRun(ctx context.Context, st *enroll.State, c *enroll.Client, out *sayer) error {
-	return beforeDirectoryNetwork(func() bool { return checkProbation(st, out) }, func() error {
-		return prepareDirectoryIdentity(ctx, st, c)
+func prepareWindowsRun(ctx context.Context, st *enroll.State, c *enroll.Client, out *sayer) (on, retry bool, err error) {
+	err = beforeDirectoryNetwork(func() bool { return checkProbation(st, out) }, func() error {
+		var e error
+		on, retry, e = prepareDirectoryIdentity(ctx, st, c, out)
+		return e
 	})
+	return on, retry, err
 }
 
 func beforeDirectoryNetwork(rollback func() bool, prepare func() error) error {
@@ -37,44 +39,94 @@ func beforeDirectoryNetwork(rollback func() bool, prepare func() error) error {
 	return prepare()
 }
 
-// Nothing cached may act until this process has checked its live identity.
-func prepareDirectoryIdentity(ctx context.Context, st *enroll.State, c *enroll.Client) error {
-	if err := c.RequireDirectoryFeatures(ctx); err != nil {
+// directoryOn is true only on Windows when this process negotiated both
+// directory features at startup and the server identity check resolved.
+// Everything directory-rejoin related is skipped when it is false, and the
+// agent behaves as it did before the feature.
+var directoryOn bool
+
+// directoryRetry is true when directory mode is off only because the server
+// could not be asked or could not confirm the identity just now, for example
+// a service that starts before the network is up. The run loop asks again
+// each poll. An unsupported server does not set it: that stays off until the
+// agent restarts.
+var directoryRetry bool
+
+// legacyIdentity is the clone and reimage guard as it ran before directory
+// rejoin: settle the key against the live identity and say what happened.
+func legacyIdentity(st *enroll.State, out *sayer) error {
+	hadKey := st.Key != nil
+	regen, err := st.EnsureKey(readIdentity())
+	if err != nil {
 		return err
+	}
+	switch {
+	case regen && hadKey:
+		out.say("this state was made on another machine (a cloned or reimaged disk); generated a new key and enrolling as this machine")
+	case regen:
+		out.say("generated a new key for this machine's identity")
+	}
+	return nil
+}
+
+// Nothing cached may act until this process has checked its live identity.
+// It reports one of three outcomes: on; off because the server does not offer
+// the feature (retry false); or off because the server could not be asked or
+// could not place this machine just now (retry true). Off outcomes touch no
+// key: the caller settles the key as the agent did before the feature.
+func prepareDirectoryIdentity(ctx context.Context, st *enroll.State, c *enroll.Client, out *sayer) (on, retry bool, err error) {
+	if err := c.RequireDirectoryFeatures(ctx); err != nil {
+		if errors.Is(err, enroll.ErrDirectoryFeaturesUnsupported) {
+			out.say("directory rejoin: this FOG server does not offer it; the agent works as before")
+			return false, false, nil
+		}
+		out.say("directory rejoin: could not ask the server which features it offers; trying again next poll. Check that the server is reachable")
+		return false, true, nil
 	}
 	live := readIdentity()
 	if len(st.Cert) > 0 {
 		if err := c.UseCertificate(st.Cert, st.Key); err != nil {
-			return err
+			return false, false, err
 		}
 		a, err := c.CheckIdentity(ctx, live)
 		if err != nil {
-			return err
+			out.say("directory rejoin: the server could not confirm this machine's identity; trying again next poll. Check that the server is reachable")
+			return false, true, nil
 		}
 		if a.Identity.Status == "mismatch" {
-			return st.RotateIdentity(live)
+			if err = st.RotateIdentity(live); err != nil {
+				return false, false, err
+			}
+			return true, false, nil
 		}
 		if st.Config.HostID != 0 && st.Config.HostID != a.Identity.HostID {
-			return errors.New("certificate and saved host do not agree")
+			out.say("directory rejoin: the saved host ID differs from the one this certificate belongs to; off until the agent restarts. Check that the state directory belongs to this machine")
+			return false, false, nil
 		}
 		st.Config.HostID = a.Identity.HostID
 		if err = st.RememberIdentity(live); err != nil {
-			return err
+			return false, false, err
 		}
-		return st.SaveConfig()
+		if err = st.SaveConfig(); err != nil {
+			return false, false, err
+		}
+		return true, false, nil
 	}
 	// Certificate loss is not permission to enroll a copied key on another
 	// physical host. Settle even an existing key against its local identity.
 	trust := st.Config.SystemTrust
 	if _, err := st.EnsureKey(live); err != nil {
-		return err
+		return false, false, err
 	}
 	st.Config.SystemTrust = trust
-	return st.SaveConfig()
+	if err := st.SaveConfig(); err != nil {
+		return false, false, err
+	}
+	return true, false, nil
 }
 
 func attachDirectoryContext(st *enroll.State, r *enroll.PollRequest) {
-	if runtime.GOOS != "windows" {
+	if !directoryOn {
 		return
 	}
 	live := readIdentity()
@@ -114,9 +166,6 @@ func processRejoin(ctx context.Context, st *enroll.State, c *enroll.Client, p *d
 	if err != nil {
 		return err
 	}
-	if a != nil && a.Version != 2 && a.Phase != "verified" {
-		return errors.New("legacy directory operation requires review; automatic execution stopped")
-	}
 	// A successful, older identity's operation is history, not authority for
 	// this key. This also handles hosts already re-enrolled before this fix,
 	// without requiring another identity reset. Never retire uncertainty.
@@ -142,11 +191,9 @@ func processRejoin(ctx context.Context, st *enroll.State, c *enroll.Client, p *d
 		out.say("directory rejoin: blocked (" + p.Reason + ")")
 		return nil
 	}
-	if p.Version != 2 {
-		return errors.New("legacy directory plans cannot start a new operation")
-	}
-	if p.Validate(st.Config.HostID) != nil {
-		return errors.New("directory rejoin plan invalid")
+	// Validate also rejects any plan version other than 2.
+	if e := p.Validate(st.Config.HostID); e != nil {
+		return fmt.Errorf("directory rejoin plan invalid: %w", e)
 	}
 	if p.Operation == "rename" && p.Phase == "ready" {
 		if err := directoryjoin.ValidateRenamePlan(*p); err != nil {
@@ -260,7 +307,7 @@ func processRejoin(ctx context.Context, st *enroll.State, c *enroll.Client, p *d
 		if err = directoryjoin.SaveAttempt(st.Dir, a); err != nil {
 			return err
 		}
-		st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{Source: "directory-rejoin", Detail: "directory rejoin needs a Windows restart", Force: policy.Reboot, Mode: reboot.ModeReboot})
+		st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{Source: reboot.SourceDirectoryRejoin, Detail: "directory rejoin needs a Windows restart", Force: policy.Reboot, Mode: reboot.ModeReboot})
 		st.Config.FactsChecked = time.Time{}
 		if err = st.SaveConfig(); err != nil {
 			return err
@@ -301,7 +348,7 @@ func processRejoin(ctx context.Context, st *enroll.State, c *enroll.Client, p *d
 				return err
 			}
 			st.Config.FactsChecked = time.Time{}
-			st.Config.PendingReboot = reboot.Drop(st.Config.PendingReboot, "directory-rejoin")
+			st.Config.PendingReboot = reboot.Drop(st.Config.PendingReboot, reboot.SourceDirectoryRejoin)
 			return st.SaveConfig()
 		}
 		if !a.RebootRequested && len(st.Config.PendingReboot) == 0 {

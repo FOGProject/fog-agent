@@ -259,6 +259,8 @@ write to every property in its OU.
 See `protocol-v1.md` for the paired server/agent contract. Existing Workgroup
 Join and safe ordinary domain rename remain in use. Rebind selects a confirmed
 target account instead of repairing or renaming a reassigned old account.
-Source GUID/SID management is not part of this contract. Identity ambiguity,
-unresolved legacy markers and unknown native results stop automatic work.
+Source GUID/SID management is not part of this contract. Identity ambiguity
+turns directory rejoin off until the next poll. Markers and plans that are not
+version 2 are rejected as unsupported. Unresolved markers and unknown native
+results stop automatic directory work.
 The existing coordinator handles the restart and post-boot verification.

@@ -13,6 +13,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/enroll"
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
+	"github.com/FOGProject/fog-agent/internal/reboot"
 )
 
 func TestLocalDirectoryAttemptSummaryIsDerivedAndOmitsCloneFields(t *testing.T) {
@@ -202,7 +203,7 @@ func TestDeployTaskJoinFromWorkgroupVerifiesAfterOneNativeCall(t *testing.T) {
 	if err != nil || marker == nil || marker.Phase != "awaiting_reboot" {
 		t.Fatalf("task join did not persist reboot wait: marker=%+v err=%v", marker, err)
 	}
-	if len(st.Config.PendingReboot) != 1 || st.Config.PendingReboot[0].Source != "directory-rejoin" {
+	if len(st.Config.PendingReboot) != 1 || st.Config.PendingReboot[0].Source != reboot.SourceDirectoryRejoin {
 		t.Fatalf("task join did not queue exactly one directory reboot: %+v", st.Config.PendingReboot)
 	}
 

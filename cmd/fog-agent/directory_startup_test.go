@@ -22,6 +22,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
 	"github.com/FOGProject/fog-agent/internal/provider/update"
+	"github.com/FOGProject/fog-agent/internal/reboot"
 )
 
 func writeStartupProbation(t *testing.T, st *enroll.State, deadline time.Time) {
@@ -91,17 +92,21 @@ func TestBeforeDirectoryNetworkLeavesFutureProbationAndPrepares(t *testing.T) {
 	}
 }
 
-func TestPrepareWindowsRunSeparatesUnavailableUnsupportedAndSupported(t *testing.T) {
+func TestPrepareWindowsRunReportsRetryOnlyForUnavailable(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		status     int
-		header     string
-		wantErr    error
-		wantErrSet bool
+		name   string
+		status int
+		header string
+		wantOn bool
+		// wantRetry separates "could not ask" (ask again next poll) from
+		// "asked and not offered" (off until restart).
+		wantRetry bool
 	}{
-		{name: "transport unavailable", wantErr: enroll.ErrDirectoryFeaturesUnavailable, wantErrSet: true},
-		{name: "reachable unsupported", status: http.StatusOK, wantErr: enroll.ErrDirectoryFeaturesUnsupported, wantErrSet: true},
-		{name: "supported", status: http.StatusOK, header: enroll.DirectoryJoinTargetFeature + ", " + enroll.DirectoryTaskOperationsFeature},
+		// Neither unavailable nor unsupported stops the agent any more: the
+		// feature is off and the agent works as it did before it.
+		{name: "transport unavailable", wantRetry: true},
+		{name: "reachable unsupported", status: http.StatusOK},
+		{name: "supported", status: http.StatusOK, header: enroll.DirectoryJoinTargetFeature + ", " + enroll.DirectoryTaskOperationsFeature, wantOn: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			st, err := enroll.Load(t.TempDir())
@@ -128,13 +133,16 @@ func TestPrepareWindowsRunSeparatesUnavailableUnsupportedAndSupported(t *testing
 					return nil, errors.New("offline")
 				})}
 			}
-			err = prepareWindowsRun(context.Background(), st, client, &sayer{})
-			if tc.wantErrSet {
-				if !errors.Is(err, tc.wantErr) {
-					t.Fatalf("prepareWindowsRun() error = %v, want %v", err, tc.wantErr)
-				}
-			} else if err != nil {
+			on, retry, err := prepareWindowsRun(context.Background(), st, client, &sayer{})
+			if err != nil {
 				t.Fatalf("prepareWindowsRun() error = %v", err)
+			}
+			if on != tc.wantOn || retry != tc.wantRetry {
+				t.Fatalf("prepareWindowsRun() on=%t retry=%t, want on=%t retry=%t", on, retry, tc.wantOn, tc.wantRetry)
+			}
+			// An off outcome leaves the key to the caller; only on settles it.
+			if (st.Key != nil) != tc.wantOn {
+				t.Fatalf("key present = %t, want %t", st.Key != nil, tc.wantOn)
 			}
 			if requests != 0 && requests != 1 {
 				t.Fatalf("probe count = %d, want at most one", requests)
@@ -196,8 +204,8 @@ func TestPrepareWindowsRunIdentityMismatchStopsBeforePolling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := prepareWindowsRun(context.Background(), st, client, &sayer{}); err != nil {
-		t.Fatalf("prepareWindowsRun() error = %v", err)
+	if on, retry, err := prepareWindowsRun(context.Background(), st, client, &sayer{}); err != nil || !on || retry {
+		t.Fatalf("prepareWindowsRun() on=%t retry=%t error = %v", on, retry, err)
 	}
 	if probeCalls != 1 || identityCalls != 1 || fallbackCalls != 0 {
 		t.Fatalf("requests: probe=%d identity=%d poll/native/fallback=%d", probeCalls, identityCalls, fallbackCalls)
@@ -207,7 +215,7 @@ func TestPrepareWindowsRunIdentityMismatchStopsBeforePolling(t *testing.T) {
 	}
 }
 
-func TestPrepareMJ1WithoutCertificateBindsKeyToLiveIdentityAndPreservesUncertainty(t *testing.T) {
+func TestPrepareDirectoryWithoutCertificateBindsKeyToLiveIdentityAndPreservesUncertainty(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
 		keyIdentity   string
@@ -288,8 +296,8 @@ func TestPrepareMJ1WithoutCertificateBindsKeyToLiveIdentityAndPreservesUncertain
 			}
 			stubIdentity(t, live)
 			client := &enroll.Client{ServerURL: server.URL, HTTP: server.Client()}
-			if err := prepareDirectoryIdentity(context.Background(), st, client); err != nil {
-				t.Fatalf("prepareDirectoryIdentity: %v", err)
+			if on, retry, err := prepareDirectoryIdentity(context.Background(), st, client, &sayer{}); err != nil || !on || retry {
+				t.Fatalf("prepareDirectoryIdentity: on=%t retry=%t err=%v", on, retry, err)
 			}
 
 			if featureProbes != 1 {
@@ -327,5 +335,110 @@ func TestPrepareMJ1WithoutCertificateBindsKeyToLiveIdentityAndPreservesUncertain
 				}
 			}
 		})
+	}
+}
+
+// A server that does not offer both directory features must leave the agent
+// working as before the feature: no error, directory mode off, key settled.
+func TestPrepareDirectoryIdentityOffWhenServerLacksFeatures(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		header string
+	}{
+		{name: "404", status: http.StatusNotFound},
+		{name: "200 with only the target feature", status: http.StatusOK, header: enroll.DirectoryJoinTargetFeature},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := enroll.Load(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			stubIdentity(t, machine("lab"))
+			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodGet || r.URL.Path != "/agent/v1/enroll" {
+					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+				}
+				if tc.header != "" {
+					w.Header().Set("X-FOG-Agent-Features", tc.header)
+				}
+				w.WriteHeader(tc.status)
+			}))
+			defer server.Close()
+			client := &enroll.Client{ServerURL: server.URL, HTTP: server.Client()}
+			out := &sayer{}
+			on, retry, err := prepareDirectoryIdentity(context.Background(), st, client, out)
+			if err != nil || on || retry {
+				t.Fatalf("prepareDirectoryIdentity() = %t, %t, %v; want false, false, nil", on, retry, err)
+			}
+			if st.Key != nil {
+				t.Fatal("prepareDirectoryIdentity settled a key itself; that is the caller's job")
+			}
+			// The caller (runAgent) then runs the pre-feature guard.
+			if err := legacyIdentity(st, out); err != nil || st.Key == nil {
+				t.Fatalf("legacyIdentity: key=%t err=%v", st.Key != nil, err)
+			}
+		})
+	}
+}
+
+// A probe that could not reach the server is retried, and a later probe
+// against a server that now offers both features turns the feature on.
+func TestPrepareDirectoryIdentityRetriesAfterUnavailableProbe(t *testing.T) {
+	st, err := enroll.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubIdentity(t, machine("lab"))
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-FOG-Agent-Features", enroll.DirectoryJoinTargetFeature+", "+enroll.DirectoryTaskOperationsFeature)
+	}))
+	defer server.Close()
+	offline := &enroll.Client{ServerURL: server.URL, HTTP: &http.Client{Transport: startupRoundTripper(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("network not up yet")
+	})}}
+	on, retry, err := prepareDirectoryIdentity(context.Background(), st, offline, &sayer{})
+	if err != nil || on || !retry {
+		t.Fatalf("offline probe = on=%t retry=%t err=%v; want off with retry", on, retry, err)
+	}
+	online := &enroll.Client{ServerURL: server.URL, HTTP: server.Client()}
+	on, retry, err = prepareDirectoryIdentity(context.Background(), st, online, &sayer{quiet: true})
+	if err != nil || !on || retry {
+		t.Fatalf("second probe = on=%t retry=%t err=%v; want on", on, retry, err)
+	}
+}
+
+// The directory-rejoin reboot filter must not depend on directory mode. A
+// persisted reason whose marker already requested its reboot must not reboot
+// again while directory mode is off.
+func TestCoordinateFiltersRejoinReasonWhenDirectoryModeOff(t *testing.T) {
+	oldOn, oldRetry, oldWin := directoryOn, directoryRetry, coordinateWindows
+	directoryOn, directoryRetry, coordinateWindows = false, false, true
+	t.Cleanup(func() { directoryOn, directoryRetry, coordinateWindows = oldOn, oldRetry, oldWin })
+	st, plan := newDirectoryBoundaryState(t)
+	fingerprint, err := st.KeyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt := &directoryjoin.Attempt{Version: 2, Fingerprint: fingerprint, Plan: plan, Phase: "awaiting_reboot", RebootRequested: true}
+	if err = directoryjoin.ReserveAttempt(st.Dir, attempt); err != nil {
+		t.Fatal(err)
+	}
+	st.Config.PendingReboot = []reboot.Reason{{Source: reboot.SourceDirectoryRejoin, Detail: "already requested", Mode: reboot.ModeReboot}}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	}))
+	defer server.Close()
+	oldUsers, oldRequest := rebootUsers, requestReboot
+	t.Cleanup(func() { rebootUsers, requestReboot = oldUsers, oldRequest })
+	rebootUsers = func() (int, error) { return 0, nil }
+	rebootCalls := 0
+	requestReboot = func(string, time.Duration, string) error { rebootCalls++; return nil }
+	client := &enroll.Client{ServerURL: server.URL, HTTP: server.Client()}
+	if err = coordinate(context.Background(), st, client, &sayer{}); err != nil {
+		t.Fatalf("coordinate: %v", err)
+	}
+	if rebootCalls != 0 {
+		t.Fatalf("a rejoin reason whose reboot was already requested rebooted again: calls=%d", rebootCalls)
 	}
 }

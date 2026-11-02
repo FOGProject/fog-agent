@@ -12,8 +12,7 @@ func reservedRetryFixture() (*Attempt, RejoinPlan, int, string) {
 	oldPlan := validV2Plan("rebind", "existing")
 	oldPlan.Phase = "ready"
 
-	a := validMJ1Attempt()
-	a.Version = 2
+	a := validDirectoryAttempt()
 	a.Plan = oldPlan
 	a.Phase = "reserved"
 	a.NativeStatus = nil
@@ -93,21 +92,6 @@ func TestRemoveAttemptForRetryRejectsProtectedPhasesAndLegacyMarkerUnchanged(t *
 			}
 		})
 	}
-
-	t.Run("legacy reserved", func(t *testing.T) {
-		dir := t.TempDir()
-		legacy := validMJ1Attempt()
-		putAttempt(t, dir, legacy)
-		before := markerHash(t, dir)
-		_, next, hostID, fp := reservedRetryFixture()
-
-		if err := RemoveAttemptForRetry(dir, legacy, next, hostID, fp); err == nil {
-			t.Fatal("legacy reserved marker was removed for v2 retry")
-		}
-		if after := markerHash(t, dir); after != before {
-			t.Fatal("legacy marker bytes changed after rejected retry")
-		}
-	})
 }
 
 func TestRemoveAttemptForRetryRejectsInvalidRetryWithoutChangingMarker(t *testing.T) {

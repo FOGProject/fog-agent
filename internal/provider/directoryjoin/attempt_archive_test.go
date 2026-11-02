@@ -13,7 +13,7 @@ import (
 )
 
 func verifiedArchiveAttempt() *Attempt {
-	a := validMJ1Attempt()
+	a := validDirectoryAttempt()
 	a.Phase = "verified"
 	return a
 }
@@ -116,6 +116,24 @@ func TestArchiveVerifiedAttemptCollisionFailsClosedWithoutOverwritingHistory(t *
 	}
 }
 
+// A crash between the temp write and the replace leaves <marker>.tmp behind;
+// the next save must not fail on it.
+func TestSaveAttemptSucceedsWithStaleTempFile(t *testing.T) {
+	dir := t.TempDir()
+	a := verifiedArchiveAttempt()
+	putAttempt(t, dir, a)
+	tmp := AttemptPath(dir) + ".tmp"
+	if err := os.WriteFile(tmp, []byte("partial"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveAttempt(dir, a); err != nil {
+		t.Fatalf("SaveAttempt with a stale temp file: %v", err)
+	}
+	if _, err := os.Lstat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("temp file still present after save: %v", err)
+	}
+}
+
 func TestSaveAttemptAfterArchiveRejectsStaleWriter(t *testing.T) {
 	dir := t.TempDir()
 	a := verifiedArchiveAttempt()
@@ -144,7 +162,7 @@ func TestSetAttemptRebootRequestedUsesFullSnapshotCAS(t *testing.T) {
 	digest := sha256.Sum256(oldBytes)
 	historyPath := filepath.Join(dir, "directory-rejoin-verified-"+hex.EncodeToString(digest[:])+".json")
 
-	current := validMJ1Attempt()
+	current := validDirectoryAttempt()
 	current.Plan.AttemptID = "dddddddddddddddddddddddddddddddd"
 	current.Phase = "awaiting_reboot"
 	if err := ReserveAttempt(dir, current); err != nil {
@@ -210,7 +228,7 @@ func TestArchiveThenReserveRejectsOldSaveWithoutClobberingNewMarker(t *testing.T
 	if err := ArchiveVerifiedAttempt(dir, old); err != nil {
 		t.Fatal(err)
 	}
-	newAttempt := validMJ1Attempt()
+	newAttempt := validDirectoryAttempt()
 	newAttempt.Plan.AttemptID = "dddddddddddddddddddddddddddddddd"
 	if err := ReserveAttempt(dir, newAttempt); err != nil {
 		t.Fatal(err)
@@ -229,7 +247,7 @@ func TestConcurrentReserveAndArchiveRemainCompatible(t *testing.T) {
 		dir := t.TempDir()
 		old := verifiedArchiveAttempt()
 		putAttempt(t, dir, old)
-		reserved := validMJ1Attempt()
+		reserved := validDirectoryAttempt()
 		reserved.Plan.AttemptID = string("0123456789abcdef"[i%16]) + reserved.Plan.AttemptID[1:]
 
 		start := make(chan struct{})

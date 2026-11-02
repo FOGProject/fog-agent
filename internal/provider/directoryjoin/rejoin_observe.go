@@ -29,7 +29,7 @@ type RejoinObservation struct {
 var errObservationUnsupported = errors.New("directory rejoin observation is unsupported on this platform")
 
 // ValidateRenamePlan applies the current dispatch contract without invalidating
-// completed legacy markers that did not pin a directory object.
+// completed version 2 rename markers that did not pin a directory object.
 func ValidateRenamePlan(plan RejoinPlan) error {
 	if plan.Version != 2 || plan.Operation != "rename" || plan.Validate(plan.HostID) != nil ||
 		!validTarget(plan.Target, plan.ExpectedCurrent) {

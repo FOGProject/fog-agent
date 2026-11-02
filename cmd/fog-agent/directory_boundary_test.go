@@ -230,7 +230,7 @@ func TestCoordinateRetriesKnownRefusedDirectoryReboot(t *testing.T) {
 	if err := directoryjoin.ReserveAttempt(st.Dir, attempt); err != nil {
 		t.Fatal(err)
 	}
-	st.Config.PendingReboot = []reboot.Reason{{Source: "directory-rejoin", Detail: "test rejoin", Mode: reboot.ModeReboot}}
+	st.Config.PendingReboot = []reboot.Reason{{Source: reboot.SourceDirectoryRejoin, Detail: "test rejoin", Mode: reboot.ModeReboot}}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/agent/v1/result" {
 			http.NotFound(w, r)
@@ -262,7 +262,7 @@ func TestCoordinateRetriesKnownRefusedDirectoryReboot(t *testing.T) {
 	if err != nil || marker == nil || marker.RebootRequested {
 		t.Fatalf("refused request latch not reset: marker=%+v err=%v", marker, err)
 	}
-	if len(st.Config.PendingReboot) != 1 || st.Config.PendingReboot[0].Source != "directory-rejoin" {
+	if len(st.Config.PendingReboot) != 1 || st.Config.PendingReboot[0].Source != reboot.SourceDirectoryRejoin {
 		t.Fatalf("refused reboot reason not restored: %+v", st.Config.PendingReboot)
 	}
 	if err := coordinateForPlatform(context.Background(), st, client, &sayer{}, true); err != nil {

@@ -17,7 +17,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
 )
 
-func mj1TLSClient(t *testing.T, handler http.Handler) (*Client, *httptest.Server) {
+func directoryTLSClient(t *testing.T, handler http.Handler) (*Client, *httptest.Server) {
 	t.Helper()
 	caPEM, serverCert, serverKey, _, _ := testCA(t)
 	srv := httptest.NewUnstartedServer(handler)
@@ -37,7 +37,7 @@ func mj1TLSClient(t *testing.T, handler http.Handler) (*Client, *httptest.Server
 	return client, srv
 }
 
-func TestRequireMJ1StopsOnOldServerOrMissingFeatureHeader(t *testing.T) {
+func TestRequireDirectoryFeaturesStopsOnOldServerOrMissingFeatureHeader(t *testing.T) {
 	cases := []struct {
 		name    string
 		status  int
@@ -52,10 +52,6 @@ func TestRequireMJ1StopsOnOldServerOrMissingFeatureHeader(t *testing.T) {
 		{"new identity feature only", http.StatusOK, DirectoryJoinTargetFeature, false, ErrDirectoryFeaturesUnsupported},
 		{"both comma separated", http.StatusOK, DirectoryJoinTargetFeature + ", " + DirectoryTaskOperationsFeature, true, nil},
 		{"new task operations feature v1", http.StatusOK, DirectoryJoinTargetFeature + ", directory-task-operations-v1", true, nil},
-		{"legacy feature pair rejected", http.StatusOK, "directory-join-mj1, directory-task-operations-v3", false, ErrDirectoryFeaturesUnsupported},
-		{"legacy identity with new task feature rejected", http.StatusOK, "directory-join-mj1, " + DirectoryTaskOperationsFeature, false, ErrDirectoryFeaturesUnsupported},
-		{"new identity with legacy task feature rejected", http.StatusOK, DirectoryJoinTargetFeature + ", directory-task-operations-v3", false, ErrDirectoryFeaturesUnsupported},
-		{"old target feature v2 rejected", http.StatusOK, DirectoryJoinTargetFeature + ", directory-join-target-v2", false, ErrDirectoryFeaturesUnsupported},
 		{"both space separated", http.StatusOK, DirectoryJoinTargetFeature + " " + DirectoryTaskOperationsFeature, true, nil},
 		{"extra capability and reordered", http.StatusOK, "future-capability " + DirectoryTaskOperationsFeature + ", " + DirectoryJoinTargetFeature, true, nil},
 		{"identity substring is not a token", http.StatusOK, "x-" + DirectoryJoinTargetFeature + ", " + DirectoryTaskOperationsFeature, false, ErrDirectoryFeaturesUnsupported},
@@ -64,7 +60,7 @@ func TestRequireMJ1StopsOnOldServerOrMissingFeatureHeader(t *testing.T) {
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			calls := 0
-			client, srv := mj1TLSClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			client, srv := directoryTLSClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				if r.Method != http.MethodGet || r.URL.Path != "/agent/v1/enroll" {
 					t.Errorf("feature probe request = %s %s", r.Method, r.URL.Path)
@@ -98,13 +94,14 @@ func TestCheckIdentityAcceptsOnlyMatchedOrExplicitMismatch(t *testing.T) {
 	}{
 		{"matched", 200, "ok", "matched", 12, 12, "matched", false},
 		{"explicit mismatch", 409, "identity_blocked", "mismatch", 13, 12, "mismatch", false},
+		{"mismatch without another host id", 409, "identity_blocked", "mismatch", 0, 12, "mismatch", false},
 		{"conflict", 409, "identity_blocked", "conflict", 13, 12, "", true},
 		{"forged mismatch status", 200, "ok", "mismatch", 13, 12, "", true},
 		{"matched host differs from principal", 200, "ok", "matched", 13, 12, "", true},
 	}
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
-			client, _ := mj1TLSClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			client, _ := directoryTLSClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.Method != http.MethodPost || r.URL.Path != "/agent/v1/identity/check" {
 					t.Errorf("identity request = %s %s", r.Method, r.URL.Path)
 				}
@@ -150,7 +147,7 @@ func TestStartRejoinBindingMismatchRedactsCredential(t *testing.T) {
 	}
 	changed := plan
 	changed.ConfigRevision = strings.Repeat("c", 32)
-	client, _ := mj1TLSClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client, _ := directoryTLSClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/agent/v1/directory/rejoin/start" {
 			t.Errorf("rejoin start request = %s %s", r.Method, r.URL.Path)
 		}
@@ -177,13 +174,9 @@ func TestStartRejoinBindingMismatchRedactsCredential(t *testing.T) {
 }
 
 func TestStartRejoinRejectsTaskIDMismatch(t *testing.T) {
-	plan := validMJ1PlanForHost(12)
-	plan.Version = 2
-	plan.Operation = "rebind"
-	plan.ExpectedCurrent = "OLDNAME"
-	plan.ExpectedPending = "WORKSTATION"
+	plan := directoryPlanForHost(12)
 	plan.TaskID = 42
-	client, _ := mj1TLSClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	client, _ := directoryTLSClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request["task_id"] != float64(42) {
 			t.Errorf("start request task_id = %#v, decode err = %v", request["task_id"], err)
@@ -242,8 +235,8 @@ func TestRotateIdentityPreservesTrustAndClearsOldIdentityWithoutCloneClassificat
 	}
 
 	attempt := &directoryjoin.Attempt{
-		Version: 1, Fingerprint: oldFingerprint,
-		Plan: validMJ1PlanForHost(101), Phase: "verified",
+		Version: 2, Fingerprint: oldFingerprint,
+		Plan: directoryPlanForHost(101), Phase: "verified",
 	}
 	if err := directoryjoin.ReserveAttempt(dir, attempt); err != nil {
 		t.Fatal(err)
@@ -284,7 +277,7 @@ func TestRotateIdentityPreservesTrustAndClearsOldIdentityWithoutCloneClassificat
 	assertNoCloneClassification(t, reloaded.Config)
 }
 
-func TestRotateIdentityPreservesMatchingUnknownLegacyMarker(t *testing.T) {
+func TestRotateIdentityPreservesMatchingUnknownMarker(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Load(dir)
 	if err != nil {
@@ -299,8 +292,8 @@ func TestRotateIdentityPreservesMatchingUnknownLegacyMarker(t *testing.T) {
 	}
 	st.Config.HostID = 101
 	attempt := &directoryjoin.Attempt{
-		Version: 1, Fingerprint: oldFingerprint,
-		Plan: validMJ1PlanForHost(101), Phase: "unknown",
+		Version: 2, Fingerprint: oldFingerprint,
+		Plan: directoryPlanForHost(101), Phase: "unknown",
 	}
 	if err := directoryjoin.ReserveAttempt(dir, attempt); err != nil {
 		t.Fatal(err)
@@ -319,11 +312,11 @@ func TestRotateIdentityPreservesMatchingUnknownLegacyMarker(t *testing.T) {
 		t.Fatalf("unknown marker was removed: %v", err)
 	}
 	got, err := directoryjoin.LoadAttempt(dir)
-	if err != nil || got == nil || got.Version != 1 || got.Phase != "unknown" || got.Fingerprint != oldFingerprint || got.Plan.HostID != 101 {
-		t.Fatalf("unknown legacy marker no longer loads unchanged: marker=%+v err=%v", got, err)
+	if err != nil || got == nil || got.Version != 2 || got.Phase != "unknown" || got.Fingerprint != oldFingerprint || got.Plan.HostID != 101 {
+		t.Fatalf("unknown marker no longer loads unchanged: marker=%+v err=%v", got, err)
 	}
 	if !bytes.Equal(before, after) {
-		t.Fatal("identity rotation rewrote the unknown legacy marker")
+		t.Fatal("identity rotation rewrote the unknown marker")
 	}
 }
 
@@ -439,9 +432,20 @@ func TestDirectoryTaskDTOFieldsDecode(t *testing.T) {
 	if err := json.Unmarshal(itemJSON, &itemFields); err != nil {
 		t.Fatal(err)
 	}
+	// Zero values are omitted so non-directory results stay byte-identical
+	// to what they were before the feature.
 	for _, field := range []string{"task_id", "netbios"} {
-		if _, ok := itemFields[field]; !ok {
-			t.Fatalf("%s missing from DTO JSON: %s", field, itemJSON)
+		if _, ok := itemFields[field]; ok {
+			t.Fatalf("%s present in zero-value DTO JSON: %s", field, itemJSON)
+		}
+	}
+	setJSON, err := json.Marshal(ResultItem{TaskID: 7, Netbios: "CORP"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"task_id":7`, `"netbios":"CORP"`} {
+		if !strings.Contains(string(setJSON), field) {
+			t.Fatalf("%s missing from set DTO JSON: %s", field, setJSON)
 		}
 	}
 	for label, fields := range map[string]map[string]json.RawMessage{"poll response": responseFields, "result item": itemFields} {
@@ -464,8 +468,8 @@ func assertNoCloneClassification(t *testing.T, config Config) {
 	}
 }
 
-func TestMJ1UnavailablePreservesOfflineSetupDistinction(t *testing.T) {
-	c, srv := mj1TLSClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }))
+func TestDirectoryFeaturesUnavailablePreservesOfflineSetupDistinction(t *testing.T) {
+	c, srv := directoryTLSClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) }))
 	if err := c.RequireDirectoryFeatures(context.Background()); err == nil || errors.Is(err, ErrDirectoryFeaturesUnavailable) {
 		t.Fatalf("unsupported server treated as offline: %v", err)
 	}
@@ -475,12 +479,12 @@ func TestMJ1UnavailablePreservesOfflineSetupDistinction(t *testing.T) {
 	}
 }
 
-func validMJ1PlanForHost(hostID int) directoryjoin.RejoinPlan {
+func directoryPlanForHost(hostID int) directoryjoin.RejoinPlan {
 	return directoryjoin.RejoinPlan{
+		Version: 2, Operation: "rebind", ExpectedCurrent: "OLDNAME", ExpectedPending: "WORKSTATION",
 		AttemptID: strings.Repeat("a", 32), HostID: hostID,
 		ConfigRevision: strings.Repeat("b", 32), Name: "WORKSTATION",
 		Domain: "corp.example.com", Mode: "existing", DC: "dc01.corp.example.com",
-		Source: directoryjoin.RejoinObject{GUID: "11111111-1111-1111-1111-111111111111", SID: "S-1-5-21-1", Account: "SOURCE$"},
 		Target: &directoryjoin.RejoinObject{GUID: "22222222-2222-2222-2222-222222222222", SID: "S-1-5-21-2", Account: "WORKSTATION$"},
 	}
 }

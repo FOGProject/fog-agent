@@ -307,12 +307,12 @@ type ResultRequest struct {
 type ResultItem struct {
 	AttemptID        string  `json:"attempt_id,omitempty"`
 	ConfigRevision   string  `json:"config_revision,omitempty"`
-	TaskID           int     `json:"task_id"`
+	TaskID           int     `json:"task_id,omitempty"`
 	NativeStatus     *uint32 `json:"native_status,omitempty"`
 	SecureChannel    string  `json:"secure_channel,omitempty"`
 	BootChanged      bool    `json:"boot_changed,omitempty"`
 	CurrentName      string  `json:"current_name,omitempty"`
-	Netbios          string  `json:"netbios"`
+	Netbios          string  `json:"netbios,omitempty"`
 	Domain           string  `json:"domain,omitempty"`
 	ID               int     `json:"id"`
 	Status           string  `json:"status"`

@@ -43,7 +43,7 @@ func SetRejoinName(name string) error {
 
 func Rebind(ctx context.Context, p Policy, plan RejoinPlan) (uint32, error) {
 	if plan.Version != 2 || plan.Operation != "rebind" {
-		return 0, errors.New("legacy directory plans cannot execute a rebind")
+		return 0, errors.New("directory plan is not a version 2 rebind")
 	}
 	if err := plan.Validate(plan.HostID); err != nil {
 		return 0, err
@@ -70,11 +70,9 @@ func rebindWindowsLocked(ctx context.Context, p Policy, plan RejoinPlan) (uint32
 	if err != nil || !strings.EqualFold(pending, plan.Name) {
 		return 0, errors.New("directory rejoin pending name changed before dispatch")
 	}
-	if plan.Version == 2 {
-		current, e := os.Hostname()
-		if e != nil || !strings.EqualFold(current, plan.ExpectedCurrent) {
-			return 0, errors.New("directory operation current name changed before dispatch")
-		}
+	current, e := os.Hostname()
+	if e != nil || !strings.EqualFold(current, plan.ExpectedCurrent) {
+		return 0, errors.New("directory operation current name changed before dispatch")
 	}
 	dnsDomain, err := observeDNSDomain()
 	role := observeMachineRole()

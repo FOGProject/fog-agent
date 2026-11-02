@@ -35,7 +35,7 @@ func TestRotateIdentityArchivesVerifiedMarkerByteForByte(t *testing.T) {
 		t.Fatal(err)
 	}
 	st.Config.HostID = 41
-	marker := &directoryjoin.Attempt{Version: 1, Fingerprint: oldFP, Plan: validMJ1PlanForHost(41), Phase: "verified"}
+	marker := &directoryjoin.Attempt{Version: 2, Fingerprint: oldFP, Plan: directoryPlanForHost(41), Phase: "verified"}
 	if err = directoryjoin.ReserveAttempt(dir, marker); err != nil {
 		t.Fatal(err)
 	}

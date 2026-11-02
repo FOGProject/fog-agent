@@ -22,9 +22,12 @@ import (
 const DirectoryJoinTargetFeature = "directory-join-target-v1"
 const DirectoryTaskOperationsFeature = "directory-task-operations-v1"
 
-// Setup may stage a service while offline; enrollment and run still stop here.
+// The two errors differ on purpose. Unavailable means the server could not be
+// asked now (offline, 5xx, rate limit), so the caller asks again later.
+// Unsupported means the server answered and does not offer the features, so
+// the caller leaves directory rejoin off. Neither stops the agent.
 var ErrDirectoryFeaturesUnavailable = errors.New("directory feature check unavailable")
-var ErrDirectoryFeaturesUnsupported = errors.New("server does not advertise directory-join-target-v1 and directory-task-operations-v1; enrollment and polling stopped")
+var ErrDirectoryFeaturesUnsupported = errors.New("server does not advertise directory-join-target-v1 and directory-task-operations-v1; directory rejoin is off")
 
 type IdentityAnswer struct {
 	Status   string `json:"status"`
@@ -105,15 +108,15 @@ func (c *Client) CheckIdentity(ctx context.Context, live identity.Host) (Identit
 	if code == 200 && out.Status == "ok" && out.Identity.Status == "matched" && out.Identity.HostID == out.Identity.PrincipalHostID {
 		return out, nil
 	}
-	if code == 409 && out.Status == "identity_blocked" && out.Identity.Status == "mismatch" && out.Identity.HostID > 0 && out.Identity.HostID != out.Identity.PrincipalHostID {
+	if code == 409 && out.Status == "identity_blocked" && out.Identity.Status == "mismatch" {
 		return out, nil
 	}
-	return out, errors.New("identity is ambiguous or unresolved; normal processing stopped")
+	return out, errors.New("the server could not place this machine's identity; the agent keeps working without directory rejoin")
 }
 
 func (c *Client) StartRejoin(ctx context.Context, p directoryjoin.RejoinPlan) (*directoryjoin.Policy, error) {
 	if p.Version != 2 {
-		return nil, errors.New("legacy directory plans cannot start a new operation")
+		return nil, errors.New("unsupported directory rejoin plan version")
 	}
 	if p.TaskID < 0 {
 		return nil, errors.New("invalid rejoin plan task binding")
@@ -124,10 +127,7 @@ func (c *Client) StartRejoin(ctx context.Context, p directoryjoin.RejoinPlan) (*
 	}
 	var raw json.RawMessage
 	body := map[string]any{"attempt_id": p.AttemptID, "config_revision": p.ConfigRevision,
-		"target_guid": guid, "task_id": p.TaskID}
-	if p.Version == 2 {
-		body["operation"] = p.Operation
-	}
+		"target_guid": guid, "task_id": p.TaskID, "operation": p.Operation}
 	code, e := c.directoryExchange(ctx, "/agent/v1/directory/rejoin/start", body, &raw)
 	var out struct {
 		Status    string                `json:"status"`
@@ -161,8 +161,7 @@ func (c *Client) StartRejoin(ctx context.Context, p directoryjoin.RejoinPlan) (*
 		out.Directory.Password.Zero()
 		return nil, errors.New("rejoin operation binding changed")
 	}
-	sourceChanged := p.Version != 2 && (got.Source.GUID != p.Source.GUID || got.Source.SID != p.Source.SID)
-	if got.HostID != p.HostID || got.AttemptID != p.AttemptID || got.ConfigRevision != p.ConfigRevision || got.Mode != p.Mode || got.Name != p.Name || got.Domain != p.Domain || got.DC != p.DC || sourceChanged || (got.Target == nil) != (p.Target == nil) || (p.Target != nil && (got.Target.GUID != p.Target.GUID || got.Target.SID != p.Target.SID)) {
+	if got.HostID != p.HostID || got.AttemptID != p.AttemptID || got.ConfigRevision != p.ConfigRevision || got.Mode != p.Mode || got.Name != p.Name || got.Domain != p.Domain || got.DC != p.DC || (got.Target == nil) != (p.Target == nil) || (p.Target != nil && (got.Target.GUID != p.Target.GUID || got.Target.SID != p.Target.SID)) {
 		out.Directory.Password.Zero()
 		return nil, errors.New("rejoin response binding changed")
 	}

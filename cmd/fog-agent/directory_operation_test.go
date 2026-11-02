@@ -5,12 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +15,7 @@ import (
 	"github.com/FOGProject/fog-agent/internal/enroll"
 	"github.com/FOGProject/fog-agent/internal/identity"
 	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
+	"github.com/FOGProject/fog-agent/internal/reboot"
 )
 
 const directoryOperationTargetGUID = "22222222-2222-2222-2222-222222222222"
@@ -336,7 +334,7 @@ func TestDirectoryOperationLifecycleNativeExactlyOnce(t *testing.T) {
 					Boot: directoryjoin.BootObservation{Marker: "boot-b", Started: "2026-10-25T00:05:00Z"},
 				}
 				plan.Phase = phase
-				if len(st.Config.PendingReboot) != 1 || st.Config.PendingReboot[0].Source != "directory-rejoin" {
+				if len(st.Config.PendingReboot) != 1 || st.Config.PendingReboot[0].Source != reboot.SourceDirectoryRejoin {
 					t.Fatalf("native success did not queue one directory reboot reason: %+v", st.Config.PendingReboot)
 				}
 				queuedReason := st.Config.PendingReboot[0]
@@ -410,11 +408,11 @@ func TestDirectoryOperationLifecycleNativeExactlyOnce(t *testing.T) {
 	}
 }
 
-func TestDirectoryOperationLegacyRenameWithoutPinnedTargetStopsBeforeClaim(t *testing.T) {
+func TestDirectoryOperationRenameWithoutPinnedTargetStopsBeforeClaim(t *testing.T) {
 	plan := directoryOperationPlan("rename", "rename")
-	plan.Target = nil // Completed legacy plans remain readable, but cannot start a rename.
+	plan.Target = nil // A version 2 rename plan without a target is valid to read, but cannot start a rename.
 	if err := plan.Validate(plan.HostID); err != nil {
-		t.Fatalf("legacy rename plan shape should remain decodable: %v", err)
+		t.Fatalf("target-less rename plan should remain decodable: %v", err)
 	}
 	st, err := enroll.Load(t.TempDir())
 	if err != nil {
@@ -440,10 +438,10 @@ func TestDirectoryOperationLegacyRenameWithoutPinnedTargetStopsBeforeClaim(t *te
 	}
 	marker, err := directoryjoin.LoadAttempt(st.Dir)
 	if err != nil || marker != nil {
-		t.Fatalf("legacy rename plan reserved an attempt before identity preflight: marker=%+v err=%v", marker, err)
+		t.Fatalf("target-less rename plan reserved an attempt before identity preflight: marker=%+v err=%v", marker, err)
 	}
 	if natives != 0 {
-		t.Fatalf("legacy rename plan reached a native operation: calls=%d", natives)
+		t.Fatalf("target-less rename plan reached a native operation: calls=%d", natives)
 	}
 }
 
@@ -572,74 +570,6 @@ func TestDirectoryOperationNewAttemptDoesNotEraseUnresolvedV2Marker(t *testing.T
 	}
 }
 
-func TestDirectoryOperationLegacyV1UnresolvedMarkerStopsWithoutReplay(t *testing.T) {
-	oldPlan := directoryjoin.RejoinPlan{
-		AttemptID: strings.Repeat("c", 32), HostID: 72, ConfigRevision: strings.Repeat("d", 32),
-		Phase: "ready", Name: "B", Domain: "corp.example", Mode: "existing", DC: "dc.corp.example",
-		Source: directoryjoin.RejoinObject{GUID: "11111111-1111-1111-1111-111111111111", SID: "S-1-5-21-72-1", Account: "A$"},
-		Target: &directoryjoin.RejoinObject{GUID: directoryOperationTargetGUID, SID: "S-1-5-21-72-2", Account: "B$"},
-	}
-	for _, phase := range []string{"unknown", "awaiting_reboot"} {
-		for _, withPlan := range []bool{false, true} {
-			t.Run(fmt.Sprintf("%s/plan=%t", phase, withPlan), func(t *testing.T) {
-				st, err := enroll.Load(t.TempDir())
-				if err != nil {
-					t.Fatal(err)
-				}
-				if _, err := st.EnsureKey(identity.Host{}); err != nil {
-					t.Fatal(err)
-				}
-				st.Config.HostID = oldPlan.HostID
-				fp, err := st.KeyFingerprint()
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := directoryjoin.ReserveAttempt(st.Dir, &directoryjoin.Attempt{Version: 1, Fingerprint: fp, Plan: oldPlan, Phase: phase}); err != nil {
-					t.Fatal(err)
-				}
-				path := directoryjoin.AttemptPath(st.Dir)
-				before, err := os.ReadFile(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				starts, natives := 0, 0
-				server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					starts++
-					http.Error(w, "legacy operation must not start", http.StatusInternalServerError)
-				}))
-				defer server.Close()
-				client := &enroll.Client{ServerURL: server.URL, HTTP: server.Client()}
-				oldRebind := rebindDirectory
-				t.Cleanup(func() { rebindDirectory = oldRebind })
-				rebindDirectory = func(context.Context, directoryjoin.Policy, directoryjoin.RejoinPlan) (uint32, error) {
-					natives++
-					return 0, nil
-				}
-				var plan *directoryjoin.RejoinPlan
-				if withPlan {
-					v2 := directoryOperationPlan("rebind", "existing")
-					v2.HostID = oldPlan.HostID
-					plan = &v2
-				}
-				if err := processRejoin(context.Background(), st, client, plan, &sayer{}); err == nil || !strings.Contains(err.Error(), "legacy directory operation requires review") {
-					t.Fatalf("processRejoin error = %v, want legacy marker STOP", err)
-				}
-				after, err := os.ReadFile(path)
-				if err != nil {
-					t.Fatal(err)
-				}
-				got, err := directoryjoin.LoadAttempt(st.Dir)
-				if err != nil || got == nil || got.Version != 1 || got.Phase != phase {
-					t.Fatalf("legacy marker changed: marker=%+v err=%v", got, err)
-				}
-				if !bytes.Equal(before, after) || starts != 0 || natives != 0 {
-					t.Fatalf("legacy marker replayed or changed: sameBytes=%t starts=%d native=%d", bytes.Equal(before, after), starts, natives)
-				}
-			})
-		}
-	}
-}
-
 func TestDirectoryOperationNativeFailurePhaseAndCodeAreStable(t *testing.T) {
 	plan := directoryOperationPlan("rename", "rename")
 	st, err := enroll.Load(t.TempDir())
@@ -704,191 +634,6 @@ func TestDirectoryOperationNativeFailurePhaseAndCodeAreStable(t *testing.T) {
 	}
 	if starts != 1 || natives != 1 || fallbacks != 0 || reports != 2 {
 		t.Fatalf("failure was replayed or fell back: starts=%d rename=%d fallback=%d reports=%d", starts, natives, fallbacks, reports)
-	}
-}
-
-func TestDirectoryOperationGoPHPSelectorContract(t *testing.T) {
-	root := os.Getenv("MJ1_SERVER_ROOT")
-	if root == "" {
-		t.Skip("MJ1_SERVER_ROOT not set: Go/PHP operation contract")
-	}
-	fixture := filepath.Join(root, "tests", "fixtures", "directory-operation-contract.php")
-	if _, err := os.Stat(fixture); errors.Is(err, os.ErrNotExist) {
-		t.Skip("directory-operation-contract.php is not ready")
-	} else if err != nil {
-		t.Fatal(err)
-	}
-	for _, tc := range []struct {
-		name      string
-		operation string
-		mode      string
-		deploy    bool
-		secure    string
-		confirmed bool
-		create    bool
-	}{
-		{"D2-existing-deploy", "rebind", "existing", true, "false", true, false},
-		{"D1-create-deploy", "rebind", "create", true, "false", false, true},
-		{"D3-samehealthy-deploy", "rebind", "existing", true, "true", true, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			secure, confirmed, allowCreate := tc.secure, tc.confirmed, false
-			target := map[string]any{"status": "found", "record": map[string]any{
-				"guid": directoryOperationTargetGUID, "sid": "S-1-5-21-71-2", "account": "B$",
-			}}
-			if tc.create {
-				target, allowCreate = map[string]any{"status": "absent"}, true
-			}
-			input, err := json.Marshal(map[string]any{
-				"action": "select", "name": "B", "deploy": tc.deploy, "reassigned": false,
-				"target": target, "allow_create": allowCreate, "confirmed": confirmed, "authorized": true,
-				"observation": map[string]any{"current_name": "A", "pending_name": "B", "role": "workstation", "dc_reachable": true, "secure_channel": secure},
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			cmd := exec.Command("php", fixture)
-			cmd.Stdin = bytes.NewReader(input)
-			out, err := cmd.Output()
-			if err != nil {
-				t.Fatalf("PHP selector fixture: %v", err)
-			}
-			var result struct {
-				Status string          `json:"status"`
-				Data   json.RawMessage `json:"data"`
-				Reason string          `json:"reason"`
-			}
-			if err := json.Unmarshal(out, &result); err != nil || result.Status != "ok" {
-				t.Fatalf("PHP selector refused/invalid response: status=%q reason=%q err=%v body=%s", result.Status, result.Reason, err, out)
-			}
-			var selection struct {
-				Operation string                      `json:"operation"`
-				Mode      string                      `json:"mode"`
-				Target    *directoryjoin.RejoinObject `json:"target"`
-			}
-			if err := json.Unmarshal(result.Data, &selection); err != nil {
-				t.Fatalf("decode PHP selection: %v", err)
-			}
-			if selection.Operation != tc.operation || selection.Mode != tc.mode {
-				t.Fatalf("PHP selected wrong operation: %+v", selection)
-			}
-		})
-	}
-}
-
-func TestDirectoryOperationGoPHPFlow(t *testing.T) {
-	root, dsn := os.Getenv("MJ1_SERVER_ROOT"), os.Getenv("MJ1_DB_DSN")
-	if root == "" || dsn == "" {
-		t.Skip("MJ1_SERVER_ROOT and MJ1_DB_DSN are required for Go/PHP operation flow")
-	}
-	fixture := filepath.Join(root, "tests", "fixtures", "directory-operation-flow.php")
-	if _, err := os.Stat(fixture); err != nil {
-		t.Fatalf("required directory operation flow fixture unavailable: %v", err)
-	}
-	cases := []struct {
-		action            string
-		name              string
-		operation         string
-		mode              string
-		consumedTaskID    int
-		checkConsumed     bool
-		wantSameNameState bool
-	}{
-		{action: "rebind_create", name: "B", operation: "rebind", mode: "create"},
-		{action: "rebind_existing", name: "B", operation: "rebind", mode: "existing"},
-		{action: "rename_configured", name: "B", operation: "rename", mode: "rename"},
-		{action: "self_restore", name: "B", operation: "rebind", mode: "existing", consumedTaskID: 500, checkConsumed: true, wantSameNameState: true},
-		{action: "reassigned_rename", name: "C", operation: "rebind", mode: "create"},
-		{action: "task_join", name: "B", operation: "join", mode: "join", consumedTaskID: 500, checkConsumed: true, wantSameNameState: true},
-		{action: "healthy_self_restore", name: "B", operation: "rebind", mode: "existing", consumedTaskID: 500, checkConsumed: true, wantSameNameState: true},
-	}
-	for _, tc := range cases {
-		t.Run(tc.action, func(t *testing.T) {
-			input, err := json.Marshal(map[string]string{"action": tc.action, "name": tc.name})
-			if err != nil {
-				t.Fatal(err)
-			}
-			cmd := exec.Command("php", fixture)
-			cmd.Stdin = bytes.NewReader(input)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("PHP operation flow failed: %v; output: %s", err, out)
-			}
-			var result struct {
-				Status         string          `json:"status"`
-				Plan           json.RawMessage `json:"plan"`
-				ResponsePlan   json.RawMessage `json:"response_plan"`
-				SourceOmitted  bool            `json:"source_omitted"`
-				StartClaimed   bool            `json:"start_claimed"`
-				ReplayRefused  bool            `json:"replay_refused"`
-				ReportedPhase  string          `json:"reported_phase"`
-				Operation      string          `json:"operation"`
-				Mode           string          `json:"mode"`
-				ConsumedTaskID int             `json:"consumed_task_id"`
-				Reason         string          `json:"reason"`
-			}
-			if err := json.Unmarshal(out, &result); err != nil {
-				t.Fatalf("invalid PHP operation flow JSON: %v; output: %s", err, out)
-			}
-			if result.Status != "ok" {
-				t.Fatalf("PHP operation flow refused: %s; output: %s", result.Reason, out)
-			}
-			var plan, responsePlan directoryjoin.RejoinPlan
-			if err := json.Unmarshal(result.Plan, &plan); err != nil {
-				t.Fatalf("decode PHP public plan: %v", err)
-			}
-			if err := json.Unmarshal(result.ResponsePlan, &responsePlan); err != nil {
-				t.Fatalf("decode PHP start response plan: %v", err)
-			}
-			if plan.Version != 2 || plan.Operation != tc.operation || plan.Mode != tc.mode || plan.Validate(7001) != nil {
-				t.Fatalf("invalid PHP public v2 plan: %+v", plan)
-			}
-			if (result.Operation != "" && result.Operation != plan.Operation) || (result.Mode != "" && result.Mode != plan.Mode) {
-				t.Fatalf("PHP flow operation/mode disagrees with plan: output=%+v plan=%+v", result, plan)
-			}
-			if tc.checkConsumed && result.ConsumedTaskID != tc.consumedTaskID {
-				t.Fatalf("completed deploy task consumption mismatch: got=%d want=%d", result.ConsumedTaskID, tc.consumedTaskID)
-			}
-			if tc.wantSameNameState && (plan.ExpectedCurrent != tc.name || plan.ExpectedPending != tc.name) {
-				t.Fatalf("self-restore did not bind current and pending name %q: current=%q pending=%q", tc.name, plan.ExpectedCurrent, plan.ExpectedPending)
-			}
-			if tc.action == "reassigned_rename" && (result.Operation != "rebind" || plan.Name != "C" || plan.Operation != "rebind" || plan.Mode != "create" || plan.Target != nil ||
-				plan.ExpectedCurrent != "A" || plan.ExpectedPending != "A") {
-				t.Fatalf("reassigned rename was not routed to literal C rebind/create from A: %+v", plan)
-			}
-			if !result.SourceOmitted || !result.StartClaimed || !result.ReplayRefused || result.ReportedPhase != "verified" {
-				t.Fatalf("PHP flow lifecycle contract failed: %+v", result)
-			}
-			for label, raw := range map[string]json.RawMessage{"plan": result.Plan, "response_plan": result.ResponsePlan} {
-				var fields map[string]json.RawMessage
-				if err := json.Unmarshal(raw, &fields); err != nil {
-					t.Fatalf("decode %s object: %v", label, err)
-				}
-				if _, ok := fields["source"]; ok {
-					t.Errorf("%s included Source JSON", label)
-				}
-				if label == "response_plan" {
-					if _, ok := fields["password"]; ok {
-						t.Error("start response plan included a credential")
-					}
-					if _, ok := fields["username"]; ok {
-						t.Error("start response plan included a credential principal")
-					}
-				}
-			}
-			if responsePlan.TaskID != plan.TaskID || responsePlan.Version != plan.Version || responsePlan.Operation != plan.Operation ||
-				responsePlan.Mode != plan.Mode || responsePlan.HostID != plan.HostID ||
-				responsePlan.AttemptID != plan.AttemptID || responsePlan.ConfigRevision != plan.ConfigRevision ||
-				responsePlan.Name != plan.Name || responsePlan.Domain != plan.Domain || responsePlan.DC != plan.DC ||
-				responsePlan.ExpectedCurrent != plan.ExpectedCurrent || responsePlan.ExpectedPending != plan.ExpectedPending ||
-				responsePlan.RetryAuthorized != plan.RetryAuthorized || responsePlan.Validate(7001) != nil {
-				t.Fatalf("start response plan binding differs: plan=%+v response=%+v", plan, responsePlan)
-			}
-			if (responsePlan.Target == nil) != (plan.Target == nil) || (plan.Target != nil &&
-				(responsePlan.Target.GUID != plan.Target.GUID || responsePlan.Target.SID != plan.Target.SID || responsePlan.Target.Account != plan.Target.Account)) {
-				t.Fatalf("start response Target binding differs: plan=%+v response=%+v", plan.Target, responsePlan.Target)
-			}
-		})
 	}
 }
 

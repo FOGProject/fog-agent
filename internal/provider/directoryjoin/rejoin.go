@@ -38,25 +38,8 @@ type RejoinPlan struct {
 	Domain          string        `json:"domain"`
 	Mode            string        `json:"mode"`
 	DC              string        `json:"dc"`
-	Source          RejoinObject  `json:"source,omitempty"`
 	Target          *RejoinObject `json:"target"`
 	Reason          string        `json:"reason,omitempty"`
-}
-
-// MarshalJSON preserves the v1 source object for legacy plans while keeping
-// source metadata out of v2 plans, even when Source is its zero value.
-func (p RejoinPlan) MarshalJSON() ([]byte, error) {
-	type plain RejoinPlan
-	b, err := json.Marshal(plain(p))
-	if err != nil || p.Version != 2 {
-		return b, err
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(b, &fields); err != nil {
-		return nil, err
-	}
-	delete(fields, "source")
-	return json.Marshal(fields)
 }
 
 var rejoinGUID = regexp.MustCompile(`(?i)^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$`)
@@ -65,31 +48,17 @@ var fogHostname = regexp.MustCompile(`^[a-zA-Z0-9_!@#$%^()\-'{}.~]{1,15}$`)
 var rejoinID = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 func (p RejoinPlan) Validate(hostID int) error {
+	if p.Version != 2 {
+		return errors.New("unsupported directory rejoin plan version")
+	}
 	validName := rejoinName.MatchString(p.Name)
-	if p.Version == 2 && (p.Operation == "rename" || p.Operation == "join") {
+	if p.Operation == "rename" || p.Operation == "join" {
 		validName = fogHostname.MatchString(p.Name)
 	}
 	if p.HostID != hostID || hostID < 1 || !rejoinID.MatchString(p.AttemptID) || !rejoinID.MatchString(p.ConfigRevision) ||
 		!validName || len(p.Name) > 15 || (p.Operation != "join" && !validDCFQDN(p.Domain)) || (p.Operation == "join" && !validJoinDomain(p.Domain)) || !validDCFQDN(p.DC) || p.TaskID < 0 {
 		return errors.New("invalid directory rejoin plan")
 	}
-	if p.Version == 2 {
-		return p.validateV2()
-	}
-	if p.Version != 0 && p.Version != 1 || !rejoinGUID.MatchString(p.Source.GUID) || p.Source.SID == "" {
-		return errors.New("invalid directory rejoin plan")
-	}
-	if p.Mode == "existing" {
-		if p.Target == nil || !rejoinGUID.MatchString(p.Target.GUID) || p.Target.SID == "" || p.Source.SID == p.Target.SID || strings.EqualFold(p.Source.GUID, p.Target.GUID) || !strings.EqualFold(p.Target.Account, p.Name+"$") {
-			return errors.New("unconfirmed directory rejoin target")
-		}
-	} else if p.Mode != "create" || (p.Target != nil && (p.Phase == "ready" || !rejoinGUID.MatchString(p.Target.GUID) || p.Target.SID == "" || strings.EqualFold(p.Target.GUID, p.Source.GUID) || !strings.EqualFold(p.Target.Account, p.Name+"$"))) || strings.EqualFold(strings.TrimSuffix(p.Source.Account, "$"), p.Name) {
-		return errors.New("invalid directory rejoin mode")
-	}
-	return nil
-}
-
-func (p RejoinPlan) validateV2() error {
 	if !validNetBIOSName(p.ExpectedCurrent) || !validNetBIOSName(p.ExpectedPending) ||
 		(!strings.EqualFold(p.ExpectedPending, p.ExpectedCurrent) && !strings.EqualFold(p.ExpectedPending, p.Name)) {
 		return errors.New("invalid directory operation expected names")
@@ -177,24 +146,12 @@ func LoadAttempt(dir string) (*Attempt, error) {
 	if err = d.Decode(&a); err != nil {
 		return nil, errors.New("invalid directory rejoin marker")
 	}
+	if a.Version != 2 || a.Plan.Version != 2 {
+		return nil, errors.New("unsupported directory marker version")
+	}
 	var tail any
 	if d.Decode(&tail) != io.EOF || len(a.Fingerprint) != 64 || a.Plan.Validate(a.Plan.HostID) != nil {
 		return nil, errors.New("invalid directory rejoin marker")
-	}
-	switch a.Version {
-	case 1:
-		// The current server includes version: 1 in its plan. Older markers
-		// were written by an agent DTO that ignored that field, so both forms
-		// are legacy v1 and retain the strict Source requirements.
-		if a.Plan.Version != 0 && a.Plan.Version != 1 {
-			return nil, errors.New("invalid directory rejoin marker version")
-		}
-	case 2:
-		if a.Plan.Version != 2 {
-			return nil, errors.New("invalid directory rejoin marker version")
-		}
-	default:
-		return nil, errors.New("invalid directory rejoin marker version")
 	}
 	switch a.Phase {
 	case "reserved", "may_have_run", "awaiting_reboot", "verified", "failed", "unknown":
@@ -257,6 +214,11 @@ func SaveAttempt(dir string, a *Attempt) error {
 func saveAttemptLocked(dir string, a *Attempt) error {
 	path := AttemptPath(dir)
 	tmp := path + ".tmp"
+	// A crash between write and replace leaves the temp file. The lock is
+	// held, so removing it is safe.
+	if err := os.Remove(tmp); err != nil && !os.IsNotExist(err) {
+		return err
+	}
 	if err := writeAttemptFile(tmp, a); err != nil {
 		return err
 	}

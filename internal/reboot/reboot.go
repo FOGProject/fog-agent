@@ -17,6 +17,10 @@ import (
 // machine into imaging. Every other source is a capability name.
 const SourceTask = "task"
 
+// SourceDirectoryRejoin is the reason source for the restart a directory
+// rejoin needs to finish.
+const SourceDirectoryRejoin = "directory-rejoin"
+
 // Modes: what the machine does when the coordinator acts.
 const (
 	ModeReboot   = "reboot"

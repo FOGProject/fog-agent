@@ -907,8 +907,9 @@ The FOG AD Join/Rejoin enhancement requires the server to support both
 `X-FOG-Agent-Features`, separated by commas or whitespace. Additional tokens
 are allowed; substrings are not capabilities. Trusted HTTPS and the existing
 certificate principal remain required. Unreachable/temporarily unavailable
-and reachable-but-unsupported servers are distinct errors, both fail closed.
-No exception for AD-disabled hosts is defined for an older server.
+and reachable-but-unsupported servers are distinct errors. In both cases the
+directory rejoin feature stays off until the agent restarts, and the agent
+works as it did before the feature.
 
 The Windows startup path checks a due local update rollback before performing
 network feature or identity checks. A failed probe cannot suppress that
@@ -917,7 +918,9 @@ and does not clear probation.
 
 Before normal polling the agent checks its live SMBIOS/MAC identity through
 `POST /agent/v1/identity/check`. An explicit mismatch rotates the local key
-using existing Enrollment; ambiguity or failed checks stop normal work.
+using existing Enrollment. An ambiguous or failed check turns directory
+rejoin off for that poll, and the agent asks again on the next poll. Normal
+work continues.
 Unresolved directory markers are retained. A verified marker belonging to the
 old principal is archived byte-for-byte during explicit identity rotation.
 
@@ -931,7 +934,7 @@ Deploy triggers one target Join/Rebind even when the machine is healthy and
 already has the desired name. Enrollment alone does not trigger a mutation.
 A safe normal rename uses the existing native implementation;
 name reassignment, an existing Target or an authorized restore may require
-target rebind. No source AD GUID/SID is required or stored on the v2 path.
+target rebind. No source AD GUID/SID is required or stored.
 
 Plans use `version: 2`, an attempt ID, Host ID, configuration revision,
 expected names, domain/DC, `task_id` (zero for non-Deploy operations), and operation
@@ -955,8 +958,7 @@ The existing reboot coordinator performs the required restart once. The agent
 then verifies name/domain/boot/health; the server rechecks the target object
 before verified. A later same-name recovery requires a new completed Deploy
 or explicit administrator authorization, not a negative health result alone.
-Legacy v1 markers remain readable for review but cannot start or replay a new
-operation, even when presented with a new plan.
+A marker or plan with any version other than 2 is rejected.
 
 Successful user online logon and saved Netlogon health are separate evidence.
 Transient PDC1311 observations remain unresolved; TC status0 alone is not a

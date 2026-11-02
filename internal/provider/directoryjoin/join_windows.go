@@ -131,7 +131,7 @@ func joinWindowsLocked(ctx context.Context, p Policy) Result {
 		return uint32(r)
 	})
 	if status != 0 {
-		return Result{Status: StatusFailed, Error: joinError(status)}
+		return Result{Status: StatusFailed, Error: joinError(status), NativeStatus: status}
 	}
 	// Windows always needs one: the machine is not actually operating as a
 	// domain member until it restarts.
@@ -267,6 +267,9 @@ func joinForPlanWindowsLocked(ctx context.Context, p Policy, plan RejoinPlan) (u
 	p.Domain = plan.Domain + `\` + plan.DC
 	result := joinWindowsLocked(ctx, p)
 	if result.Status != StatusJoined {
+		if result.NativeStatus != 0 {
+			return result.NativeStatus, nil
+		}
 		return 0, errors.New("task join outcome requires review")
 	}
 	return 0, nil

@@ -16,6 +16,7 @@ import (
 
 	"github.com/FOGProject/fog-agent/internal/enroll"
 	"github.com/FOGProject/fog-agent/internal/identity"
+	"github.com/FOGProject/fog-agent/internal/netboot"
 	"github.com/FOGProject/fog-agent/internal/provider/directoryjoin"
 	"github.com/FOGProject/fog-agent/internal/reboot"
 )
@@ -172,7 +173,7 @@ func TestCoordinateSkipsStaleDirectoryRebootReason(t *testing.T) {
 					t.Fatalf("archive verified marker: %v", err)
 				}
 			}
-			st.Config.PendingReboot = []reboot.Reason{{Source: "directory-rejoin", Detail: "stale rejoin reason", Mode: reboot.ModeReboot}}
+			st.Config.PendingReboot = []reboot.Reason{{Source: reboot.SourceDirectoryRejoin, Detail: "stale rejoin reason", Mode: reboot.ModeReboot}}
 			server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/agent/v1/result" {
 					http.NotFound(w, r)
@@ -201,7 +202,9 @@ func TestCoordinateSkipsStaleDirectoryRebootReason(t *testing.T) {
 	}
 }
 
-func TestCoordinateKeepsTaskRebootWithheldUntilDirectoryVerified(t *testing.T) {
+// An unverified directory marker no longer holds a task reboot: imaging is
+// not withheld by directory rejoin. The stale rejoin reason is still dropped.
+func TestCoordinateReleasesTaskRebootWhileDirectoryUnverified(t *testing.T) {
 	st, plan := newDirectoryBoundaryState(t)
 	fingerprint, err := st.KeyFingerprint()
 	if err != nil {
@@ -213,7 +216,7 @@ func TestCoordinateKeepsTaskRebootWithheldUntilDirectoryVerified(t *testing.T) {
 	}
 	taskReason := reboot.Reason{Source: reboot.SourceTask, Detail: "imaging task", TaskID: 731}
 	st.Config.PendingReboot = []reboot.Reason{
-		{Source: "directory-rejoin", Detail: "stale rejoin reason", Mode: reboot.ModeReboot},
+		{Source: reboot.SourceDirectoryRejoin, Detail: "stale rejoin reason", Mode: reboot.ModeReboot},
 		taskReason,
 	}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -225,8 +228,10 @@ func TestCoordinateKeepsTaskRebootWithheldUntilDirectoryVerified(t *testing.T) {
 	}))
 	defer server.Close()
 
-	oldUsers, oldRequest := rebootUsers, requestReboot
-	t.Cleanup(func() { rebootUsers, requestReboot = oldUsers, oldRequest })
+	oldUsers, oldRequest, oldFind := rebootUsers, requestReboot, findNetboot
+	t.Cleanup(func() { rebootUsers, requestReboot, findNetboot = oldUsers, oldRequest, oldFind })
+	// No boot manager to ask: the reboot proceeds and nothing is armed.
+	findNetboot = func() (netboot.Option, error) { return netboot.Option{}, netboot.ErrUnsupported }
 	usersCalls, rebootCalls := 0, 0
 	rebootUsers = func() (int, error) { usersCalls++; return 0, nil }
 	requestReboot = func(string, time.Duration, string) error { rebootCalls++; return nil }
@@ -234,11 +239,11 @@ func TestCoordinateKeepsTaskRebootWithheldUntilDirectoryVerified(t *testing.T) {
 	if err = coordinateForPlatform(context.Background(), st, client, &sayer{}, true); err != nil {
 		t.Fatalf("coordinate unverified directory/task reasons: %v", err)
 	}
-	if rebootCalls != 0 || usersCalls != 1 {
-		t.Fatalf("unverified directory marker released task reboot: requestReboot=%d rebootUsers=%d", rebootCalls, usersCalls)
+	if rebootCalls != 1 || usersCalls != 1 {
+		t.Fatalf("unverified directory marker withheld task reboot: requestReboot=%d rebootUsers=%d, want 1/1", rebootCalls, usersCalls)
 	}
-	if len(st.Config.PendingReboot) != 1 || st.Config.PendingReboot[0] != taskReason {
-		t.Fatalf("task reboot reason was not preserved while directory verification is incomplete: %+v", st.Config.PendingReboot)
+	if len(st.Config.PendingReboot) != 0 {
+		t.Fatalf("task reboot reason was not consumed: %+v", st.Config.PendingReboot)
 	}
 }
 
