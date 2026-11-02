@@ -422,7 +422,9 @@ func runAgent(ctx context.Context, args []string) error {
 			}
 			directoryOn, directoryRetry = on, retry
 			if on {
-				out.say("directory rejoin: the server now offers it; on")
+				// Through retryOut, so its memory moves past the outage
+				// line and a later outage logs that line again.
+				retryOut.say("directory rejoin: the server now offers it; on")
 				identityVerified = false
 			}
 		}
@@ -459,13 +461,14 @@ func runAgent(ctx context.Context, args []string) error {
 				if e != nil {
 					// Hand over to the retry path above: it asks again
 					// each poll and logs the line once, not every poll.
-					retryOut.say("directory rejoin: the server could not confirm this machine's identity; the agent asks again later. Check that the server is reachable")
+					retryOut.say(msgIdentityUnconfirmed)
 					skipDirectory = true
 					directoryOn, directoryRetry = false, true
 				} else if a.Identity.Status == "mismatch" {
 					if e = st.RotateIdentity(live); e != nil {
 						return e
 					}
+					out.say(msgClonedState)
 					identityVerified = false
 					continue
 				} else {

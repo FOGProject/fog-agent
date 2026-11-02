@@ -116,7 +116,7 @@ func (c *Client) CheckIdentity(ctx context.Context, live identity.Host) (Identit
 
 func (c *Client) StartRejoin(ctx context.Context, p directoryjoin.RejoinPlan) (*directoryjoin.Policy, error) {
 	if p.Version != 2 {
-		return nil, errors.New("unsupported directory rejoin plan version")
+		return nil, errors.New("unsupported directory rejoin plan version; check that the FOG server and the FOG Agent are both current")
 	}
 	if p.TaskID < 0 {
 		return nil, errors.New("invalid rejoin plan task binding")

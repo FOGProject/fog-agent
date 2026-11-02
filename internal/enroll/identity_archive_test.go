@@ -38,8 +38,8 @@ func TestRotateIdentityProceedsPastUnreadableMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	active := directoryjoin.AttemptPath(dir)
-	garbage := []byte(`{"version":1}`)
-	if err = os.WriteFile(active, garbage, 0o600); err != nil {
+	oldVersionMarker := []byte(`{"version":1}`)
+	if err = os.WriteFile(active, oldVersionMarker, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err = st.RotateIdentity(liveID("identity-B")); err != nil {
@@ -52,7 +52,7 @@ func TestRotateIdentityProceedsPastUnreadableMarker(t *testing.T) {
 	if newFP == oldFP {
 		t.Fatal("rotation kept the old key")
 	}
-	if kept, err := os.ReadFile(active); err != nil || !bytes.Equal(kept, garbage) {
+	if kept, err := os.ReadFile(active); err != nil || !bytes.Equal(kept, oldVersionMarker) {
 		t.Fatalf("unreadable marker was not left untouched: %q, %v", kept, err)
 	}
 }

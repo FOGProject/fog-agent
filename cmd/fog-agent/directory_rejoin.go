@@ -62,12 +62,21 @@ func localCloneGuard(st *enroll.State, out *sayer) error {
 	}
 	switch {
 	case regen && hadKey:
-		out.say("this state was made on another machine (a cloned or reimaged disk); generated a new key and enrolling as this machine")
+		out.say(msgClonedState)
 	case regen:
 		out.say("generated a new key for this machine's identity")
 	}
 	return nil
 }
+
+// msgClonedState is the one line for a clone, whether the local guard or the
+// server found it. msgIdentityUnconfirmed is shared by startup, the retry
+// path and the per-poll check: the retry logger prints a repeated line once,
+// which works only while every site uses the same text.
+const (
+	msgClonedState         = "this state was made on another machine (a cloned or reimaged disk); generated a new key and enrolling as this machine"
+	msgIdentityUnconfirmed = "directory rejoin: the server could not confirm this machine's identity; the agent asks again later. Check that the server is reachable"
+)
 
 // Nothing cached may act until this process has checked its live identity.
 // It reports one of three outcomes: on; off because the server does not offer
@@ -90,14 +99,14 @@ func prepareDirectoryIdentity(ctx context.Context, st *enroll.State, c *enroll.C
 		}
 		a, err := c.CheckIdentity(ctx, live)
 		if err != nil {
-			out.say("directory rejoin: the server could not confirm this machine's identity; the agent asks again later. Check that the server is reachable")
+			out.say(msgIdentityUnconfirmed)
 			return false, true, nil
 		}
 		if a.Identity.Status == "mismatch" {
 			if err = st.RotateIdentity(live); err != nil {
 				return false, false, err
 			}
-			out.say("directory rejoin: the server says this state belongs to another machine (a cloned or reimaged disk); generated a new key and enrolling as this machine")
+			out.say(msgClonedState)
 			return true, false, nil
 		}
 		if st.Config.HostID != 0 && st.Config.HostID != a.Identity.HostID {
