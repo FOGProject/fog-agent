@@ -375,8 +375,8 @@ func TestPrepareDirectoryIdentityOffWhenServerLacksFeatures(t *testing.T) {
 				t.Fatal("prepareDirectoryIdentity settled a key itself; that is the caller's job")
 			}
 			// The caller (runAgent) then runs the pre-feature guard.
-			if err := legacyIdentity(st, out); err != nil || st.Key == nil {
-				t.Fatalf("legacyIdentity: key=%t err=%v", st.Key != nil, err)
+			if err := localCloneGuard(st, out); err != nil || st.Key == nil {
+				t.Fatalf("localCloneGuard: key=%t err=%v", st.Key != nil, err)
 			}
 		})
 	}
@@ -402,7 +402,7 @@ func TestPrepareDirectoryIdentityRetriesAfterUnavailableProbe(t *testing.T) {
 		t.Fatalf("offline probe = on=%t retry=%t err=%v; want off with retry", on, retry, err)
 	}
 	online := &enroll.Client{ServerURL: server.URL, HTTP: server.Client()}
-	on, retry, err = prepareDirectoryIdentity(context.Background(), st, online, &sayer{quiet: true})
+	on, retry, err = prepareDirectoryIdentity(context.Background(), st, online, &sayer{})
 	if err != nil || !on || retry {
 		t.Fatalf("second probe = on=%t retry=%t err=%v; want on", on, retry, err)
 	}

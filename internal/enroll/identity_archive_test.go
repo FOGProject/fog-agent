@@ -21,6 +21,42 @@ func identityArchivePlan(hostID int) directoryjoin.RejoinPlan {
 	}
 }
 
+// An unreadable marker must not block a rotation: a clone that cannot rotate
+// cannot re-enroll, and the service would exit at every start. The marker
+// itself is left in place, untouched.
+func TestRotateIdentityProceedsPastUnreadableMarker(t *testing.T) {
+	dir := t.TempDir()
+	st, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = st.EnsureKey(liveID("identity-A")); err != nil {
+		t.Fatal(err)
+	}
+	oldFP, err := st.KeyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := directoryjoin.AttemptPath(dir)
+	garbage := []byte(`{"version":1}`)
+	if err = os.WriteFile(active, garbage, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = st.RotateIdentity(liveID("identity-B")); err != nil {
+		t.Fatalf("RotateIdentity with an unreadable marker: %v", err)
+	}
+	newFP, err := st.KeyFingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newFP == oldFP {
+		t.Fatal("rotation kept the old key")
+	}
+	if kept, err := os.ReadFile(active); err != nil || !bytes.Equal(kept, garbage) {
+		t.Fatalf("unreadable marker was not left untouched: %q, %v", kept, err)
+	}
+}
+
 func TestRotateIdentityArchivesVerifiedMarkerByteForByte(t *testing.T) {
 	dir := t.TempDir()
 	st, err := Load(dir)

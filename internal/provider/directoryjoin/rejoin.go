@@ -49,7 +49,7 @@ var rejoinID = regexp.MustCompile(`^[a-f0-9]{32}$`)
 
 func (p RejoinPlan) Validate(hostID int) error {
 	if p.Version != 2 {
-		return errors.New("unsupported directory rejoin plan version")
+		return errors.New("unsupported directory rejoin plan version; check that the FOG server and the FOG Agent are both current")
 	}
 	validName := rejoinName.MatchString(p.Name)
 	if p.Operation == "rename" || p.Operation == "join" {
@@ -147,7 +147,10 @@ func LoadAttempt(dir string) (*Attempt, error) {
 		return nil, errors.New("invalid directory rejoin marker")
 	}
 	if a.Version != 2 || a.Plan.Version != 2 {
-		return nil, errors.New("unsupported directory marker version")
+		// Only unreleased test builds wrote other versions. Name the file
+		// and the way out, so nobody has to read the source to recover.
+		return nil, errors.New("unsupported directory marker version in " + AttemptPath(dir) +
+			"; an unreleased test build wrote it. Delete the file, then restart the FOG Agent service")
 	}
 	var tail any
 	if d.Decode(&tail) != io.EOF || len(a.Fingerprint) != 64 || a.Plan.Validate(a.Plan.HostID) != nil {

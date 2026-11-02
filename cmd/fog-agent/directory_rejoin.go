@@ -52,9 +52,9 @@ var directoryOn bool
 // agent restarts.
 var directoryRetry bool
 
-// legacyIdentity is the clone and reimage guard as it ran before directory
+// localCloneGuard is the clone and reimage guard as it ran before directory
 // rejoin: settle the key against the live identity and say what happened.
-func legacyIdentity(st *enroll.State, out *sayer) error {
+func localCloneGuard(st *enroll.State, out *sayer) error {
 	hadKey := st.Key != nil
 	regen, err := st.EnsureKey(readIdentity())
 	if err != nil {
@@ -80,7 +80,7 @@ func prepareDirectoryIdentity(ctx context.Context, st *enroll.State, c *enroll.C
 			out.say("directory rejoin: this FOG server does not offer it; the agent works as before")
 			return false, false, nil
 		}
-		out.say("directory rejoin: could not ask the server which features it offers; trying again next poll. Check that the server is reachable")
+		out.say("directory rejoin: could not ask the server which features it offers; the agent asks again later. Check that the server is reachable")
 		return false, true, nil
 	}
 	live := readIdentity()
@@ -90,13 +90,14 @@ func prepareDirectoryIdentity(ctx context.Context, st *enroll.State, c *enroll.C
 		}
 		a, err := c.CheckIdentity(ctx, live)
 		if err != nil {
-			out.say("directory rejoin: the server could not confirm this machine's identity; trying again next poll. Check that the server is reachable")
+			out.say("directory rejoin: the server could not confirm this machine's identity; the agent asks again later. Check that the server is reachable")
 			return false, true, nil
 		}
 		if a.Identity.Status == "mismatch" {
 			if err = st.RotateIdentity(live); err != nil {
 				return false, false, err
 			}
+			out.say("directory rejoin: the server says this state belongs to another machine (a cloned or reimaged disk); generated a new key and enrolling as this machine")
 			return true, false, nil
 		}
 		if st.Config.HostID != 0 && st.Config.HostID != a.Identity.HostID {

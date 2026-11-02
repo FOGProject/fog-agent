@@ -129,14 +129,9 @@ var logOut io.Writer = os.Stderr
 // the service each line is stamped, since nothing else dates it.
 type sayer struct {
 	last string
-	// quiet drops every message; a repeated retry must not fill the log.
-	quiet bool
 }
 
 func (s *sayer) say(msg string) {
-	if s.quiet {
-		return
-	}
 	if msg != s.last {
 		if logOut != os.Stderr {
 			msg = time.Now().Format(time.RFC3339) + " " + msg
@@ -390,15 +385,16 @@ func runAgent(ctx context.Context, args []string) error {
 			return err
 		}
 		if !directoryOn {
-			if err = legacyIdentity(st, out); err != nil {
+			if err = localCloneGuard(st, out); err != nil {
 				return err
 			}
 		}
-	} else if err = legacyIdentity(st, out); err != nil {
+	} else if err = localCloneGuard(st, out); err != nil {
 		return err
 	}
 	identityVerified := false
 	identitySignature := ""
+	retryOut := &sayer{}
 	watch := &sessionWatcher{}
 	for {
 		// Checked every time round, not only at start. A binary that
@@ -414,11 +410,13 @@ func runAgent(ctx context.Context, args []string) error {
 		}
 		// A service often starts before the network is up. Ask again, once a
 		// poll, while the only reason directory rejoin is off is that the
-		// server could not be asked. Quiet, so a down server adds no log
-		// lines. This runs before enrollment: an identity mismatch drops the
+		// server could not be asked. retryOut has its own memory of the last
+		// line, so a down server logs its line once, not once a poll, while
+		// a final outcome (unsupported, host disagreement) still prints.
+		// This runs before enrollment: an identity mismatch drops the
 		// certificate, and the enrollment below then replaces it.
 		if runtime.GOOS == "windows" && !directoryOn && directoryRetry {
-			on, retry, e := prepareDirectoryIdentity(ctx, st, client, &sayer{quiet: true})
+			on, retry, e := prepareDirectoryIdentity(ctx, st, client, retryOut)
 			if e != nil {
 				return e
 			}
@@ -459,8 +457,11 @@ func runAgent(ctx context.Context, args []string) error {
 			if !identityVerified || identitySignature != string(encoded) {
 				a, e := client.CheckIdentity(ctx, live)
 				if e != nil {
-					out.say("directory rejoin: the server could not confirm this machine's identity; trying again next poll. Check that the server is reachable")
+					// Hand over to the retry path above: it asks again
+					// each poll and logs the line once, not every poll.
+					retryOut.say("directory rejoin: the server could not confirm this machine's identity; the agent asks again later. Check that the server is reachable")
 					skipDirectory = true
+					directoryOn, directoryRetry = false, true
 				} else if a.Identity.Status == "mismatch" {
 					if e = st.RotateIdentity(live); e != nil {
 						return e

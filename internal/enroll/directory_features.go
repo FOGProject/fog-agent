@@ -211,11 +211,11 @@ func (st *State) RotateIdentity(live identity.Host) error {
 	// Only a terminal marker may leave the active slot during identity
 	// rotation. Keep its bytes as history, including an earlier key's marker
 	// retained by a previous enrollment. Uncertain operations stay active.
+	// An unreadable marker is not terminal, so it stays where it is. It must
+	// not block the rotation either: a clone that cannot rotate cannot
+	// re-enroll, and the service would exit at every start.
 	a, e := directoryjoin.LoadAttempt(st.Dir)
-	if e != nil {
-		return e
-	}
-	if a != nil && a.Phase == "verified" {
+	if e == nil && a != nil && a.Phase == "verified" {
 		if e = directoryjoin.ArchiveVerifiedAttempt(st.Dir, a); e != nil {
 			return e
 		}

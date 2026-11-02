@@ -75,7 +75,7 @@ func TestValidateReservedRetryRejectsInvalidBindingsAndPlans(t *testing.T) {
 	}
 }
 
-func TestRemoveAttemptForRetryRejectsProtectedPhasesAndLegacyMarkerUnchanged(t *testing.T) {
+func TestRemoveAttemptForRetryRejectsProtectedPhasesAndLeavesMarkerUnchanged(t *testing.T) {
 	for _, phase := range []string{"may_have_run", "unknown", "failed", "awaiting_reboot", "verified"} {
 		t.Run("v2-"+phase, func(t *testing.T) {
 			dir := t.TempDir()

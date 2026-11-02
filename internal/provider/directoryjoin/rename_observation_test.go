@@ -52,14 +52,14 @@ func TestValidateRenameObservationKeepsIdentityAndMembershipGuards(t *testing.T)
 	}
 }
 
-func TestValidateRenamePlanRequiresPinnedOldIdentityButReadsLegacyShape(t *testing.T) {
-	legacy := renameObservationPlan()
-	legacy.Target = nil
-	legacy.Phase = "verified"
-	if err := legacy.Validate(legacy.HostID); err != nil {
-		t.Fatalf("legacy completed-plan shape must remain readable: %v", err)
+func TestValidateRenamePlanRequiresPinnedOldIdentityButReadsUnpinnedShape(t *testing.T) {
+	unpinned := renameObservationPlan()
+	unpinned.Target = nil
+	unpinned.Phase = "verified"
+	if err := unpinned.Validate(unpinned.HostID); err != nil {
+		t.Fatalf("a completed rename plan without a pinned target must remain readable: %v", err)
 	}
-	if err := ValidateRenamePlan(legacy); err == nil {
+	if err := ValidateRenamePlan(unpinned); err == nil {
 		t.Fatal("new rename dispatch accepted a plan without the old account identity")
 	}
 
