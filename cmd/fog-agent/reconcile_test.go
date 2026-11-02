@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -48,3 +49,41 @@ func TestUpdateIsPartOfTheCapabilitySetThatForcesAReconcile(t *testing.T) {
 }
 
 func splitCaps(s string) []string { return strings.Split(s, ",") }
+
+// A held directory/hostname change was stripped from the desired state, so
+// a clean reconcile of the rest must not mark the revision applied.
+func TestReconcileHeldDoesNotMarkRevisionApplied(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		held    bool
+		wantRev string
+	}{
+		{name: "not held applies the revision", wantRev: "new"},
+		{name: "held keeps the old revision", held: true, wantRev: "old"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, err := enroll.Load(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			st.Config.AppliedRevision, st.Config.AppliedWith = "old", "before"
+			desired := &enroll.DesiredState{Revision: "new"}
+			if err := reconcileHeld(context.Background(), st, &enroll.Client{}, desired, &sayer{}, tc.held); err != nil {
+				t.Fatal(err)
+			}
+			if st.Config.AppliedRevision != tc.wantRev {
+				t.Fatalf("AppliedRevision = %q, want %q", st.Config.AppliedRevision, tc.wantRev)
+			}
+			if tc.held && st.Config.AppliedWith != "before" {
+				t.Fatalf("AppliedWith = %q, want it restored", st.Config.AppliedWith)
+			}
+			saved, err := enroll.Load(st.Dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if saved.Config.AppliedRevision != tc.wantRev {
+				t.Fatalf("saved AppliedRevision = %q, want %q", saved.Config.AppliedRevision, tc.wantRev)
+			}
+		})
+	}
+}

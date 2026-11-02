@@ -425,3 +425,20 @@ through the same probe the LDAP plugin uses), `FOG_DIRECTORY_BASE_DN`,
   it. A rename of a joined machine has its own directory consequences and is
   a separate problem: design 0017.
 - **Not an unjoin.** See §6.
+# Target-based Windows extension
+
+See `protocol-v1.md` for the paired server/agent contract. Existing Workgroup
+Join and safe ordinary domain rename remain in use. Rebind selects a confirmed
+target account instead of repairing or renaming a reassigned old account.
+Source GUID/SID management is not part of this contract. Identity ambiguity
+turns directory rejoin off until the next poll. Markers and plans that are not
+version 2 are rejected as unsupported. Unresolved markers and unknown native
+results stop automatic directory work.
+The existing coordinator handles the restart and post-boot verification.
+
+The FOG AD Join/Rejoin enhancement uses
+`directory-task-operations-v1` for Target-bound operations. It stores
+no Clone classification. A completed Deploy is the one-shot authority even for
+a healthy self-restore. Task-bound Workgroup Join participates in the same
+claim/marker; ordinary Workgroup Join without a Deploy retains its existing
+policy. Enrollment or server migration alone does not require Rebind.
