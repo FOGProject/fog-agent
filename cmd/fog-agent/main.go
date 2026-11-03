@@ -133,11 +133,13 @@ type sayer struct {
 
 func (s *sayer) say(msg string) {
 	if msg != s.last {
+		// Remember the unstamped line: a stamped one never equals the next
+		// call's msg, and the service then logged every repeat.
+		s.last = msg
 		if logOut != os.Stderr {
 			msg = time.Now().Format(time.RFC3339) + " " + msg
 		}
 		fmt.Fprintln(logOut, msg)
-		s.last = msg
 	}
 }
 
@@ -380,10 +382,12 @@ func runAgent(ctx context.Context, args []string) error {
 	// certificate as well as the key, so a clone never went that way: it
 	// polled as the machine the image was captured from, and applied that
 	// host's name, tasks and snapins to itself.
+	probeLine := ""
 	if runtime.GOOS == "windows" {
 		if directoryOn, directoryRetry, err = prepareWindowsRun(ctx, st, client, out); err != nil {
 			return err
 		}
+		probeLine = out.last
 		if !directoryOn {
 			if err = localCloneGuard(st, out); err != nil {
 				return err
@@ -394,7 +398,12 @@ func runAgent(ctx context.Context, args []string) error {
 	}
 	identityVerified := false
 	identitySignature := ""
-	retryOut := &sayer{}
+	// Seeded with the startup probe's own line (taken before the clone guard
+	// speaks), so an outage at start is not logged again by a retry.
+	retryOut := &sayer{last: probeLine}
+	// A first-pass skip, not state: the startup probe above has just asked,
+	// so the first pass sends no second request.
+	probedAtStart := true
 	watch := &sessionWatcher{}
 	for {
 		// Checked every time round, not only at start. A binary that
@@ -415,7 +424,7 @@ func runAgent(ctx context.Context, args []string) error {
 		// a final outcome (unsupported, host disagreement) still prints.
 		// This runs before enrollment: an identity mismatch drops the
 		// certificate, and the enrollment below then replaces it.
-		if runtime.GOOS == "windows" && !directoryOn && directoryRetry {
+		if runtime.GOOS == "windows" && !directoryOn && directoryRetry && !probedAtStart {
 			on, retry, e := prepareDirectoryIdentity(ctx, st, client, retryOut)
 			if e != nil {
 				return e
@@ -428,6 +437,7 @@ func runAgent(ctx context.Context, args []string) error {
 				identityVerified = false
 			}
 		}
+		probedAtStart = false
 		if len(st.Cert) == 0 {
 			// A token setup kept for us outranks nothing on the command
 			// line: the service is registered with plain `run`.

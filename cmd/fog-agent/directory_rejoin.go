@@ -166,8 +166,9 @@ func rejoinReport(ctx context.Context, st *enroll.State, c *enroll.Client, a *di
 	if o.SecureChannel == "false" {
 		secure = "broken"
 	}
+	task := a.Plan.TaskID
 	_, err := c.Result(ctx, enroll.ResultRequest{Revision: st.Config.AppliedRevision, Capability: "directory", Status: provider.StatusApplied,
-		Item: &enroll.ResultItem{ID: st.Config.HostID, AttemptID: a.Plan.AttemptID, ConfigRevision: a.Plan.ConfigRevision, TaskID: a.Plan.TaskID, Status: phase, NativeStatus: a.NativeStatus, SecureChannel: secure, BootChanged: boot, CurrentName: o.CurrentName, Domain: o.Domain, Netbios: o.Netbios}})
+		Item: &enroll.ResultItem{ID: st.Config.HostID, AttemptID: a.Plan.AttemptID, ConfigRevision: a.Plan.ConfigRevision, TaskID: &task, Status: phase, NativeStatus: a.NativeStatus, SecureChannel: secure, BootChanged: boot, CurrentName: o.CurrentName, Domain: o.Domain, Netbios: o.Netbios}})
 	return err
 }
 

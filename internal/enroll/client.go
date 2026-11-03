@@ -305,9 +305,12 @@ type ResultRequest struct {
 // vocabulary, the raw exit code, the output tail, and for software the
 // version the host has now.
 type ResultItem struct {
-	AttemptID        string  `json:"attempt_id,omitempty"`
-	ConfigRevision   string  `json:"config_revision,omitempty"`
-	TaskID           int     `json:"task_id,omitempty"`
+	AttemptID      string `json:"attempt_id,omitempty"`
+	ConfigRevision string `json:"config_revision,omitempty"`
+	// TaskID is a pointer so a directory result can send task 0 (an
+	// operator-authorized operation): the server compares it exactly, and
+	// omitempty dropped a plain 0. Other items leave it nil.
+	TaskID           *int    `json:"task_id,omitempty"`
 	NativeStatus     *uint32 `json:"native_status,omitempty"`
 	SecureChannel    string  `json:"secure_channel,omitempty"`
 	BootChanged      bool    `json:"boot_changed,omitempty"`
