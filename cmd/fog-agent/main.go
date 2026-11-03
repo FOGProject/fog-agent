@@ -471,7 +471,7 @@ func runAgent(ctx context.Context, args []string) error {
 				if e != nil {
 					// Hand over to the retry path above: it asks again
 					// each poll and logs the line once, not every poll.
-					retryOut.say(msgIdentityUnconfirmed)
+					retryOut.say(identityUnconfirmed(e))
 					skipDirectory = true
 					directoryOn, directoryRetry = false, true
 				} else if a.Identity.Status == "mismatch" {
@@ -1656,6 +1656,9 @@ func cmdRenew(args []string) error {
 	if runtime.GOOS == "windows" && client.RequireDirectoryFeatures(context.Background()) == nil {
 		a, e := client.CheckIdentity(context.Background(), readIdentity())
 		switch {
+		case errors.Is(e, enroll.ErrIdentityConflict):
+			// A duplicate MAC on a host record, not the network: say so.
+			out.say("renew: this machine's MAC addresses or SMBIOS identity match more than one FOG host; renewing without that check. Check which hosts list this machine's MACs")
 		case e != nil:
 			// Not proof of a different machine: renew as before the feature.
 			out.say("renew: the server could not confirm this machine's identity; renewing without that check. Check that the server is reachable")

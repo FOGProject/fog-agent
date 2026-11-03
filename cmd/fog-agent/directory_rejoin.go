@@ -70,13 +70,24 @@ func localCloneGuard(st *enroll.State, out *sayer) error {
 }
 
 // msgClonedState is the one line for a clone, whether the local guard or the
-// server found it. msgIdentityUnconfirmed is shared by startup, the retry
-// path and the per-poll check: the retry logger prints a repeated line once,
-// which works only while every site uses the same text.
+// server found it. Startup, the retry path and the per-poll check all pick
+// their failed-check line through identityUnconfirmed: the retry logger
+// prints a repeated line once, which works only while every site picks the
+// same text for the same cause.
 const (
 	msgClonedState         = "this state was made on another machine (a cloned or reimaged disk); generated a new key and enrolling as this machine"
 	msgIdentityUnconfirmed = "directory rejoin: the server could not confirm this machine's identity; the agent asks again later. Check that the server is reachable"
+	msgIdentityConflict    = "directory rejoin: this machine's MAC addresses or SMBIOS identity match more than one FOG host; the agent asks again later. Check which hosts list this machine's MACs (an image can carry a virtual adapter's MAC)"
 )
+
+// identityUnconfirmed picks the line for a failed identity check: a
+// conflict needs the operator to fix a host record, not the network.
+func identityUnconfirmed(err error) string {
+	if errors.Is(err, enroll.ErrIdentityConflict) {
+		return msgIdentityConflict
+	}
+	return msgIdentityUnconfirmed
+}
 
 // Nothing cached may act until this process has checked its live identity.
 // It reports one of three outcomes: on; off because the server does not offer
@@ -99,7 +110,7 @@ func prepareDirectoryIdentity(ctx context.Context, st *enroll.State, c *enroll.C
 		}
 		a, err := c.CheckIdentity(ctx, live)
 		if err != nil {
-			out.say(msgIdentityUnconfirmed)
+			out.say(identityUnconfirmed(err))
 			return false, true, nil
 		}
 		if a.Identity.Status == "mismatch" {

@@ -29,6 +29,10 @@ const DirectoryTaskOperationsFeature = "directory-task-operations-v1"
 var ErrDirectoryFeaturesUnavailable = errors.New("directory feature check unavailable")
 var ErrDirectoryFeaturesUnsupported = errors.New("server does not advertise directory-join-target-v1 and directory-task-operations-v1; directory rejoin is off")
 
+// ErrIdentityConflict is the server's answer when this machine's identity
+// names more than one FOG host.
+var ErrIdentityConflict = errors.New("the server found more than one FOG host for this machine's identity")
+
 type IdentityAnswer struct {
 	Status   string `json:"status"`
 	Identity struct {
@@ -110,6 +114,12 @@ func (c *Client) CheckIdentity(ctx context.Context, live identity.Host) (Identit
 	}
 	if code == 409 && out.Status == "identity_blocked" && out.Identity.Status == "mismatch" {
 		return out, nil
+	}
+	// A conflict means this machine's SMBIOS identity and MACs name more
+	// than one FOG host. A distinct error lets the caller say what to check
+	// instead of "is the server reachable".
+	if code == 409 && out.Status == "identity_blocked" && out.Identity.Status == "conflict" {
+		return out, ErrIdentityConflict
 	}
 	return out, errors.New("the server could not place this machine's identity; the agent keeps working without directory rejoin")
 }

@@ -25,24 +25,43 @@ type Host struct {
 }
 
 // Read collects the SMBIOS tuple via the OS-specific reader and the MACs of
-// every non-loopback interface that has a hardware address.
+// the machine's hardware network interfaces.
 func Read() Host {
 	h := readSMBIOS()
-	h.MACs = macs()
+	ifs, err := net.Interfaces()
+	if err == nil {
+		h.MACs = pickMACs(ifs, hardwareFilter())
+	}
 	return h
 }
 
-func macs() []string {
-	ifs, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
-	var out []string
+// pickMACs returns the sorted MACs of every non-loopback interface that has a
+// hardware address and that isHardware accepts.
+//
+// Why the filter: a software adapter (a VPN TAP, a tunnel) keeps its MAC when
+// a disk is imaged, so every clone of a golden image reports it. The server
+// then finds two hosts for one MAC and answers "conflict", and the clone never
+// rejoins the directory. A hardware NIC's MAC belongs to that machine alone.
+//
+// A nil isHardware means the OS could not say which interfaces are hardware.
+// The agent then sends every MAC, as it did before the filter. So does a
+// machine where the filter accepts no interface: the full MAC list is safer
+// than an empty one, which leaves SMBIOS as the only evidence.
+func pickMACs(ifs []net.Interface, isHardware func(net.Interface) bool) []string {
+	var all, hw []string
 	for _, i := range ifs {
 		if i.Flags&net.FlagLoopback != 0 || len(i.HardwareAddr) == 0 {
 			continue
 		}
-		out = append(out, i.HardwareAddr.String())
+		mac := i.HardwareAddr.String()
+		all = append(all, mac)
+		if isHardware != nil && isHardware(i) {
+			hw = append(hw, mac)
+		}
+	}
+	out := hw
+	if len(out) == 0 {
+		out = all
 	}
 	sort.Strings(out)
 	return out
