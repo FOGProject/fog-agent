@@ -407,8 +407,8 @@ func TestDirectoryTaskDTOFieldsDecode(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"netbios":"CORP","task_id":23}`), &item); err != nil {
 		t.Fatal(err)
 	}
-	if item.Netbios != "CORP" || item.TaskID != 23 {
-		t.Fatalf("directory result bindings = netbios %q task %d", item.Netbios, item.TaskID)
+	if item.Netbios != "CORP" || item.TaskID == nil || *item.TaskID != 23 {
+		t.Fatalf("directory result bindings = netbios %q task %v", item.Netbios, item.TaskID)
 	}
 	responseJSON, err := json.Marshal(PollResponse{})
 	if err != nil {
@@ -439,7 +439,8 @@ func TestDirectoryTaskDTOFieldsDecode(t *testing.T) {
 			t.Fatalf("%s present in zero-value DTO JSON: %s", field, itemJSON)
 		}
 	}
-	setJSON, err := json.Marshal(ResultItem{TaskID: 7, Netbios: "CORP"})
+	task := 7
+	setJSON, err := json.Marshal(ResultItem{TaskID: &task, Netbios: "CORP"})
 	if err != nil {
 		t.Fatal(err)
 	}
