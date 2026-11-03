@@ -119,6 +119,11 @@ func TestCheckIdentityAcceptsOnlyMatchedOrExplicitMismatch(t *testing.T) {
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("CheckIdentity() error = %v, want error=%t", err, tt.wantErr)
 			}
+			// Only a conflict gets the sentinel: the caller says "check the
+			// host MACs" for it and "check the server" for the rest.
+			if got := errors.Is(err, ErrIdentityConflict); got != (tt.idStatus == "conflict" && tt.code == 409) {
+				t.Fatalf("errors.Is(err, ErrIdentityConflict) = %t for %s", got, tt.name)
+			}
 			if !tt.wantErr && answer.Identity.Status != tt.wantStatus {
 				t.Fatalf("identity status = %q, want %q", answer.Identity.Status, tt.wantStatus)
 			}
