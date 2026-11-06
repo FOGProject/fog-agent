@@ -223,8 +223,6 @@ func TestSettleTrustFailedResettleRestoresTheOldTrust(t *testing.T) {
 	assertKept(t, dir, st)
 }
 
-// (h) An admin who gave a fingerprint asked for new trust, so a failure is
-// returned, and the old trust is still put back.
 // Stored system trust comes back the same way when settling again fails.
 func TestSettleTrustFailedResettleRestoresSystemTrust(t *testing.T) {
 	dir := enrolledState(t, true)
@@ -246,9 +244,10 @@ func TestSettleTrustFailedResettleRestoresSystemTrust(t *testing.T) {
 	}
 }
 
-// A failed settle with --server puts the stored server URL back with the
-// trust, as if setup had never run.
-func TestSettleTrustFailedResettleRestoresTheServer(t *testing.T) {
+// (h) An admin who gave a fingerprint asked for new trust, so a failure is
+// returned. The old trust and the stored server URL are put back, as if
+// setup had never run.
+func TestSettleTrustFailedResettleWithFingerprintIsAnError(t *testing.T) {
 	dir := enrolledState(t, false)
 	stubCheckTrust(t, staleErr)
 	stubProbeFails(t)
@@ -264,22 +263,6 @@ func TestSettleTrustFailedResettleRestoresTheServer(t *testing.T) {
 	}
 	if re.Config.ServerURL != trustedProbe.ServerURL {
 		t.Fatalf("the stored server became %q", re.Config.ServerURL)
-	}
-	assertKept(t, dir, re)
-}
-
-func TestSettleTrustFailedResettleWithFingerprintIsAnError(t *testing.T) {
-	dir := enrolledState(t, false)
-	stubCheckTrust(t, staleErr)
-	stubProbeFails(t)
-
-	_, err := settleTrust(flagsFor(t, "--dir", dir, "--ca-fingerprint", "AA:BB"), &sayer{})
-	if err == nil {
-		t.Fatal("a failed settle with a fingerprint given was hidden")
-	}
-	re, lerr := enroll.Load(dir)
-	if lerr != nil {
-		t.Fatal(lerr)
 	}
 	assertKept(t, dir, re)
 }
