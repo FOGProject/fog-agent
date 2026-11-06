@@ -360,11 +360,22 @@ func refuseRedirect(req *http.Request, via []*http.Request) error {
 // empty bundle is refused: enrolling against an unverified server would let
 // anyone on the path hand the agent a certificate for a server they control.
 func NewClient(serverURL string, caPEM []byte) (*Client, error) {
+	cfg, err := pinnedConfig(caPEM, "")
+	if err != nil {
+		return nil, err
+	}
+	return newClient(serverURL, cfg), nil
+}
+
+// pinnedConfig is the TLS config for a server pinned to caPEM, shared by
+// NewClient and CheckTrust so the check verifies exactly what the client
+// verifies. It returns ErrNoCACertificate for a bundle with no certificate.
+func pinnedConfig(caPEM []byte, serverName string) (*tls.Config, error) {
 	pool := x509.NewCertPool()
 	if !pool.AppendCertsFromPEM(caPEM) {
-		return nil, errors.New("enroll: CA bundle contains no certificates")
+		return nil, ErrNoCACertificate
 	}
-	return newClient(serverURL, &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}), nil
+	return &tls.Config{RootCAs: pool, ServerName: serverName, MinVersion: tls.VersionTLS12}, nil
 }
 
 // NewSystemTrustClient builds a client that verifies the server against this

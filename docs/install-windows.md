@@ -132,7 +132,10 @@ A newer MSI installed over an older one replaces the binary in place and
 keeps the state directory, so the host keeps its identity and does not
 re-enroll. On an upgrade the properties are optional. Uninstalling removes
 the service and the binary and leaves the state directory (this machine's
-key and certificate) in place, so a reinstall picks the same identity up.
+key and certificate) in place, so a reinstall picks the same identity up
+while the stored trust still verifies the server. If it no longer does (the
+server was rebuilt, for example), setup settles trust again like a first
+install and the host enrolls again with the token.
 
 ## Capturing an image with the agent installed
 
