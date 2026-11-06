@@ -1862,7 +1862,7 @@ func settleTrust(f commonFlags, out *sayer) (*enroll.State, error) {
 			}
 		}
 		if rerr != nil {
-			return nil, errors.Join(err, rerr)
+			return nil, errors.Join(err, fmt.Errorf("restoring the old trust: %w", rerr))
 		}
 		if *f.caFingerprint != "" || *f.caPath != "" {
 			return nil, err

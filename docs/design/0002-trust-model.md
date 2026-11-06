@@ -56,23 +56,32 @@ almost nobody installing an agent needs a PEM file:
   CA already checked who holds the name. The web UI could not show one
   anyway: its Certificates tab shows FOG's own CA.
 
-The order matters. A FOG CA that is also in the machine's store, which the
-legacy client put there, still goes through the fingerprint. The choice is
-made at install. The running service never re-settles trust, and an agent
-that pinned a CA never falls back to the system store when that CA stops
-verifying. Setup is different, because an admin is present (MSI install or
-upgrade, service install). Setup checks the stored trust against the server.
-A certificate verification failure makes setup settle trust again. It uses
-the first-install rules: fingerprint, `--ca`, or system trust. If that
-fails, setup restores the old trust and the old server URL. Setup drops the
-issued certificate only when it settles a different trust. The accepted
-cost is an attacker on the path at setup time. A bad certificate from them
-makes setup run the first-install rules. Without a fingerprint, setup then
-stops with an error. With a TLS-inspection root in the machine store, setup
-settles on system trust. A first install on that network has the same
-outcome. A fingerprint given for a server
-on a machine-trusted certificate is refused, not dropped, because whoever
-wrote it expected a pinned CA.
+The order matters. The legacy client put FOG's CA in the machine's store.
+That CA still goes through the fingerprint. The choice is made at install.
+The running service never settles trust again. An agent that pinned a CA
+never falls back to the system store when that CA stops verifying.
+
+Setup is different, because an admin is present (MSI install or upgrade,
+service install). Setup checks the stored trust against the server. A
+certificate verification failure makes setup settle trust again. It uses
+the first-install rules: a `--ca` file, a fingerprint, or system trust. If
+that fails, setup restores the old trust. With `--ca` or a fingerprint,
+setup then fails with the error. The stored server URL stays as it was.
+Without them, setup continues with the old trust, as before this check. It
+then saves the `--server` value, also as before. An MSI upgrade passes
+neither, so it does not start failing. Setup drops the issued certificate
+only when it settles a different trust.
+
+The accepted cost is an attacker on the path at setup time. A bad
+certificate from them makes setup settle trust again. A `--ca` file settles
+on that file, as a first install does. A fingerprint does not match the
+attacker's CA, so setup fails and restores the old trust. Without either,
+setup keeps the old trust. A TLS-inspection root in the machine store is
+the exception. There, setup settles on system trust. A first install on
+that network has the same outcome.
+
+A fingerprint given for a server on a machine-trusted certificate is
+refused, not dropped. Whoever wrote it expected a pinned CA.
 
 Why not pin the public CA's root instead (decided 2026-09-11, after a report
 from a server on Let's Encrypt). Pinning Let's Encrypt's root adds almost
