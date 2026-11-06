@@ -5,7 +5,9 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -1783,6 +1785,103 @@ func cmdSetup(args []string) error {
 	return postSetup()
 }
 
+// checkTrust is enroll.State.CheckTrust. A variable so a test can say what
+// the handshake found without standing up a TLS server.
+var checkTrust = func(ctx context.Context, st *enroll.State) error { return st.CheckTrust(ctx) }
+
+// trustSnapshot is the trust a state directory held before setup touched it.
+type trustSnapshot struct {
+	system bool
+	ca     []byte
+	server string // the stored server URL, put back with the trust on a failed settle
+}
+
+// forgetStaleTrust checks the trust an earlier install stored against the
+// server setup is pointed at, and forgets it when it no longer verifies that
+// server. An uninstall keeps the state directory, so a reinstall against a
+// rebuilt server finds the old pinned CA: every connection then fails and the
+// token is never used. Forgetting the trust lets openState settle it again,
+// as a first install does. Only a certificate verification failure counts. A
+// server that does not answer leaves everything as it is, because a server
+// that is offline at install time is not a failure (the service keeps
+// trying). It returns what the trust was before, and whether it forgot it,
+// for settleTrust.
+func forgetStaleTrust(f commonFlags, out *sayer) (snap trustSnapshot, forgot bool, err error) {
+	st, err := enroll.Load(*f.dir)
+	if err != nil {
+		return trustSnapshot{}, false, err
+	}
+	snap = trustSnapshot{system: st.Config.SystemTrust, ca: st.CA(), server: st.Config.ServerURL}
+	if *f.server != "" {
+		st.Config.ServerURL = *f.server
+	}
+	if !st.HasTrust() || st.Config.ServerURL == "" {
+		return snap, false, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	err = checkTrust(ctx, st)
+	cancel()
+	var verify *tls.CertificateVerificationError
+	if !errors.As(err, &verify) && !errors.Is(err, enroll.ErrNoCACertificate) {
+		return snap, false, nil
+	}
+	out.say(fmt.Sprintf("the trust stored for %s no longer verifies it (%v); setup settles it again as a first install does",
+		st.Config.ServerURL, err))
+	return snap, true, st.ForgetTrust()
+}
+
+// settleTrust is openState for setup. It forgets stored trust that no
+// longer verifies the server, then settles trust as a first install does.
+// If that fails, the old trust goes back on disk. An admin who gave a
+// fingerprint or a CA file asked for new trust, so the failure is theirs to
+// see. Otherwise (an MSI upgrade passes no properties) setup carries on with
+// the stored trust, as it did before this check existed, so an upgrade does
+// not start failing. When the trust was forgotten and a different one is
+// settled, the certificate issued under the old trust is dropped and the
+// host enrolls again with the token. The same trust settled again keeps the
+// enrollment, and with it the host's identity.
+func settleTrust(f commonFlags, out *sayer) (*enroll.State, error) {
+	snap, forgot, err := forgetStaleTrust(f, out)
+	if err != nil {
+		return nil, err
+	}
+	st, err := openState(f)
+	if err != nil && forgot {
+		// openState may have saved a CA before it failed, so put back the
+		// snapshot, whichever kind of trust it was.
+		// The server URL goes back too: ForgetTrust saved the config with
+		// --server already in it. A restore error is joined to the settle
+		// error, so the admin still sees why settling failed.
+		old, rerr := enroll.Load(*f.dir)
+		if rerr == nil {
+			old.Config.ServerURL = snap.server
+			if snap.system {
+				rerr = old.UseSystemTrust()
+			} else if rerr = old.SaveCA(snap.ca); rerr == nil {
+				rerr = old.SaveConfig()
+			}
+		}
+		if rerr != nil {
+			return nil, errors.Join(err, rerr)
+		}
+		if *f.caFingerprint != "" || *f.caPath != "" {
+			return nil, err
+		}
+		out.say(fmt.Sprintf("new trust could not be settled (%v); the stored trust is kept", err))
+		return openState(f)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if forgot && len(st.Cert) > 0 && (st.Config.SystemTrust != snap.system || !bytes.Equal(st.CA(), snap.ca)) {
+		if err := st.DropIssued(); err != nil {
+			return nil, err
+		}
+		out.say("the certificate issued under the old trust was dropped; this host enrolls again")
+	}
+	return st, nil
+}
+
 // prepareState settles the state directory: server and CA remembered, the
 // directory locked down before a key is written into it, and one
 // enrollment attempt. A server that does not answer is not an error here.
@@ -1791,7 +1890,10 @@ func cmdSetup(args []string) error {
 // lose the token. A fresh directory with no server or CA is an error.
 func prepareState(f commonFlags, out *sayer) (*enroll.State, error) {
 	askMissing(f)
-	st, err := openState(f)
+	// Setup has an admin present, so it is the one place trust that no
+	// longer verifies the server is settled again. The service never does
+	// this by itself: openState stays as it was.
+	st, err := settleTrust(f, out)
 	if err != nil {
 		return nil, err
 	}

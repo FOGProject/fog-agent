@@ -24,7 +24,7 @@ must keep.
 
 | Who trusts what | Anchor | Where it comes from |
 |---|---|---|
-| Agent trusts the server | settled once, at install, and kept in its state dir: a pinned CA bundle, or, for a web UI on a public or corporate certificate only, the system trust store and the server's name | a file handed over with `--ca`; the CA the server publishes, fetched and then confirmed by fingerprint; or the machine's own trust, checked by the probe (below) |
+| Agent trusts the server | settled at install, settled again by setup only when it fails verification, and kept in its state dir: a pinned CA bundle, or, for a web UI on a public or corporate certificate only, the system trust store and the server's name | a file handed over with `--ca`; the CA the server publishes, fetched and then confirmed by fingerprint; or the machine's own trust, checked by the probe (below) |
 | Web server trusts agents | **FOG Agent CA**, a new intermediate under the FOG root, published with the root as `management/other/agent-ca-bundle.pem` | installer `createAgentIntermediateCA`, key root-only under `/etc/fog/pki/agent/ca/` |
 | PHP trusts agents | the same bundle, re-verified in PHP for client-auth purpose, independently of the web server | `FOG\Agent\Principal::verify()` |
 | Server trusts a host binding | `hostAgentFingerprint` on the host row: sha256 of the key's SubjectPublicKeyInfo | written at approval, checked on every request |
@@ -58,8 +58,19 @@ almost nobody installing an agent needs a PEM file:
 
 The order matters. A FOG CA that is also in the machine's store, which the
 legacy client put there, still goes through the fingerprint. The choice is
-made once, at install. An agent that pinned a CA never falls back to the
-system store when that CA stops verifying. A fingerprint given for a server
+made at install. The running service never re-settles trust, and an agent
+that pinned a CA never falls back to the system store when that CA stops
+verifying. Setup is different, because an admin is present (MSI install or
+upgrade, service install). Setup checks the stored trust against the server.
+A certificate verification failure makes setup settle trust again. It uses
+the first-install rules: fingerprint, `--ca`, or system trust. If that
+fails, setup restores the old trust and the old server URL. Setup drops the
+issued certificate only when it settles a different trust. The accepted
+cost is an attacker on the path at setup time. A bad certificate from them
+makes setup run the first-install rules. Without a fingerprint, setup then
+stops with an error. With a TLS-inspection root in the machine store, setup
+settles on system trust. A first install on that network has the same
+outcome. A fingerprint given for a server
 on a machine-trusted certificate is refused, not dropped, because whoever
 wrote it expected a pinned CA.
 
