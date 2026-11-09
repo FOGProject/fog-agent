@@ -9,6 +9,14 @@ and are what this design is built on.
 Amended 2026-09-11: update modes and rings (sections 2.2 and 7), and
 server-served updates (section 5).
 
+Amended 2026-11-09: the default of `FOG_AGENT_UPDATE_MODE` is `latest`, not
+`off`. Tom changed it because the legacy FOG Client updates itself, and
+admins expect the same from fog-agent. This reverses the 2026-09-11
+decision that nothing starts managing agent versions because a server was
+upgraded. Rings still pace the rollout. A server stored as `off` moves to
+`latest` in schema step 449. Sections 2.1, 2.2, 7 and 11 carry the earlier
+wording.
+
 The change to 0001 §9 is one row: **applying is a desired-state block, not a
 task an admin queues.** Everything else in the agent converges from desired
 state; making the one dangerous operation the exception would have been the
@@ -85,9 +93,10 @@ rule. No new route.
 
 The capability is listed only when the resolved desired version is
 non-empty, so a server that has never set one describes no block and the
-agent has nothing to do. **The feature is off until an admin turns it on**,
-which is the rule 0010 and 0011 already hold themselves to: nothing begins
-managing a machine because somebody upgraded their server.
+agent has nothing to do. **Until 2026-11-09 the feature was off until an
+admin turned it on**, which is the rule 0010 and 0011 hold themselves to:
+nothing begins managing a machine because somebody upgraded their server.
+The default is now `latest` (see the 2026-11-09 amendment at the top).
 
 ### 2.2 The agent refuses `latest`; the server resolves it
 
@@ -104,9 +113,9 @@ The server now holds a mode, and an admin chooses it:
 
 | `FOG_AGENT_UPDATE_MODE` | Meaning |
 |---|---|
-| `off` | The default. No host updates. Nothing starts managing agent versions because a server was upgraded |
+| `off` | No host updates. An admin sets it to turn self-update off. It was the default until 2026-11-09 |
 | `pinned` | Every host follows `FOG_AGENT_DESIRED_VERSION`, an exact version |
-| `latest` | Each host follows the newest published version whose ring delay has passed (section 7) |
+| `latest` | The default since 2026-11-09. Each host follows the newest published version whose ring delay has passed (section 7) |
 
 A human still makes the decision. In `latest` mode the decision is the
 policy and the ring delays, not each version number.
@@ -630,7 +639,7 @@ group column and no group resolver:
 
 | Source | Setting or column | Rule |
 |---|---|---|
-| Global | `FOG_AGENT_UPDATE_MODE` | `off`, `pinned` or `latest` (section 2.2). `off` is the default |
+| Global | `FOG_AGENT_UPDATE_MODE` | `off`, `pinned` or `latest` (section 2.2). `latest` is the default |
 | Global | `FOG_AGENT_DESIRED_VERSION` | the fleet's version in `pinned` mode |
 | Global | `FOG_AGENT_UPDATE_RINGS` | delays in days, one per ring, in ring order. The default is `0,3,7` |
 | Global | `FOG_AGENT_MIN_VERSION` | a floor in every mode, empty by default. See below |
@@ -809,7 +818,8 @@ Two things make the middle option carry its weakness:
 Amended 2026-09-11: `latest` mode (section 2.2) is not the rejected first
 row. The agent does not take what central publishes. The server resolves a
 version after an admin chose the mode and the ring delays, and a release
-reaches the fleet ring by ring, not all at once. The default is still `off`.
+reaches the fleet ring by ring, not all at once. The default was `off` when
+this was written. See the 2026-11-09 note at the top: it is now `latest`.
 
 ## 12. Surfacing
 
