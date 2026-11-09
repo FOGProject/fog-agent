@@ -13,7 +13,7 @@ import (
 
 // A missing backend is looked for every poll: once it appears the set is
 // due even though the drift interval has not elapsed.
-func TestDriftDueWhenBlockedBackendAppears(t *testing.T) {
+func TestDriftDueWhenMissingBackendAppears(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the Windows path is ProgramData, not PATH")
 	}
@@ -23,9 +23,9 @@ func TestDriftDueWhenBlockedBackendAppears(t *testing.T) {
 	st.Config.SoftwareChecked = now.Add(-time.Minute)
 	t.Setenv("PATH", t.TempDir())
 	if driftDue(st, policy, now) {
-		t.Fatal("due with nothing blocked and the interval not elapsed")
+		t.Fatal("due with nothing missing and the interval not elapsed")
 	}
-	st.Config.SoftwareBlocked = true
+	st.Config.SoftwareMissing = []string{"choco"}
 	if driftDue(st, policy, now) {
 		t.Fatal("due while the backend is still missing")
 	}
@@ -36,5 +36,26 @@ func TestDriftDueWhenBlockedBackendAppears(t *testing.T) {
 	t.Setenv("PATH", dir)
 	if !driftDue(st, policy, now) {
 		t.Fatal("not due once the backend appeared")
+	}
+}
+
+// Only a backend on the missing list counts, and only when its binary is
+// still absent does the set stay not due.
+func TestDriftDueMissingFlatpakStaysFalse(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("flatpak runs only on Linux")
+	}
+	policy := &software.Policy{DriftInterval: 3600, Entries: []software.Entry{{Backend: "flatpak", Package: "x"}}}
+	now := time.Now()
+	st := &enroll.State{}
+	st.Config.SoftwareChecked = now.Add(-time.Minute)
+	st.Config.SoftwareMissing = []string{"flatpak"}
+	t.Setenv("PATH", t.TempDir())
+	if driftDue(st, policy, now) {
+		t.Fatal("due while flatpak is still missing")
+	}
+	st.Config.SoftwareMissing = []string{"nosuchbackend"}
+	if driftDue(st, policy, now) {
+		t.Fatal("due for a backend name the agent does not know")
 	}
 }

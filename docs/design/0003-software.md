@@ -206,8 +206,9 @@ Chocolatey specifics that shape the code:
   bootstrap needs no internet (the URL settings already accept any host).
 - FOG as a package source (host `.nupkg` files and serve a NuGet v2 feed
   from the storage node), which also gives an offline path.
-- winget backend for Windows, apt/dnf/zypper for Linux, brew for macOS,
-  behind the same interface.
+- flatpak and snap shipped in [0018](0018-software-linux-backends.md). The
+  rest remain follow-ons behind the same interface: winget for Windows,
+  apt/dnf/zypper for Linux, brew for macOS.
 - Migrate the two Chocolatey snapin templates: they keep working, and the
   docs page gains a "prefer Software for this" pointer once this ships.
 

@@ -2,10 +2,8 @@ package software
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -52,17 +50,7 @@ func (c *Choco) path() string {
 
 // Available implements Backend.
 func (c *Choco) Available() (bool, string) {
-	p := c.path()
-	if filepath.Base(p) == p {
-		if _, err := exec.LookPath(p); err != nil {
-			return false, "Chocolatey is not installed: " + p + " is not on PATH"
-		}
-		return true, ""
-	}
-	if _, err := os.Stat(p); err != nil {
-		return false, "Chocolatey is not installed: " + p + " is missing"
-	}
-	return true, ""
+	return lookup(c.path(), "Chocolatey")
 }
 
 // Installed implements Backend with `choco list -r`, whose output is one
@@ -158,42 +146,7 @@ func (c *Choco) Uninstall(ctx context.Context, e Entry) Result {
 	return c.run(ctx, e.Timeout, UninstallArgs(e)...)
 }
 
-// run executes choco with args under timeout seconds (0 for none). The
-// Status is empty when the program ran and the exit code is its own.
+// run executes choco with args under timeout seconds (0 for none).
 func (c *Choco) run(ctx context.Context, timeout int, args ...string) Result {
-	runCtx, cancel := ctx, context.CancelFunc(func() {})
-	if timeout > 0 {
-		runCtx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
-	}
-	defer cancel()
-	cmd := exec.CommandContext(runCtx, c.path(), args...)
-	procs.Attach(cmd)
-	out := procs.NewTail(MaxDetails)
-	cmd.Stdout, cmd.Stderr = out, out
-	cmd.WaitDelay = 2 * time.Second
-	err := cmd.Run()
-	r := Result{Details: out.String()}
-	switch {
-	case err == nil:
-	case errors.Is(runCtx.Err(), context.DeadlineExceeded):
-		r.Status = StatusTimeout
-		r.Details = fmt.Sprintf("timed out after %ds\n%s", timeout, r.Details)
-	default:
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			r.ExitCode = exit.ExitCode()
-		} else {
-			r.Status = StatusCannotRun
-			r.Details = err.Error() + "\n" + r.Details
-		}
-	}
-	r.Details = procs.Clip(r.Details, MaxDetails)
-	return r
-}
-
-func firstLine(s string) string {
-	if i := strings.IndexByte(s, '\n'); i >= 0 {
-		return s[:i]
-	}
-	return s
+	return runCmd(ctx, c.path(), timeout, args...)
 }

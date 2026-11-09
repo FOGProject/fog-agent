@@ -1,7 +1,8 @@
 // Package software is the software capability (design 0003): a desired set
 // of packages the host is converged toward through a package manager,
 // with detection done by the manager's own installed list. Chocolatey is
-// the first Backend; the convergence logic knows nothing about it.
+// the first Backend, then flatpak and snap; the convergence logic knows
+// nothing about any of them.
 package software
 
 import (
@@ -193,6 +194,47 @@ func Converge(ctx context.Context, b Backend, entries []Entry) []Report {
 		}
 	}
 	return reports
+}
+
+// IsPinned says whether the entry asks for an exact version.
+func IsPinned(e Entry) bool {
+	return e.Version != "" && e.Version != VersionLatest
+}
+
+// refusePin is what a backend that cannot hold an exact version answers to
+// a pinned Install. The server refuses the pin at save; this covers old data.
+func refusePin(name string, e Entry) Result {
+	return Result{
+		Status:  StatusCannotRun,
+		Details: fmt.Sprintf("%s cannot hold an exact version (%s); set the version policy to any or latest", name, e.Version),
+	}
+}
+
+// BackendFor returns the backend the server named, or nil when this agent
+// has no such backend.
+func BackendFor(name string) Backend {
+	switch name {
+	case "choco":
+		return &Choco{}
+	case "flatpak":
+		return &Flatpak{}
+	case "snap":
+		return &Snap{}
+	}
+	return nil
+}
+
+// Group splits the entries by backend. The names come back in order of
+// first appearance, and each group keeps the entries' own order.
+func Group(entries []Entry) (names []string, groups map[string][]Entry) {
+	groups = map[string][]Entry{}
+	for _, e := range entries {
+		if _, seen := groups[e.Backend]; !seen {
+			names = append(names, e.Backend)
+		}
+		groups[e.Backend] = append(groups[e.Backend], e)
+	}
+	return names, groups
 }
 
 // fill is an action's status unless the backend never ran it.
