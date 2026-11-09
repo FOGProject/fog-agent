@@ -148,7 +148,8 @@ flag makes "run this now" arrive at the next poll without a push channel.
 Long-poll can be added later without changing the model. Push from server to
 client fails through NAT and firewalls, and every comparable agent pulls.
 
-The API is `/agent/v1/*` on fogproject working-1.6, routed by the
+The API is `/agent/v1/*` on fogproject 1.6 (`dev-branch` since the 1.6.0
+release; it was built on `working-1.6`), routed by the
 existing `FOG\Router\Route` and gated by the existing `Authorization` layer,
 with the client certificate as the principal. It sits beside the legacy
 `/service/*.php` endpoints so both clients coexist during transition.
@@ -377,7 +378,7 @@ Samba AD container in the Linux job; end to end with a FOG server in a
 container and an agent in a VM covering enroll, converge, update apply, and
 downgrade refusal. Every gate gets mutated red once before it counts.
 
-## 11. What the server needs (fogproject working-1.6)
+## 11. What the server needs (fogproject 1.6, now `dev-branch`)
 
 - `/agent/v1` routes: enroll, renew, poll, desired state, task result,
   facts, log tail.
