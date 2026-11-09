@@ -1078,7 +1078,9 @@ func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, r
 		ok, _ := (&software.Choco{}).Available()
 		chocoMissing = !ok
 	}
-	if chocoMissing && policy.Bootstrap.URL != "" {
+	// The bootstrap is a PowerShell script, so only Windows tries it; a
+	// Linux host with a choco entry just reports Chocolatey missing.
+	if chocoMissing && policy.Bootstrap.URL != "" && runtime.GOOS == "windows" {
 		// The backend is missing and the server says to install it.
 		// Reported as a result on the capability, so the audit says
 		// where Chocolatey came from; the entries then run as usual.
