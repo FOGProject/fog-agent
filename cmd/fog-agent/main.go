@@ -494,10 +494,7 @@ func runAgent(ctx context.Context, args []string) error {
 		directoryCheckChanged := false
 		// with the state only when that is not current. A build that
 		// learned a capability sends nothing, so it gets the state once.
-		req := enroll.PollRequest{AgentVersion: Version, AppliedRevision: st.Config.AppliedRevision, WantState: driftMayBeDue(st)}
-		if !skipDirectory {
-			attachDirectoryContext(st, &req)
-		}
+		req := newPollRequest(st, skipDirectory)
 		if st.Config.AppliedWith != supportedCapabilities {
 			req.AppliedRevision = ""
 		}
@@ -1073,9 +1070,15 @@ func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, qu
 // runSoftware converges the software set and reports every entry. It
 // returns false only when a report did not land.
 func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, revision string, policy *software.Policy, out *sayer) bool {
-	backend := &software.Choco{}
+	names, groups := software.Group(policy.Entries)
 	bootstrapFailed := false
-	if ok, _ := backend.Available(); !ok && policy.Bootstrap.URL != "" {
+	// Only a set with a choco entry has any use for the bootstrap.
+	chocoMissing := false
+	if len(groups["choco"]) > 0 {
+		ok, _ := (&software.Choco{}).Available()
+		chocoMissing = !ok
+	}
+	if chocoMissing && policy.Bootstrap.URL != "" {
 		// The backend is missing and the server says to install it.
 		// Reported as a result on the capability, so the audit says
 		// where Chocolatey came from; the entries then run as usual.
@@ -1093,7 +1096,29 @@ func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, r
 			out.say("result: " + err.Error())
 		}
 	}
-	reports := software.Converge(ctx, backend, policy.Entries)
+	// Each backend converges its own group, in the order the backends first
+	// appear in the set. A name this agent has no backend for is reported,
+	// not skipped, so the audit shows why the entry did nothing.
+	var reports []software.Report
+	var missing []string
+	for _, name := range names {
+		b := software.BackendFor(name)
+		if b == nil {
+			for _, e := range groups[name] {
+				reports = append(reports, software.Report{Entry: e, Status: software.StatusCannotRun, Details: "this agent has no " + name + " backend"})
+			}
+			continue
+		}
+		if ok, _ := b.Available(); !ok {
+			missing = append(missing, name)
+		}
+		reports = append(reports, software.Converge(ctx, b, groups[name])...)
+	}
+	if bootstrapFailed {
+		// Not every poll: a bootstrap that failed is tried again at the
+		// drift check, like any other failed action.
+		missing = slices.DeleteFunc(missing, func(n string) bool { return n == "choco" })
+	}
 	ok := true
 	for _, r := range reports {
 		outcome, err := client.Result(ctx, enroll.ResultRequest{
@@ -1115,20 +1140,14 @@ func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, r
 		}
 	}
 	st.Config.SoftwareChecked = time.Now()
-	// A set the backend could not run at all is reported once, and the
-	// binary is then looked for every poll: installing Chocolatey is the
-	// admin's next move, and six hours is the wrong wait for it.
-	st.Config.SoftwareBlocked = len(reports) > 0
-	for _, r := range reports {
-		if r.Status != software.StatusCannotRun {
-			st.Config.SoftwareBlocked = false
-		}
-	}
-	if bootstrapFailed {
-		// Not every poll: a bootstrap that failed is tried again at the
-		// drift check, like any other failed action.
-		st.Config.SoftwareBlocked = false
-	}
+	// A backend that was not installed is reported once, and the binary is
+	// then looked for every poll: installing it is the admin's next move,
+	// and six hours is the wrong wait for it. Behavior change: before, a
+	// choco whose `list` failed made every report cannot_run, set
+	// SoftwareBlocked, and re-converged on every poll. Now only a backend
+	// whose binary is missing is watched per poll, and a failing list
+	// retries at the drift check.
+	st.Config.SoftwareMissing = missing
 	return ok
 }
 
@@ -1304,6 +1323,19 @@ func reportDirectory(ctx context.Context, st *enroll.State, client *enroll.Clien
 	return true
 }
 
+// newPollRequest is the poll body before facts and the applied-with check.
+// It always declares the software-backends feature, so the server may send
+// this agent entries for any backend. The directory context sets Features
+// first and the software feature is appended after it.
+func newPollRequest(st *enroll.State, skipDirectory bool) enroll.PollRequest {
+	req := enroll.PollRequest{AgentVersion: Version, AppliedRevision: st.Config.AppliedRevision, WantState: driftMayBeDue(st)}
+	if !skipDirectory {
+		attachDirectoryContext(st, &req)
+	}
+	req.Features = append(req.Features, enroll.SoftwareBackendsFeature)
+	return req
+}
+
 // printersDriftDue says whether the assigned printers should be re-converged
 // without the revision having moved. FactsInterval, because that is the
 // cadence at which the agent looks at the printer set anyway.
@@ -1311,14 +1343,17 @@ func printersDriftDue(cfg enroll.Config, now time.Time) bool {
 	return cfg.PrintersManaged && now.Sub(cfg.PrintersChecked) >= FactsInterval
 }
 
-// blockedCleared says whether a backend that was missing at the last run
-// is there now; a stat, so it costs nothing per poll.
-func blockedCleared(st *enroll.State) bool {
-	if !st.Config.SoftwareBlocked {
-		return false
+// missingBackendAppeared says whether any backend that was missing at the last run
+// is there now; a stat per backend, so it costs nothing per poll.
+func missingBackendAppeared(st *enroll.State) bool {
+	for _, name := range st.Config.SoftwareMissing {
+		if b := software.BackendFor(name); b != nil {
+			if ok, _ := b.Available(); ok {
+				return true
+			}
+		}
 	}
-	ok, _ := (&software.Choco{}).Available()
-	return ok
+	return false
 }
 
 // driftDue says whether the software set should be re-checked without
@@ -1327,7 +1362,7 @@ func driftDue(st *enroll.State, policy *software.Policy, now time.Time) bool {
 	if policy == nil || len(policy.Entries) == 0 || policy.DriftInterval <= 0 {
 		return false
 	}
-	return now.Sub(st.Config.SoftwareChecked) >= time.Duration(policy.DriftInterval)*time.Second || blockedCleared(st)
+	return now.Sub(st.Config.SoftwareChecked) >= time.Duration(policy.DriftInterval)*time.Second || missingBackendAppeared(st)
 }
 
 // firstLine is enough of a detail for the console; the server has the rest.
@@ -1340,7 +1375,7 @@ func firstLine(s string) string {
 
 // driftMayBeDue is the cheap half of the drift decision, made before the
 // poll so the state can be asked for: the interval the last reconcile
-// saw has passed, a blocked set may have become runnable, or the printers
+// saw has passed, a missing backend may have appeared, or the printers
 // are due another look.
 func driftMayBeDue(st *enroll.State) bool {
 	return softwareDriftMayBeDue(st) || printersDriftDue(st.Config, time.Now())
@@ -1348,7 +1383,7 @@ func driftMayBeDue(st *enroll.State) bool {
 
 // softwareDriftMayBeDue is that decision for the software set alone.
 func softwareDriftMayBeDue(st *enroll.State) bool {
-	return st.Config.SoftwareDrift > 0 && (time.Since(st.Config.SoftwareChecked) >= time.Duration(st.Config.SoftwareDrift)*time.Second || blockedCleared(st))
+	return st.Config.SoftwareDrift > 0 && (time.Since(st.Config.SoftwareChecked) >= time.Duration(st.Config.SoftwareDrift)*time.Second || missingBackendAppeared(st))
 }
 
 // drift converges the parts of a state whose revision has not moved,

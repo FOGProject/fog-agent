@@ -75,10 +75,10 @@ type Config struct {
 	// SoftwareDrift is the server's drift interval in seconds as of the
 	// last reconcile; zero when the host has no software set.
 	SoftwareDrift int `json:"software_drift,omitempty"`
-	// SoftwareBlocked is set when the last run could not run its backend
-	// at all (Chocolatey missing); the binary is then looked for every
-	// poll so installing it converges the host at once.
-	SoftwareBlocked bool `json:"software_blocked,omitempty"`
+	// SoftwareMissing names the backends that were not installed at the
+	// last run. The agent stats them every poll, so installing one
+	// converges the host at once.
+	SoftwareMissing []string `json:"software_missing,omitempty"`
 	// PrintersManaged is set when the last reconcile saw a printers mode
 	// other than off, and PrintersChecked is when the set was last
 	// converged. Together they are the printers drift check: a user who

@@ -911,6 +911,12 @@ and reachable-but-unsupported servers are distinct errors. In both cases the
 directory rejoin feature stays off until the agent restarts, and the agent
 works as it did before the feature.
 
+The agent also declares `software-backends-v1` in the `features` list of
+every poll request. It means that the agent runs each software entry through
+the backend the entry names (`choco`, `flatpak` or `snap`). A server sends an
+agent that does not declare it only the entries whose backend is `choco`,
+because such an agent runs every entry through Chocolatey.
+
 The Windows startup path checks a due local update rollback before performing
 network feature or identity checks. A failed probe cannot suppress that
 deadline. A successful feature probe is not a successful authenticated poll
