@@ -14,7 +14,7 @@ Amended 2026-11-09: the default of `FOG_AGENT_UPDATE_MODE` is `latest`, not
 admins expect the same from fog-agent. This reverses the 2026-09-11
 decision that nothing starts managing agent versions because a server was
 upgraded. Rings still pace the rollout. A server stored as `off` moves to
-`latest` in schema step 449. Sections 2.1, 2.2, 7 and 11 carry the earlier
+`latest` in schema step 456. Sections 2.1, 2.2, 7 and 11 carry the earlier
 wording.
 
 The change to 0001 §9 is one row: **applying is a desired-state block, not a
