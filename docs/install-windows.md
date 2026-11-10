@@ -140,7 +140,19 @@ install and the host enrolls again with the token.
 ## Capturing an image with the agent installed
 
 Capture the machine as it is. Sysprep is not needed, and it changes nothing
-the agent uses.
+the agent uses. If you do run Sysprep, disable the service first and start
+it from `SetupComplete.cmd`. With nobody logged in, the agent reboots at
+once for a rename or a join, and a reboot during OOBE stops Windows setup.
+
+    sc stop fog-agent
+    sc config fog-agent start= disabled
+
+`SetupComplete.cmd`:
+
+    sc config fog-agent start= delayed-auto
+    sc start fog-agent
+
+The agent opens no listening port, so it needs no inbound firewall rule.
 
 The image carries the state directory: the key, the certificate, and the
 host they were issued to. On every start the agent compares the machine's
