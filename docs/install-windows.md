@@ -142,6 +142,17 @@ install and the host enrolls again with the token.
 Capture the machine as it is. Sysprep is not needed, and it changes nothing
 the agent uses.
 
+If you do run Sysprep, leave the service as it is. From v0.1.23 the agent
+does nothing until Windows setup has finished: it reads
+`HKLM\SYSTEM\Setup\State\ImageState` every 30 seconds. It starts when the
+value is `IMAGE_STATE_COMPLETE` or absent. This matters because Windows runs OOBE with nobody
+logged in. With nobody logged in, the agent reboots at once for a rename or
+a join. A reboot during OOBE stops Windows setup. Audit mode counts as unfinished, so a reference
+machine in audit mode never enrolls. An agent older than v0.1.23 needs the
+service disabled before Sysprep and started from `SetupComplete.cmd`.
+
+The agent opens no listening port, so it needs no inbound firewall rule.
+
 The image carries the state directory: the key, the certificate, and the
 host they were issued to. On every start the agent compares the machine's
 SMBIOS identity (UUID, system serial, board serial, asset tag) with the
