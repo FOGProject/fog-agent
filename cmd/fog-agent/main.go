@@ -370,6 +370,13 @@ func runAgent(ctx context.Context, args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// Nothing runs before Windows setup finishes: no enrollment, no poll, no
+	// reboot. A sysprepped image starts this service during specialize and
+	// OOBE, where a rename reboot breaks setup. Off Windows this returns at
+	// once.
+	if err := waitForWindowsSetup(ctx, readImageState, &sayer{}); err != nil {
+		return err
+	}
 	st, err := openState(f)
 	if err != nil {
 		return err

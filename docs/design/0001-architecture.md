@@ -131,6 +131,15 @@ mismatch it discards the key and re-enrolls. A clone of an enrolled machine
 therefore cannot present as the original. This is where the unique host
 identifier actively prevents a collision rather than just resolving one.
 
+Before any of that, on Windows, the agent waits for Windows setup to
+finish. A sysprepped image starts the service during specialize and OOBE,
+with nobody logged in, and the reboot coordinator (§6) would reboot at once for a
+rename and break setup. The agent reads `HKLM\SYSTEM\Setup\State\ImageState`
+and does nothing (no enroll, no poll, no reboot) until it is
+`IMAGE_STATE_COMPLETE` or absent. Audit mode is unfinished too. A read
+error counts as finished, so an unreadable key cannot stop the agent for
+good.
+
 ### 4.5 Steady state
 
 Every request is mutual TLS. The server maps certificate fingerprint to host
