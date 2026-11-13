@@ -594,6 +594,7 @@ report `reverted` with the reason.
 | New binary hangs before reaching its timer | Layer 2, only if the supervisor sees a failure. A hung, non-exiting process looks healthy to systemd and the SCM | **No** |
 | New binary polls fine but a provider misbehaves (reboot loop, printers wiped) | Nothing local. Recovery is the server setting an older `desired` — which works, because the agent is still polling | Yes, via section 9 |
 | New binary corrupts its own state | Layer 1's `config.json.prev` | Partly |
+| Power loss leaves `config.json` unreadable (seen: the right length, all zero bytes) | State writes flush before the rename. If `config.json` still cannot be parsed, the service start, setup (the MSI), renew and update start from `config.json.prev`, keep the damaged file as `config.json.damaged`, write `config.json` back and log it | Yes, while `.prev` parses |
 | A bad version was given to the whole fleet at once | Nothing. This is what section 7 exists to prevent | No |
 
 **The honest answer to the case nothing catches:** a binary that starts,

@@ -164,11 +164,25 @@ func addCommonFlags(fs *flag.FlagSet) commonFlags {
 	}
 }
 
+// repairConfig logs and finishes a recovery when Load had to start from
+// config.json.prev. The service start, setup, renew and update paths call it
+// right after Load, before anything saves config.json or copies it to .prev.
+func repairConfig(st *enroll.State, out *sayer) error {
+	if st.ConfigRecovered == "" {
+		return nil
+	}
+	out.say(st.ConfigRecovered)
+	return st.RepairConfig()
+}
+
 // openState loads the state directory and settles the server URL and what
 // to trust for it, from flags or from what an earlier enroll remembered.
 func openState(f commonFlags) (*enroll.State, error) {
 	st, err := enroll.Load(*f.dir)
 	if err != nil {
+		return nil, err
+	}
+	if err := repairConfig(st, &sayer{}); err != nil {
 		return nil, err
 	}
 	if *f.server != "" {
@@ -1683,6 +1697,9 @@ func cmdRenew(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := repairConfig(st, &sayer{}); err != nil {
+		return err
+	}
 	if len(st.Cert) == 0 {
 		return errors.New("not enrolled: nothing to renew")
 	}
@@ -1853,6 +1870,11 @@ type trustSnapshot struct {
 func forgetStaleTrust(f commonFlags, out *sayer) (snap trustSnapshot, forgot bool, err error) {
 	st, err := enroll.Load(*f.dir)
 	if err != nil {
+		return trustSnapshot{}, false, err
+	}
+	// ForgetTrust below saves the config, after which openState's Load
+	// parses cleanly and would never say a recovery happened. Say it here.
+	if err := repairConfig(st, out); err != nil {
 		return trustSnapshot{}, false, err
 	}
 	snap = trustSnapshot{system: st.Config.SystemTrust, ca: st.CA(), server: st.Config.ServerURL}
