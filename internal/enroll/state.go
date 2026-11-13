@@ -178,6 +178,10 @@ type State struct {
 	Identity             *identity.Host // identity recorded at key generation, nil if none
 	Cert                 []byte         // PEM, nil until issued
 	Config               Config
+	// ConfigRecovered is set when config.json could not be read and Load
+	// started from config.json.prev instead. It is the line to log.
+	// RepairConfig writes the recovered config back.
+	ConfigRecovered string
 }
 
 // DirectoryCheck is read-only policy metadata, never a join credential.
@@ -207,7 +211,24 @@ func Load(dir string) (*State, error) {
 	st := &State{Dir: dir}
 	if b, err := os.ReadFile(filepath.Join(dir, configFile)); err == nil {
 		if err := json.Unmarshal(b, &st.Config); err != nil {
-			return nil, fmt.Errorf("enroll: %s: %w", configFile, err)
+			// A self-update copies config.json to config.json.prev before
+			// it swaps the binary. That copy holds the server URL, the host
+			// id and the trust, which rarely change between updates, so it
+			// is the best place to start from. It can be older than the
+			// damaged file (a re-enrollment after the last update), which is
+			// why the caller logs the recovery and names what to check.
+			// Without this fallback a damaged config.json stops the service
+			// and the MSI's setup step alike, and nothing short of
+			// hand-editing the state directory recovers.
+			// Reset first: a failed Unmarshal can leave fields half set.
+			st.Config = Config{}
+			pb, perr := os.ReadFile(filepath.Join(dir, configFile+".prev"))
+			if perr != nil || json.Unmarshal(pb, &st.Config) != nil {
+				return nil, fmt.Errorf("enroll: %s in %s is damaged (%w) and there is no usable %s.prev; delete %s and run setup again with --server",
+					configFile, dir, err, configFile, configFile)
+			}
+			st.ConfigRecovered = fmt.Sprintf("%s in %s is damaged (%v); started from %s.prev and kept the damaged file as %s.damaged; check the server URL and host id",
+				configFile, dir, err, configFile, configFile)
 		}
 	}
 	b, err := os.ReadFile(filepath.Join(dir, keyFile))
@@ -335,6 +356,21 @@ func (st *State) DropIssued() error {
 	return st.SaveConfig()
 }
 
+// RepairConfig finishes a recovery from config.json.prev: it keeps the
+// damaged file as config.json.damaged for inspection, then writes the
+// recovered config to config.json so the next start reads it cleanly.
+func (st *State) RepairConfig() error {
+	path := filepath.Join(st.Dir, configFile)
+	if err := os.Rename(path, path+".damaged"); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("enroll: keep the damaged %s: %w", configFile, err)
+	}
+	if err := st.SaveConfig(); err != nil {
+		return fmt.Errorf("enroll: write the recovered %s to %s: %w", configFile, st.Dir, err)
+	}
+	st.ConfigRecovered = ""
+	return nil
+}
+
 // SaveConfig writes config.json.
 func (st *State) SaveConfig() error {
 	b, _ := json.MarshalIndent(st.Config, "", "  ")
@@ -414,9 +450,30 @@ func (st *State) CA() []byte {
 
 // writeFile writes atomically (temp file plus rename) so a crash mid-write
 // cannot leave a truncated key or certificate.
+//
+// The Sync before the rename is what makes the rename safe. Without it the
+// file system can commit the rename and the new size before the data, and
+// a power loss then leaves a file of the right length that is all zero
+// bytes. That happened on a lab VM powered off seconds after a self-update
+// rewrote config.json: every later start died on "invalid character '\x00'".
 func writeFile(path string, data []byte, mode os.FileMode) error {
 	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, mode); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)

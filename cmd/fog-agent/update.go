@@ -275,6 +275,11 @@ func cmdUpdate(args []string) error {
 		return err
 	}
 	out := &sayer{}
+	// Repair before update.Arm copies config.json to config.json.prev, or
+	// the damaged file would overwrite the good copy.
+	if err := repairConfig(st, out); err != nil {
+		return err
+	}
 	r, restart := update.Run(context.Background(),
 		update.Desired{Version: *to, ManifestURL: *url}, updateConfig(st))
 	out.say(fmt.Sprintf("update: %s (%s)", r.Status, r.Detail))
