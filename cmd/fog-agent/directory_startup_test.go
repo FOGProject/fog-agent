@@ -382,6 +382,29 @@ func TestPrepareDirectoryIdentityOffWhenServerLacksFeatures(t *testing.T) {
 	}
 }
 
+// An http:// server address sends nothing, so the line must name the address,
+// not reachability (forum topic 18320), and must not ask to retry: the
+// address does not change while the agent runs.
+func TestPrepareDirectoryIdentityNamesAnHTTPAddress(t *testing.T) {
+	st, err := enroll.Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubIdentity(t, machine("lab"))
+	client := &enroll.Client{ServerURL: "http://fog.lab/fog", HTTP: &http.Client{Transport: startupRoundTripper(func(r *http.Request) (*http.Response, error) {
+		t.Errorf("the check sent %s %s over plain HTTP", r.Method, r.URL)
+		return nil, errors.New("must not be sent")
+	})}}
+	out := &sayer{}
+	on, retry, err := prepareDirectoryIdentity(context.Background(), st, client, out)
+	if err != nil || on || retry {
+		t.Fatalf("prepareDirectoryIdentity() = %t, %t, %v; want false, false, nil", on, retry, err)
+	}
+	if !strings.Contains(out.last, "http://") || strings.Contains(out.last, "reachable") {
+		t.Fatalf("logged %q; want the http:// address named as the cause", out.last)
+	}
+}
+
 // A probe that could not reach the server is retried, and a later probe
 // against a server that now offers both features turns the feature on.
 func TestPrepareDirectoryIdentityRetriesAfterUnavailableProbe(t *testing.T) {

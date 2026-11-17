@@ -239,6 +239,29 @@ func unauthorizedFor(st *enroll.State, now time.Time) string {
 	return now.Sub(st.Config.UnauthorizedSince).Round(time.Second).String()
 }
 
+// refusalDetail names the reason the server gave with a 401 and what to
+// check for it. Before, the log said only "server refused this
+// certificate", and a server on plain HTTP looked like every other cause
+// (forum topic 18320).
+func refusalDetail(err error) string {
+	switch reason := enroll.UnauthorizedReason(err); reason {
+	case "no_client_certificate":
+		return "no_client_certificate: the certificate did not reach the server, or it does not chain to this server's agent CA. " +
+			"Check that the server address is https://, that no proxy ends TLS in front of FOG, " +
+			"and that the server's agent CA was not replaced since this agent enrolled"
+	case "server_error":
+		return "server_error: the server could not check the certificate. " +
+			"Check the FOG server's database and web server logs"
+	case "ambiguous_certificate":
+		return "ambiguous_certificate: more than one FOG host carries this agent's key. " +
+			"Check which hosts list this machine"
+	case "":
+		return "no reason given. Check that the FOG web server serves the agent routes and that no proxy answered"
+	default:
+		return reason + ": a reason this agent does not know. Check the FOG server's web server logs"
+	}
+}
+
 // clearUnauthorized forgets the run of refusals after a poll succeeds, so
 // an outage followed by a recovery does not accumulate toward the grace
 // period across unrelated incidents.

@@ -569,13 +569,15 @@ func runAgent(ctx context.Context, args []string) error {
 			// the webroot does not serve the agent routes. The certificate
 			// is probably fine and re-enrolling would need an admin to
 			// approve this host again, so keep it and keep asking.
+			// Read before the next line: it shadows err.
+			detail := refusalDetail(err)
 			drop, err := unauthorizedTooLong(st, now)
 			if err != nil {
 				return err
 			}
 			if !drop {
 				out.say("server refused this certificate (" + unauthorizedFor(st, now) +
-					"); keeping it and retrying")
+					"): " + detail + "; keeping it and retrying")
 				if *once {
 					return enroll.ErrUnauthorized
 				}
@@ -594,7 +596,7 @@ func runAgent(ctx context.Context, args []string) error {
 				break
 			}
 			out.say("server has refused this certificate for " + unauthorizedFor(st, now) +
-				"; enrolling again")
+				" (" + detail + "); enrolling again")
 			if err := st.DropIssued(); err != nil {
 				return err
 			}
