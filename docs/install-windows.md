@@ -20,6 +20,12 @@ same thing you type to reach the management pages. If you reach the UI at
 `https://fog.example.org/fog/management/`, the address to give the agent is
 `https://fog.example.org/fog`.
 
+The agent talks to the server only over HTTPS. The server knows each
+machine by the agent's certificate, and that certificate travels only over
+HTTPS. You can give an `http://` address with no port or with port 80. The
+agent then uses the `https://` address on the same host, and its log says
+so. A FOG server serves HTTPS even when it does not redirect HTTP.
+
 ### What the agent trusts
 
 The agent does not trust whatever a browser would accept. The wizard's

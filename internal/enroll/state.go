@@ -182,6 +182,9 @@ type State struct {
 	// started from config.json.prev instead. It is the line to log.
 	// RepairConfig writes the recovered config back.
 	ConfigRecovered string
+	// ServerURLMoved is the http:// address config.json held when Load moved
+	// it to https:// (see HTTPSAddress), or "". The caller logs it and saves.
+	ServerURLMoved string
 }
 
 // DirectoryCheck is read-only policy metadata, never a join credential.
@@ -230,6 +233,13 @@ func Load(dir string) (*State, error) {
 			st.ConfigRecovered = fmt.Sprintf("%s in %s is damaged (%v); started from %s.prev and kept the damaged file as %s.damaged; check the server URL and host id",
 				configFile, dir, err, configFile, configFile)
 		}
+	}
+	// An install that enrolled against http:// before HTTPSAddress existed
+	// fails every poll. Moving it here reaches every command, the service
+	// included, without each one repeating the check.
+	if moved, ok := HTTPSAddress(st.Config.ServerURL); ok {
+		st.ServerURLMoved = st.Config.ServerURL
+		st.Config.ServerURL = moved
 	}
 	b, err := os.ReadFile(filepath.Join(dir, keyFile))
 	if errors.Is(err, os.ErrNotExist) {
