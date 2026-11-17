@@ -4,6 +4,14 @@ Status: DRAFT 2026-09-03. The agent owns this contract (design doc 5.1); the
 server implements it under `/agent/v1`. JSON both ways, UTF-8, `Content-Type:
 application/json`.
 
+Every route below is HTTPS. The server identifies an agent only by its TLS
+client certificate. So no call after enrollment can succeed over plain HTTP.
+The agent changes an `http://` server address to `https://` on the same
+host. It does this only when the address has no port or port 80. The
+address can come from `--server` or from an older `config.json`. The agent
+logs each change. It keeps an `http://` address on another port, and the
+log then gives the reason for each failure.
+
 ## POST /agent/v1/enroll
 
 Server-authenticated TLS only (the agent has no certificate yet). The agent
@@ -907,9 +915,10 @@ The FOG AD Join/Rejoin enhancement requires the server to support both
 `directory-task-operations-v1`. `GET /agent/v1/enroll` advertises these tokens in
 `X-FOG-Agent-Features`, separated by commas or whitespace. Additional tokens
 are allowed; substrings are not capabilities. Trusted HTTPS and the existing
-certificate principal remain required: with a server address that is not
-`https://`, the agent sends no check, logs the address as the cause, and
-leaves the feature off until it restarts. Unreachable/temporarily
+certificate principal remain required. A server address can still be
+`http://` on a port other than 80. For that address, the agent sends no
+check. It logs the address as the cause. It leaves the feature off until it
+restarts. Unreachable/temporarily
 unavailable and reachable-but-unsupported servers are distinct errors. An
 unavailable server is asked again on later polls; an unsupported one leaves
 the feature off until the agent restarts. While the feature is off, the

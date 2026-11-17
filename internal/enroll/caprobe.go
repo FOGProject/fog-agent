@@ -68,6 +68,10 @@ type CAProbe struct {
 // The order matters. A FOG CA in the machine's store -- the legacy client
 // put it there -- must still go through the fingerprint, not skip it.
 func ProbeCA(ctx context.Context, serverURL string) (*CAProbe, error) {
+	// The wizard probes the address a person typed, before setup moves it.
+	// Probe the https:// address the agent will use, so the CA is checked
+	// against the server's own certificate and the address shown is that one.
+	serverURL, _ = HTTPSAddress(serverURL)
 	base := strings.TrimRight(serverURL, "/")
 	u, err := url.Parse(base)
 	if err != nil || u.Host == "" {

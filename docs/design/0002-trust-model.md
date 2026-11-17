@@ -68,8 +68,9 @@ the first-install rules: a `--ca` file, a fingerprint, or system trust. If
 that fails, setup restores the old trust. With `--ca` or a fingerprint,
 setup then fails with the error. The stored server URL stays as it was.
 Without them, setup continues with the old trust, as before this check. It
-then saves the `--server` value, also as before. An MSI upgrade passes
-neither, so it does not start failing. Setup drops the issued certificate
+then saves the `--server` value, also as before. Setup saves an `http://`
+value with no port or port 80 as its `https://` form (protocol-v1.md). An
+MSI upgrade passes neither, so it does not start failing. Setup drops the issued certificate
 only when it settles a different trust.
 
 The accepted cost is an attacker on the path at setup time. A bad

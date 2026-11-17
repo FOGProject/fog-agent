@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -165,14 +166,67 @@ func addCommonFlags(fs *flag.FlagSet) commonFlags {
 }
 
 // repairConfig logs and finishes a recovery when Load had to start from
-// config.json.prev. The service start, setup, renew and update paths call it
+// config.json.prev. It also logs and saves an http:// server address that
+// Load moved to https://, so this call can write config.json. The service start, setup, renew and update paths call it
 // right after Load, before anything saves config.json or copies it to .prev.
 func repairConfig(st *enroll.State, out *sayer) error {
+	if st.ServerURLMoved != "" {
+		// Load moved an http:// address to https://. Say so once and save
+		// it, so the next start does not move it again.
+		sayMoved(st.ServerURLMoved, st.Config.ServerURL, out)
+		st.ServerURLMoved = ""
+		if st.ConfigRecovered == "" {
+			if err := st.SaveConfig(); err != nil {
+				return fmt.Errorf("could not save the https:// server address to config.json in %s; check that the state directory is writable: %w", st.Dir, err)
+			}
+		}
+	}
 	if st.ConfigRecovered == "" {
 		return nil
 	}
 	out.say(st.ConfigRecovered)
 	return st.RepairConfig()
+}
+
+// movedServerLine is the one line for an http:// address the agent moved.
+// Both addresses are redacted: one with user:password@ in it must not put
+// the password in the log.
+func movedServerLine(from, to string) string {
+	from, to = redactedURL(from), redactedURL(to)
+	return "the server address " + from + " is not https://; using " + to +
+		". The agent's certificate travels only over HTTPS. If this fails, check that the FOG server answers on " + to
+}
+
+func redactedURL(s string) string {
+	u, err := url.Parse(s)
+	if err != nil {
+		return s
+	}
+	return u.Redacted()
+}
+
+// movedSaid is the last move line logged by this process. Setup can meet the
+// same move twice: config.json and --server both http://, or the restore
+// path opening the state a second time. Each sayer is fresh, so the sayer's
+// own repeat check cannot catch it.
+var movedSaid string
+
+func sayMoved(from, to string, out *sayer) {
+	line := movedServerLine(from, to)
+	if line != movedSaid {
+		movedSaid = line
+		out.say(line)
+	}
+}
+
+// serverFlag is --server, moved to https:// when it is http:// (see
+// enroll.HTTPSAddress), with the move logged.
+func serverFlag(raw string, out *sayer) string {
+	moved, ok := enroll.HTTPSAddress(raw)
+	if ok {
+		sayMoved(raw, moved, out)
+	}
+	return moved
 }
 
 // openState loads the state directory and settles the server URL and what
@@ -186,7 +240,7 @@ func openState(f commonFlags) (*enroll.State, error) {
 		return nil, err
 	}
 	if *f.server != "" {
-		st.Config.ServerURL = *f.server
+		st.Config.ServerURL = serverFlag(*f.server, &sayer{})
 	}
 	if st.Config.ServerURL == "" {
 		return nil, errors.New("--server is required the first time")
@@ -1881,7 +1935,8 @@ func forgetStaleTrust(f commonFlags, out *sayer) (snap trustSnapshot, forgot boo
 	}
 	snap = trustSnapshot{system: st.Config.SystemTrust, ca: st.CA(), server: st.Config.ServerURL}
 	if *f.server != "" {
-		st.Config.ServerURL = *f.server
+		// Not logged here: openState moves the same flag and says so.
+		st.Config.ServerURL, _ = enroll.HTTPSAddress(*f.server)
 	}
 	if !st.HasTrust() || st.Config.ServerURL == "" {
 		return snap, false, nil
