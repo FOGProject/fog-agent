@@ -100,6 +100,14 @@ func prepareDirectoryIdentity(ctx context.Context, st *enroll.State, c *enroll.C
 			out.say("directory rejoin: this FOG server does not offer it; the agent works as before")
 			return false, false, nil
 		}
+		if errors.Is(err, enroll.ErrDirectoryFeaturesNeedHTTPS) {
+			// Nothing was sent, so "check that the server is reachable" would
+			// send the admin the wrong way (forum topic 18320). No retry: the
+			// address comes from config and does not change while running.
+			out.say("directory rejoin: off, because the server address " + c.ServerURL +
+				" is not https:// and this check runs only over HTTPS. Set the server address to https://")
+			return false, false, nil
+		}
 		out.say("directory rejoin: could not ask the server which features it offers; the agent asks again later. Check that the server is reachable")
 		return false, true, nil
 	}

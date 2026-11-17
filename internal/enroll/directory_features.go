@@ -29,6 +29,11 @@ const DirectoryTaskOperationsFeature = "directory-task-operations-v1"
 var ErrDirectoryFeaturesUnavailable = errors.New("directory feature check unavailable")
 var ErrDirectoryFeaturesUnsupported = errors.New("server does not advertise directory-join-target-v1 and directory-task-operations-v1; directory rejoin is off")
 
+// ErrDirectoryFeaturesNeedHTTPS means nothing was sent: the server address is
+// not https://, and the answer turns on a domain join, so it is never taken
+// over plain HTTP. Restarting does not change it; the address must.
+var ErrDirectoryFeaturesNeedHTTPS = errors.New("the server address is not https://; the directory feature check runs only over HTTPS")
+
 // ErrIdentityConflict is the server's answer when this machine's identity
 // names more than one FOG host.
 var ErrIdentityConflict = errors.New("the server found more than one FOG host for this machine's identity")
@@ -46,7 +51,7 @@ type IdentityAnswer struct {
 func (c *Client) RequireDirectoryFeatures(ctx context.Context) error {
 	u, e := url.Parse(c.ServerURL)
 	if e != nil || u.Scheme != "https" {
-		return errors.New("directory feature check requires trusted HTTPS")
+		return ErrDirectoryFeaturesNeedHTTPS
 	}
 	r, e := http.NewRequestWithContext(ctx, http.MethodGet, c.ServerURL+"/agent/v1/enroll", nil)
 	if e != nil {

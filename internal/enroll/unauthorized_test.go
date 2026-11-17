@@ -49,6 +49,29 @@ func TestClassifyUnauthorizedOnlyActsOnAnExplicitUnknownCertificate(t *testing.T
 	}
 }
 
+// The reason travels with a refusal so the log can name it (forum topic
+// 18320). Only the server's own shape is kept: the reason is printed.
+func TestUnauthorizedReasonCarriesTheServerReason(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"status":"unauthorized","reason":"no_client_certificate"}`, "no_client_certificate"},
+		{`{"reason":"server_error"}`, "server_error"},
+		{`{"reason":"ambiguous_certificate"}`, "ambiguous_certificate"},
+		{`{"reason":"unknown_certificate"}`, ""},
+		{"", ""},
+		{"<html>401</html>", ""},
+		{`{"reason":"bad\nline"}`, ""},
+		{`{"reason":"Proxy Says No"}`, ""},
+	} {
+		err := classifyUnauthorized([]byte(tc.body))
+		if got := UnauthorizedReason(err); got != tc.want {
+			t.Errorf("UnauthorizedReason(%q) = %q, want %q", tc.body, got, tc.want)
+		}
+		if tc.want != "" && (!errors.Is(err, ErrUnauthorized) || errors.Is(err, ErrCertificateUnknown)) {
+			t.Errorf("%q: a refusal with a reason must still be ErrUnauthorized and only that", tc.body)
+		}
+	}
+}
+
 // The two sentinels must stay distinguishable. If one were defined as
 // wrapping the other, errors.Is would match both and the switch in the run
 // loop would take whichever arm came first.

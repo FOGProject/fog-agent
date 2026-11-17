@@ -227,7 +227,8 @@ it closes that door for every server it will ever talk to.
 | Status | Meaning | Agent does |
 |---|---|---|
 | 200 | Bound host, answered | Converge `state` if present, then sleep `poll_interval` and poll again |
-| 401 | No verified certificate, or one bound to no live host (deleted, re-enrolled elsewhere, still pending) | Drop the certificate, keep the key, enroll again |
+| 401, `reason: unknown_certificate` | A verified certificate bound to no live host (deleted, re-enrolled elsewhere, still pending) | Drop the certificate, keep the key, enroll again |
+| 401, any other reason or no reason | `no_client_certificate` (no certificate reached the server, or it does not chain to the agent CA), `server_error`, `ambiguous_certificate` (two hosts carry the key), or a body that is not the server's JSON | Keep the certificate, log the reason and what to check, poll again; enroll again only after the grace period |
 
 The 401 is the reimage/rebind path in practice: a host deleted from FOG and
 its agent left running comes back as `unknown-host` pending, with the same
@@ -818,7 +819,7 @@ Response `200`:
 |---|---|---|
 | 200 | Renewed; `hostAgentNotAfter` updated, audited | Store it, present it from the next connection |
 | 400 | Not a CSR, or one for a different key | Report; keep the current certificate |
-| 401 | As for poll | Drop the certificate, keep the key, enroll again |
+| 401 | As for poll, with the same reasons | Report; keep the current certificate. The next poll's 401 decides by its reason whether to enroll again |
 | 503 | Signing helper unavailable on this server | Report; retry next poll |
 
 The agent renews inside `RenewLead` (120 days) of expiry, checked after each
@@ -906,10 +907,13 @@ The FOG AD Join/Rejoin enhancement requires the server to support both
 `directory-task-operations-v1`. `GET /agent/v1/enroll` advertises these tokens in
 `X-FOG-Agent-Features`, separated by commas or whitespace. Additional tokens
 are allowed; substrings are not capabilities. Trusted HTTPS and the existing
-certificate principal remain required. Unreachable/temporarily unavailable
-and reachable-but-unsupported servers are distinct errors. In both cases the
-directory rejoin feature stays off until the agent restarts, and the agent
-works as it did before the feature.
+certificate principal remain required: with a server address that is not
+`https://`, the agent sends no check, logs the address as the cause, and
+leaves the feature off until it restarts. Unreachable/temporarily
+unavailable and reachable-but-unsupported servers are distinct errors. An
+unavailable server is asked again on later polls; an unsupported one leaves
+the feature off until the agent restarts. While the feature is off, the
+agent works as it did before the feature.
 
 The agent also declares `software-backends-v1` in the `features` list of
 every poll request. It means that the agent runs each software entry through

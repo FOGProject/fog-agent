@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -122,7 +123,34 @@ func classifyUnauthorized(raw []byte) error {
 	if r.Reason == "unknown_certificate" {
 		return ErrCertificateUnknown
 	}
-	return ErrUnauthorized
+	if !reasonPattern.MatchString(r.Reason) {
+		return ErrUnauthorized
+	}
+	return &refusedError{reason: r.Reason}
+}
+
+// reasonPattern is the shape of every reason the server sends. The reason
+// goes into the agent log, so anything else -- a proxy's text, a newline --
+// is dropped rather than printed.
+var reasonPattern = regexp.MustCompile(`^[a-z_]{1,64}$`)
+
+// refusedError is ErrUnauthorized plus the reason the server gave. Without
+// the reason, the log said only "server refused this certificate", and an
+// admin could not tell a plain-HTTP server from a database outage (forum
+// topic 18320).
+type refusedError struct{ reason string }
+
+func (e *refusedError) Error() string        { return ErrUnauthorized.Error() + ": " + e.reason }
+func (e *refusedError) Is(target error) bool { return target == ErrUnauthorized }
+
+// UnauthorizedReason is the reason the server gave with a 401, such as
+// "no_client_certificate", or "" when it gave none that could be read.
+func UnauthorizedReason(err error) string {
+	var r *refusedError
+	if errors.As(err, &r) {
+		return r.reason
+	}
+	return ""
 }
 
 // PollRequest is the poll body (protocol-v1.md).

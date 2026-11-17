@@ -1,11 +1,39 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/FOGProject/fog-agent/internal/enroll"
 )
+
+// The refusal line names the server's reason and what to check for it. A
+// plain-HTTP server answers no_client_certificate, and the line must point
+// at the https:// address (forum topic 18320).
+func TestRefusalDetailNamesTheReasonAndWhatToCheck(t *testing.T) {
+	for _, tc := range []struct{ body, want string }{
+		{`{"status":"unauthorized","reason":"no_client_certificate"}`, "server address is https://"},
+		{`{"status":"unauthorized","reason":"server_error"}`, "database"},
+		{`{"status":"unauthorized","reason":"ambiguous_certificate"}`, "more than one FOG host"},
+		{`{"status":"unauthorized","reason":"something_new"}`, "something_new"},
+		{"", "no reason given"},
+	} {
+		server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(tc.body))
+		}))
+		client := &enroll.Client{ServerURL: server.URL, HTTP: server.Client()}
+		_, err := client.Poll(context.Background(), enroll.PollRequest{AgentVersion: "t"})
+		server.Close()
+		if got := refusalDetail(err); !strings.Contains(got, tc.want) {
+			t.Errorf("body %q: refusalDetail = %q, want it to contain %q", tc.body, got, tc.want)
+		}
+	}
+}
 
 func TestUnauthorizedGraceStartsTheClockAndHoldsTheIdentity(t *testing.T) {
 	st := &enroll.State{Dir: t.TempDir()}
