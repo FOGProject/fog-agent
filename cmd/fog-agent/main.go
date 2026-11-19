@@ -823,11 +823,17 @@ func renew(ctx context.Context, st *enroll.State, client *enroll.Client, out *sa
 // leaves the new name pending, and hostname then reports the reboot in the
 // same poll instead of failing first. A join keeps the server's order,
 // hostname first, so the join runs under the name already pending.
+//
+// The second exception: `software` runs before `snapin` when both are listed,
+// whatever order the server sent. A snapin such as Sysprep must not start
+// while installs are unfinished (forum 18322), and servers released before
+// this rule list snapin first. Software moves to just before snapin; every
+// other capability keeps the server's order.
 func capabilityOrder(desired *enroll.DesiredState) []string {
 	caps := desired.Capabilities
 	if desired.Directory == nil || strings.TrimSpace(desired.Directory.RenameTo) == "" ||
 		!slices.Contains(caps, "directory") {
-		return caps
+		return softwareBeforeSnapin(caps)
 	}
 	out := []string{"directory"}
 	for _, c := range caps {
@@ -835,7 +841,31 @@ func capabilityOrder(desired *enroll.DesiredState) []string {
 			out = append(out, c)
 		}
 	}
-	return out
+	return softwareBeforeSnapin(out)
+}
+
+// softwareBeforeSnapin moves `software` to just before `snapin` when the list
+// names it after snapin. Any other list comes back as it is. It never modifies
+// the slice it is given: that slice is the server's own list.
+func softwareBeforeSnapin(caps []string) []string {
+	sw, sn := slices.Index(caps, "software"), slices.Index(caps, "snapin")
+	if sw < 0 || sn < 0 || sw < sn {
+		return caps
+	}
+	out := slices.Delete(slices.Clone(caps), sw, sw+1)
+	// sn < sw, so deleting software did not move snapin's index.
+	return slices.Insert(out, sn, "software")
+}
+
+// holdsSnapins says whether one software entry's result keeps the snapin
+// queue waiting: the entry is flagged stop_snapins and it did not succeed.
+// A failed or retry outcome, or a report that never landed, is "did not
+// succeed". Success and reboot are not: a reboot means the install finished.
+func holdsSnapins(e software.Entry, outcome string, reportErr error) bool {
+	if !e.StopSnapins {
+		return false
+	}
+	return reportErr != nil || outcome == enroll.OutcomeFailed || outcome == enroll.OutcomeRetry
 }
 
 // errUpdated is how reconcile says the binary under this process is no
@@ -865,6 +895,9 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 		st.Config.RebootGrace = desired.Reboot.Grace
 	}
 	allOK := true
+	// snapinHolders names the software entries that hold the snapin queue
+	// this pass. Not reconcileHeld's `held`, which is about directory/hostname.
+	var snapinHolders []string
 	for _, capability := range capabilityOrder(desired) {
 		var r provider.Result
 		force := false
@@ -947,16 +980,21 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 			}
 			continue
 		case "software":
-			// The desired package set, converged in order. Outcomes do
-			// not hold the revision: a failed install is reported and
-			// tried again at the drift check, not every poll. Only a
-			// report that did not land keeps the revision unapplied.
+			// The desired package set, converged in order. For an
+			// unflagged entry an outcome does not hold the revision: a
+			// failed install is reported and tried again at the drift
+			// check, not every poll. A report that did not land keeps the
+			// revision unapplied. A stop_snapins entry that fails or
+			// retries, while snapins are queued, holds the revision too
+			// (see the snapin case), so software re-runs at the next poll.
 			if desired.Software == nil {
 				st.Config.SoftwareDrift = 0
 				continue
 			}
 			st.Config.SoftwareDrift = desired.Software.DriftInterval
-			if !runSoftware(ctx, st, client, desired.Revision, desired.Software, out) {
+			var swOK bool
+			swOK, snapinHolders = runSoftware(ctx, st, client, desired.Revision, desired.Software, out)
+			if !swOK {
 				allOK = false
 			}
 			continue
@@ -1007,6 +1045,16 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 			// poll; everything else closes with a result. The reboot
 			// or shutdown a snapin asks for is a reason for the
 			// coordinator, forced the way the legacy client's was.
+			//
+			// A software entry marked stop_snapins that did not install
+			// holds the queue. allOK goes false so the revision stays
+			// unapplied and the next poll re-sends the state, running
+			// software again before the snapins.
+			if len(snapinHolders) > 0 && len(desired.Snapins) > 0 {
+				out.say(fmt.Sprintf("snapin: waiting; %s did not install and is marked to stop snapins", strings.Join(snapinHolders, ", ")))
+				allOK = false
+				continue
+			}
 			if !runSnapins(ctx, st, client, desired.Snapins, out) {
 				allOK = false
 			}
@@ -1145,8 +1193,9 @@ func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, qu
 }
 
 // runSoftware converges the software set and reports every entry. It
-// returns false only when a report did not land.
-func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, revision string, policy *software.Policy, out *sayer) bool {
+// returns false only when a report did not land, and the package names of the
+// stop_snapins entries that did not succeed (they hold the snapin queue).
+func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, revision string, policy *software.Policy, out *sayer) (bool, []string) {
 	names, groups := software.Group(policy.Entries)
 	bootstrapFailed := false
 	// Only a set with a choco entry has any use for the bootstrap.
@@ -1199,11 +1248,15 @@ func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, r
 		missing = slices.DeleteFunc(missing, func(n string) bool { return n == "choco" })
 	}
 	ok := true
+	var snapinHolders []string
 	for _, r := range reports {
 		outcome, err := client.Result(ctx, enroll.ResultRequest{
 			Revision: revision, Capability: "software", Status: provider.StatusApplied,
 			Item: &enroll.ResultItem{ID: r.Entry.ID, Status: r.Status, ExitCode: r.ExitCode, InstalledVersion: r.InstalledVersion, Details: r.Details},
 		})
+		if holdsSnapins(r.Entry, outcome, err) {
+			snapinHolders = append(snapinHolders, r.Entry.Package)
+		}
 		if err != nil {
 			out.say(fmt.Sprintf("software %q: %s", r.Entry.Package, err))
 			ok = false
@@ -1227,7 +1280,7 @@ func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, r
 	// whose binary is missing is watched per poll, and a failing list
 	// retries at the drift check.
 	st.Config.SoftwareMissing = missing
-	return ok
+	return ok, snapinHolders
 }
 
 // runPrinters converges the assigned print queues and reports every one of
@@ -1470,7 +1523,7 @@ func softwareDriftMayBeDue(st *enroll.State) bool {
 // whether it is due; the poll asked for the state because at least one was.
 func drift(ctx context.Context, st *enroll.State, client *enroll.Client, desired *enroll.DesiredState, out *sayer) error {
 	if driftDue(st, desired.Software, time.Now()) {
-		runSoftware(ctx, st, client, desired.Revision, desired.Software, out)
+		_, _ = runSoftware(ctx, st, client, desired.Revision, desired.Software, out)
 	}
 	if desired.Printers != nil && printersDriftDue(st.Config, time.Now()) {
 		runPrinters(ctx, st, client, desired.Revision, desired.Printers, out)

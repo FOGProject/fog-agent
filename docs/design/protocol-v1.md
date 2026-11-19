@@ -431,10 +431,24 @@ order, deduplicated), plus the server's drift interval:
   "bootstrap": {"url": "", "nupkg_url": ""},
   "entries": [
     {"id": 3, "backend": "choco", "package": "googlechrome", "version": "latest",
-     "state": "present", "source": "", "args": "", "timeout": 900}
+     "state": "present", "source": "", "args": "", "timeout": 900,
+     "stop_snapins": false}
   ]
 }
 ```
+
+The agent runs `software` before `snapin` in every reconcile, whatever
+order the capability list names them in. A server released before this
+rule sends `snapin` first, so the agent reorders the list itself.
+`stop_snapins` is per entry and defaults to false. When it is true and the
+entry's outcome is `failed` or `retry`, or its report does not land, while
+snapins are queued, the agent skips the snapin queue for that poll. It also
+leaves the revision unapplied, so the next poll runs the software first
+again. With no snapin queued there is nothing to hold, so the entry retries
+at the drift check like any other. Queuing a snapin moves the revision, and
+that reconcile runs the software first again. A server that
+omits the field means false. Forum topic 18322 asked for this: a Sysprep
+snapin must not run before the software it captures.
 
 `version` is `""` (any), `latest` (upgrade at every check) or an exact
 version (pinned; installed with `--force` when the host has another).
@@ -458,10 +472,12 @@ The agent converges the set when the revision changes and again whenever
 `drift_interval` seconds have passed since its last check, fetching the
 state for that. One installed-list call from the backend, then each entry
 in order, then a second list when anything ran so every report carries the
-version the host ended with. Outcomes never hold the revision: a failed
-install is reported and tried again at the next drift check, not every
-poll. Only a report that did not reach the server keeps the revision
-unapplied.
+version the host ended with. For an unflagged entry an outcome does not
+hold the revision: a failed install is reported and tried again at the next
+drift check, not every poll. A report that did not reach the server keeps
+the revision unapplied. A `stop_snapins` entry that fails or retries, while
+snapins are queued, holds the revision too, so the software runs again at
+the next poll.
 
 | Step | Route | Notes |
 |---|---|---|
