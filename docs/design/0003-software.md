@@ -122,9 +122,11 @@ code against the entry's return-code table exactly as `Snapins::outcome()`
 does for snapins (Intune defaults plus Chocolatey's `350` pending-reboot
 code mapped to `reboot`), writes the `softwareStatus` row, audits it, and
 answers `{"status":"ok","outcome":…}`. `reboot` feeds the reboot coordinator
-as a normal (non-forced) reason; `retry` is reported and tried again at the
-next drift check rather than the next poll, because 1618 here usually means
-another installer holds the MSI mutex and a minute is not long enough.
+as a normal (non-forced) reason; `retry` is reported and, for an unflagged entry,
+tried again at the next drift check rather than the next poll, because 1618
+here usually means another installer holds the MSI mutex and a minute is not
+long enough. A `stop_snapins` entry that fails or retries, while snapins are
+queued, holds the revision, so it runs again at the next poll.
 
 The revision changes when the desired set changes. It does **not** change
 when a status row is written, so a reporting host does not wake itself.
@@ -147,6 +149,9 @@ when a status row is written, so a reporting host does not wake itself.
   `software` block so the server owns the cadence). One `Installed()` call,
   then each entry in order, serially, with snapins and software sharing the
   agent's single run loop so two installers never overlap from our side.
+  Software runs before snapins in each reconcile. An entry marked
+  `stop_snapins` that fails holds the snapin queue until it succeeds
+  (protocol-v1 "Software").
 - Reports only on change: a host that is converged and stays converged
   posts once per drift check with `status=converged`, which is also the
   "checked" heartbeat the UI shows.

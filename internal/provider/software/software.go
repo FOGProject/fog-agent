@@ -24,6 +24,9 @@ type Entry struct {
 	Source  string `json:"source"`
 	Args    string `json:"args"`
 	Timeout int    `json:"timeout"`
+	// StopSnapins: when this entry does not succeed, the host's snapin queue
+	// waits. An older server omits it, which reads false.
+	StopSnapins bool `json:"stop_snapins"`
 }
 
 // Policy is the software block of the desired state.
