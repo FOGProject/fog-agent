@@ -332,7 +332,9 @@ Capability `snapin` (module `snapinclient`). The block is the host's
 snapin queue exactly as the server tasked it: `snapinTasks` rows in
 `sequence` order, which the server wrote from its resolver -- the host's
 own associations first, then its groups' grants in group order,
-deduplicated. The agent runs them in that order and never re-sorts.
+deduplicated. The agent runs them in that order inside each phase and never
+re-sorts them; tasks with `before_software` split ahead of the `software`
+block (see below).
 
 ```json
 {
@@ -341,10 +343,15 @@ deduplicated. The agent runs them in that order and never re-sorts.
     {"task": 41, "snapin": 7, "name": "Install 7-Zip", "file": "7z.msi",
      "size": 1834496, "sha512": "…", "args": "/qn", "run_with": "msiexec.exe",
      "run_with_args": "/i", "timeout": 600, "action": "", "abort_on_fail": false,
-     "pack": false}
+     "before_software": false, "pack": false}
   ]
 }
 ```
+
+`before_software` is per task and defaults to false; a server that omits it
+means false. A task with it set to true runs before the `software` block, not
+after it (forum topic 18322: a PowerShell snapin that an antivirus package
+blocks once the package is installed). See "Software" for the three phases.
 
 For each task, in order:
 
@@ -442,13 +449,26 @@ order the capability list names them in. A server released before this
 rule sends `snapin` first, so the agent reorders the list itself.
 `stop_snapins` is per entry and defaults to false. When it is true and the
 entry's outcome is `failed` or `retry`, or its report does not land, while
-snapins are queued, the agent skips the snapin queue for that poll. It also
+snapins that run after software are queued, the agent skips the snapin queue for that poll. It also
 leaves the revision unapplied, so the next poll runs the software first
 again. With no snapin queued there is nothing to hold, so the entry retries
 at the drift check like any other. Queuing a snapin moves the revision, and
 that reconcile runs the software first again. A server that
 omits the field means false. Forum topic 18322 asked for this: a Sysprep
 snapin must not run before the software it captures.
+
+A snapin task with `before_software` true is the one exception to that order.
+One reconcile has three fixed phases: the snapins with `before_software`, then
+`software`, then the remaining snapins. Each part keeps the server's order. The
+first phase runs only when `software` and `snapin` are both listed and the
+`software` block is present; otherwise the whole queue runs in the server's
+order. If the first phase does not finish (a fetch failed, a report did not
+land, or the outcome was `retry`), the agent skips `software` and the
+remaining snapins for that poll and leaves the revision unapplied, so the next
+poll starts at the same task. If a first-phase task fails in a job that aborts
+on failure, the remaining snapins do not run that poll, but `software` does.
+The `stop_snapins` hold never affects the first phase: those snapins have
+already run before any software entry.
 
 `version` is `""` (any), `latest` (upgrade at every check) or an exact
 version (pinned; installed with `--force` when the host has another).
@@ -476,7 +496,7 @@ version the host ended with. For an unflagged entry an outcome does not
 hold the revision: a failed install is reported and tried again at the next
 drift check, not every poll. A report that did not reach the server keeps
 the revision unapplied. A `stop_snapins` entry that fails or retries, while
-snapins are queued, holds the revision too, so the software runs again at
+snapins that run after software are queued, holds the revision too, so the software runs again at
 the next poll.
 
 | Step | Route | Notes |

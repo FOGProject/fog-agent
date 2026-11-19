@@ -857,6 +857,20 @@ func softwareBeforeSnapin(caps []string) []string {
 	return slices.Insert(out, sn, "software")
 }
 
+// splitBeforeSoftware divides the snapin queue into the tasks that run before
+// the software block (before_software true) and the rest. Each part keeps the
+// server's order. It never modifies the queue it is given.
+func splitBeforeSoftware(queue []snapin.Task) (pre, post []snapin.Task) {
+	for _, t := range queue {
+		if t.BeforeSoftware {
+			pre = append(pre, t)
+		} else {
+			post = append(post, t)
+		}
+	}
+	return pre, post
+}
+
 // holdsSnapins says whether one software entry's result keeps the snapin
 // queue waiting: the entry is flagged stop_snapins and it did not succeed.
 // A failed or retry outcome, or a report that never landed, is "did not
@@ -898,6 +912,12 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 	// snapinHolders names the software entries that hold the snapin queue
 	// this pass. Not reconcileHeld's `held`, which is about directory/hostname.
 	var snapinHolders []string
+	// The snapin queue runs in three phases: tasks marked before_software,
+	// then software, then the rest. preRan says the software case already
+	// ran the first phase; skipPost says the last phase must not run this
+	// poll (the first phase did not finish, or its job aborted).
+	pre, post := splitBeforeSoftware(desired.Snapins)
+	var preRan, skipPost bool
 	for _, capability := range capabilityOrder(desired) {
 		var r provider.Result
 		force := false
@@ -985,13 +1005,32 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 			// failed install is reported and tried again at the drift
 			// check, not every poll. A report that did not land keeps the
 			// revision unapplied. A stop_snapins entry that fails or
-			// retries, while snapins are queued, holds the revision too
+			// retries, while snapins that run after software are queued,
+			// holds the revision too
 			// (see the snapin case), so software re-runs at the next poll.
 			if desired.Software == nil {
 				st.Config.SoftwareDrift = 0
 				continue
 			}
 			st.Config.SoftwareDrift = desired.Software.DriftInterval
+			// Snapins marked before_software run first. Without the snapin
+			// capability, or with none marked, there is no first phase.
+			if len(pre) > 0 && slices.Contains(desired.Capabilities, "snapin") {
+				preRan = true
+				preOK, aborted := runSnapins(ctx, st, client, pre, out)
+				if !preOK {
+					// The snapin must run before the package, so the
+					// software must not run past it. The revision stays
+					// unapplied and the next poll starts here again.
+					out.say("software: waiting; a snapin marked to run before software has not finished")
+					allOK = false
+					skipPost = true
+					continue
+				}
+				// An aborted job leaves the rest of the snapins to the
+				// server. The software is not a snapin, so it still runs.
+				skipPost = aborted
+			}
 			var swOK bool
 			swOK, snapinHolders = runSoftware(ctx, st, client, desired.Revision, desired.Software, out)
 			if !swOK {
@@ -1050,12 +1089,24 @@ func reconcile(ctx context.Context, st *enroll.State, client *enroll.Client, des
 			// holds the queue. allOK goes false so the revision stays
 			// unapplied and the next poll re-sends the state, running
 			// software again before the snapins.
-			if len(snapinHolders) > 0 && len(desired.Snapins) > 0 {
+			//
+			// When the software case already ran the before_software
+			// tasks, only the rest is left. Otherwise (no software block,
+			// or no software capability) the whole queue runs in the
+			// server's order, as it did before the flag existed.
+			queue := desired.Snapins
+			if preRan {
+				if skipPost {
+					continue
+				}
+				queue = post
+			}
+			if len(snapinHolders) > 0 && len(queue) > 0 {
 				out.say(fmt.Sprintf("snapin: waiting; %s did not install and is marked to stop snapins", strings.Join(snapinHolders, ", ")))
 				allOK = false
 				continue
 			}
-			if !runSnapins(ctx, st, client, desired.Snapins, out) {
+			if ok, _ := runSnapins(ctx, st, client, queue, out); !ok {
 				allOK = false
 			}
 			continue
@@ -1142,10 +1193,15 @@ func needsReconcile(cfg enroll.Config, revision string) bool {
 	return revision != cfg.AppliedRevision || cfg.AppliedWith != supportedCapabilities
 }
 
-// runSnapins runs the queue in order and reports each task. It returns
-// false when a task is left open (a fetch failed) or a report did not
-// land, so the revision stays unapplied and the next poll comes back.
-func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, queue []snapin.Task, out *sayer) bool {
+// runSnapins runs the queue in order and reports each task. Two results:
+//
+//   - ok is false when a task is left open (a fetch failed), a report did
+//     not land, or the server's outcome was retry. The revision stays
+//     unapplied and the next poll comes back.
+//   - aborted is true when a task failed in a job that aborts on failure
+//     (ok is true then: the rest is the server's to cancel). The caller
+//     runs no further snapin phase this poll.
+func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, queue []snapin.Task, out *sayer) (ok, aborted bool) {
 	dir := filepath.Join(st.Dir, "snapins")
 	for _, t := range queue {
 		r := snapin.Run(ctx, t, dir, func(ctx context.Context, w io.Writer) error {
@@ -1153,7 +1209,7 @@ func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, qu
 		})
 		if !r.Fetched {
 			out.say(fmt.Sprintf("snapin %q (task %d): %s; will retry next poll", t.Name, t.ID, r.Details))
-			return false
+			return false, false
 		}
 		outcome, err := client.Result(ctx, enroll.ResultRequest{
 			Revision: st.Config.AppliedRevision, Capability: "snapin", Status: provider.StatusApplied,
@@ -1161,7 +1217,7 @@ func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, qu
 		})
 		if err != nil {
 			out.say("snapin result: " + err.Error())
-			return false
+			return false, false
 		}
 		out.say(fmt.Sprintf("snapin %q (task %d): %s, exit %d, outcome %s (%s)", t.Name, t.ID, r.Status, r.ExitCode, outcome, firstLine(r.Details)))
 		// The server read the exit code against the snapin's return-code
@@ -1172,7 +1228,7 @@ func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, qu
 			// Stop here so the revision stays unapplied and the next poll
 			// starts the queue again from this task.
 			out.say("snapin: retry later; stopping the queue for this poll")
-			return false
+			return false, false
 		case enroll.OutcomeReboot:
 			st.Config.PendingReboot = reboot.Merge(st.Config.PendingReboot, reboot.Reason{
 				Source: "snapin", Detail: fmt.Sprintf("snapin %q asked for a reboot (exit %d)", t.Name, r.ExitCode), Force: true, Mode: reboot.ModeReboot,
@@ -1180,7 +1236,7 @@ func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, qu
 		case enroll.OutcomeFailed:
 			if t.AbortOnFail {
 				out.say("snapin: job aborts on failure; leaving the rest to the server")
-				return true
+				return true, true
 			}
 		}
 		if t.Action != "" {
@@ -1189,7 +1245,7 @@ func runSnapins(ctx context.Context, st *enroll.State, client *enroll.Client, qu
 			})
 		}
 	}
-	return true
+	return true, false
 }
 
 // runSoftware converges the software set and reports every entry. It

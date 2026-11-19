@@ -37,6 +37,11 @@ type Task struct {
 	Timeout     int    `json:"timeout"` // seconds, 0 for none
 	Action      string `json:"action"`  // "", "reboot", "shutdown"
 	AbortOnFail bool   `json:"abort_on_fail"`
+	// BeforeSoftware makes the agent run this snapin before the software
+	// block, not after it (forum 18322: a PowerShell snapin that an
+	// antivirus package blocks once the package is installed). A server
+	// that omits the field means false: the snapin runs after software.
+	BeforeSoftware bool `json:"before_software"`
 	// Pack marks a snapin pack: File is a zip, and the run is RunWith
 	// with RunWithArgs inside the unzipped folder, which Placeholder
 	// names. Args is not used, as in the legacy client.
