@@ -74,6 +74,11 @@ const (
 	StatusPending     = "pending"
 	StatusDenied      = "denied"
 	StatusUnsupported = "unsupported"
+
+	// reasonUpgradeRequiresNewKey is the server's 409 reason when this key
+	// was first sent without the directory identity feature and now
+	// declares it (MachineIdentity::enrollmentGate()).
+	reasonUpgradeRequiresNewKey = "enrollment_upgrade_requires_new_key"
 )
 
 // Client talks to the agent API. It trusts only the CA bundle it was
@@ -105,6 +110,11 @@ var ErrUnauthorized = errors.New("server refused this agent's request")
 // needs an admin to approve each host, so one rollback becomes fleet-wide
 // manual work.
 var ErrCertificateUnknown = errors.New("server does not recognize this agent's certificate")
+
+// ErrUpgradeRequiresNewKey means the server keeps a request for this key
+// that was sent without the directory identity feature. The server never
+// lets that key acquire the feature, so the agent needs a new key.
+var ErrUpgradeRequiresNewKey = errors.New("the server holds this key's request without the directory identity feature; a new key is needed")
 
 // unauthorizedReason is the 401 body the server sends (Route::$agentAuthReason).
 type unauthorizedReason struct {
@@ -732,6 +742,8 @@ func (c *Client) Enroll(ctx context.Context, req Request) (*Response, error) {
 		resp.StatusCode == 403 && out.Status == StatusDenied,
 		resp.StatusCode == 426 && out.Status == StatusUnsupported:
 		return &out, nil
+	case resp.StatusCode == 409 && out.Reason == reasonUpgradeRequiresNewKey:
+		return nil, ErrUpgradeRequiresNewKey
 	}
 	return nil, fmt.Errorf("enroll: HTTP %d with status %q", resp.StatusCode, out.Status)
 }

@@ -48,6 +48,7 @@ Responses:
 | 202 | `pending` | Waiting for an admin, a token, or a deploy. Body carries `reason` (`unknown-host`, `known-host-no-agent`, `rebind`) and `retry_after` seconds | Log once per reason change, sleep, repeat |
 | 403 | `denied` | An admin denied this key. Body carries `reason` | Log, back off to hourly, repeat (a later approval must still be reachable) |
 | 400 | `error` | The request is malformed (`reason`: `csr`) | Log, back off, repeat |
+| 409 | `error` | `reason` `enrollment_upgrade_requires_new_key`: the server holds this key's request without the directory identity feature, and the request now declares it. The key can never acquire the feature | Make a new key once and enroll again. A second refusal is logged and repeated like any other error |
 | 503 | `error` | The server accepted the request but could not sign (`reason`: `signing`); the row is kept | Log, retry after `retry_after` |
 | 426 | `unsupported` | Server does not speak protocol 1 | Log, back off, repeat |
 
