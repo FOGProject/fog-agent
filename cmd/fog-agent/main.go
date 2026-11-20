@@ -322,10 +322,30 @@ func enrollRequest(st *enroll.State, token string, out *sayer) (enroll.Request, 
 // reachable. With once set it returns after a single exchange, issued or
 // not, and the caller prints the answer.
 func enrollLoop(ctx context.Context, st *enroll.State, client *enroll.Client, req enroll.Request, once bool, out *sayer) (*enroll.Response, error) {
+	rotated := false
 	for {
 		resp, err := client.Enroll(ctx, req)
 		wait := 5 * time.Minute
 		switch {
+		case errors.Is(err, enroll.ErrUpgradeRequiresNewKey) && !rotated:
+			// The server holds this key's request without the directory
+			// identity feature, and the key can never acquire it (forum
+			// 18319: an identity conflict turned the feature off for the
+			// first request). A new key is a new request, which the server
+			// resolves with the feature. Once per loop, so a server that
+			// refuses again cannot make the agent rotate keys forever.
+			rotated = true
+			live := readIdentity()
+			if err := st.RotateIdentity(live); err != nil {
+				return nil, err
+			}
+			csr, err := st.CSR()
+			if err != nil {
+				return nil, err
+			}
+			req.Identity, req.CSRPEM = live, string(csr)
+			out.say("enroll: the server needs a new key for the directory identity feature; generated one and enrolling again")
+			continue
 		case err != nil:
 			out.say("enroll: " + err.Error())
 		case resp.Status == enroll.StatusIssued:
