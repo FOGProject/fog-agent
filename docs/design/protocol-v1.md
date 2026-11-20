@@ -45,7 +45,7 @@ Responses:
 | HTTP | `status` | Meaning | Agent behavior |
 |---|---|---|---|
 | 200 | `issued` | Approved. Body carries `host_id`, `certificate_pem` (leaf followed by its issuing chain), `not_after` | Store cert, switch to mTLS, done |
-| 202 | `pending` | Waiting for an admin, a token, or a deploy. Body carries `reason` (`unknown-host`, `known-host-no-agent`, `rebind`) and `retry_after` seconds | Log once per reason change, sleep, repeat |
+| 202 | `pending` | Waiting for an admin, a token, or a deploy. Body carries `reason` (`unknown-host`, `known-host-no-agent`, `new-seat`, `rebind`) and `retry_after` seconds | Log once per reason change, sleep, repeat |
 | 403 | `denied` | An admin denied this key. Body carries `reason` | Log, back off to hourly, repeat (a later approval must still be reachable) |
 | 400 | `error` | The request is malformed (`reason`: `csr`) | Log, back off, repeat |
 | 409 | `error` | `reason` `enrollment_upgrade_requires_new_key`: the server holds this key's request without the directory identity feature, and the request now declares it. The key can never acquire the feature | Make a new key once and enroll again. A second refusal is logged and repeated like any other error |
@@ -66,15 +66,34 @@ its firmware identity, so it appears where admins already look for pending
 registrations. Approving the enrollment un-pends the host. The agent never
 learns a host id until issue, so nothing about the pending host reaches it.
 
-Reasons a request waits: `unknown-host`, `known-host-no-agent`, `rebind`
-(the host already has an agent key), `identity-conflict` (firmware and MACs
-name different hosts; the firmware's host is kept and the admin sees the
-conflict), `reissue` (same key, certificate already collected), `no-mac`.
+Reasons a request waits:
+
+- `unknown-host`: no host matches the identity.
+- `known-host-no-agent`: the host has no agent key.
+- `new-seat`: the host has an agent key for another OS, but none for this OS.
+- `rebind`: the host already has an agent key for this OS.
+- `identity-conflict`: the firmware and the MACs name different hosts. The
+  server keeps the firmware's host. The admin sees the conflict.
+- `reissue`: the same key asks again after it collected its certificate.
+- `no-mac`: the request names no MAC address.
+
+A host holds one agent seat per OS. The `os` field of the request
+names the OS. Design [0019](0019-multi-os-seats.md) gives the seat model.
 
 A pending row holds the request verbatim (identity, hostname, key
-fingerprint, CSR) so approval signs exactly what was presented. A host with a
-live certificate that receives a new enrollment from the same identity pends
-with reason `rebind`; approving it revokes the old fingerprint.
+fingerprint, CSR) so approval signs exactly what was presented.
+
+A host can have a live certificate for the request's OS. A new enrollment
+from the same identity for that OS then pends with reason `rebind`. Approving
+it revokes the old fingerprint of that OS seat only. The seats of other OSes
+keep their keys.
+
+A host can have a seat with no OS, from the upgrade. A request from any OS
+then pends as `rebind`. Approval gives that seat the request's OS and key.
+
+A host with a seat for another OS pends with reason `new-seat`. Approving it
+adds a seat and revokes nothing. The deploy window and a token approve
+`new-seat`. A conflict still waits for an admin.
 
 ## What a pending agent may do
 
@@ -90,7 +109,8 @@ certificate enrollment issued: the web server verifies it against the agent
 CA bundle on the TLS handshake (`ssl_verify_client optional` /
 `SSLVerifyClient optional`, so a browser is never asked for one), and the
 router re-verifies the chain against the same bundle and binds the key
-fingerprint to exactly one live, non-pending host before any route matches.
+fingerprint to exactly one agent seat on one live, non-pending host before
+any route matches. A host holds one seat per OS (design 0019).
 No token, no session, no `mac=`.
 
 Request:
@@ -618,6 +638,10 @@ and absent is not an empty instruction.
 ### Directory
 
 Capability `directory` (module short name `hostnamechanger`), design 0009 §6.
+One seat of a host owns the directory: the Windows seat, else the only seat
+of the host. A host with two or more non-Windows seats has no such seat. The
+server sends the block, the rejoin plan and the rejoin claim only to that
+seat. The server ignores `directory` facts from any other seat (design 0019).
 The block is present **only** for a host the server believes is not joined
 and has a domain configured, so a joined estate — most of an estate, most of
 the time — carries no join credential at all:
@@ -842,7 +866,8 @@ row that is not this host's, 409, 503) pass through.
 ## POST /agent/v1/renew
 
 Same gate as poll: the caller is already bound to its host by the certificate
-it presents, and the body carries a request for the **same key**. The answer
+it presents, and the body carries a request for the **same key**. The caller
+is bound to one seat, so renewal changes that seat only. The answer
 is the enroll `issued` shape and the agent stores it the same way. Renewal is
 same-key only; a new key is a new claim on the machine and goes through
 enroll, where it pends as `rebind` for an admin. The old certificate is not
@@ -862,7 +887,7 @@ Response `200`:
 
 | Status | Meaning | Agent does |
 |---|---|---|
-| 200 | Renewed; `hostAgentNotAfter` updated, audited | Store it, present it from the next connection |
+| 200 | Renewed; the expiry of this OS seat updated, audited | Store it, present it from the next connection |
 | 400 | Not a CSR, or one for a different key | Report; keep the current certificate |
 | 401 | As for poll, with the same reasons | Report; keep the current certificate. The next poll's 401 decides by its reason whether to enroll again |
 | 503 | Signing helper unavailable on this server | Report; retry next poll |
