@@ -30,3 +30,24 @@ Windows installer. `docs/RELEASING.md` gives the release steps.
 Each capability has a numbered design in `docs/design/`. The wire protocol
 is `docs/design/protocol-v1.md`. A change that alters what a design says
 updates that design in the same pull request.
+
+## Documentation
+
+A design in `docs/design/` is not user docs. User docs live in
+[FOGProject/fog-docs](https://github.com/FOGProject/fog-docs), published at
+<https://docs.fogproject.org/>. Every pull request here ships with its docs
+decision. Write it as a `Docs:` line in the pull request body:
+
+- `Docs: FOGProject/fog-docs#<n>` names the fog-docs pull request for the change.
+- `Docs: none — <reason>` is for a change that a user cannot see.
+- `Docs: needed — <what>` is for when you cannot open the fog-docs pull request.
+
+Where the docs go, under fog-docs `docs/`:
+
+| What changed | fog-docs target |
+|---|---|
+| A capability or a setting | `management/web/fog-agent.md` or its `agent-*.md` page, and `kb/reference/fog-agent-reference.md` |
+| An install option or an installer | `installation/client/install-fog-agent.md` |
+| A bug fix that a user can see | `kb/troubleshooting/fog-agent-troubleshooting.md`: the symptom text verbatim, the cause, the fixed-in version, and a workaround |
+
+Follow fog-docs `CLAUDE.md` for the page format.
