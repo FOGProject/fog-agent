@@ -2,7 +2,11 @@ package software
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -15,10 +19,69 @@ import (
 type Flatpak struct {
 	// Path is the flatpak executable. Empty means `flatpak` on PATH.
 	Path string
+	// PreinstallDirs are the directories of `*.preinstall` keyfiles that
+	// name the apps the OS ships. Nil means DefaultFlatpakPreinstallDirs. A
+	// test points it elsewhere.
+	PreinstallDirs []string
 }
+
+// DefaultFlatpakPreinstallDirs are the flatpak preinstall.d directories.
+var DefaultFlatpakPreinstallDirs = []string{"/usr/share/flatpak/preinstall.d", "/etc/flatpak/preinstall.d"}
 
 // Name is the backend id the server sends.
 func (Flatpak) Name() string { return "flatpak" }
+
+// ParseFlatpakPreinstall reads one `*.preinstall` keyfile and returns the
+// lowercase app ids of its `[Flatpak Preinstall <app-id>]` group headers.
+// Every other line is ignored.
+func ParseFlatpakPreinstall(data []byte) []string {
+	const prefix = "[Flatpak Preinstall "
+	var ids []string
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, prefix) || !strings.HasSuffix(line, "]") {
+			continue
+		}
+		if id := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(line, prefix), "]")); id != "" {
+			ids = append(ids, strings.ToLower(id))
+		}
+	}
+	return ids
+}
+
+// Keep implements Keeper: every app id named by a `*.preinstall` file, the
+// apps the OS shipped. A missing directory is fine. A directory or file that
+// cannot be read is an error, so nothing is removed on a guess. An app baked
+// into the image with no preinstall entry is not recognized.
+func (f *Flatpak) Keep(_ context.Context, _ []Entry, _ map[string]string) (map[string]bool, []string, error) {
+	dirs := f.PreinstallDirs
+	if dirs == nil {
+		dirs = DefaultFlatpakPreinstallDirs
+	}
+	keep := map[string]bool{}
+	for _, dir := range dirs {
+		files, err := os.ReadDir(dir)
+		if errors.Is(err, fs.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("flatpak preinstall: %w", err)
+		}
+		for _, de := range files {
+			if !strings.HasSuffix(de.Name(), ".preinstall") {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(dir, de.Name()))
+			if err != nil {
+				return nil, nil, fmt.Errorf("flatpak preinstall: %w", err)
+			}
+			for _, id := range ParseFlatpakPreinstall(data) {
+				keep[id] = true
+			}
+		}
+	}
+	return keep, nil, nil
+}
 
 func (f *Flatpak) path() string {
 	if f.Path != "" {

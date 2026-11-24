@@ -218,10 +218,23 @@ older server) is the behavior above, with no removal.
     are kept by name. A package is removed before its own dependencies.
   - snap keeps every snap whose `snap list` Notes include base, core, snapd,
     kernel or gadget, and the providers of the slots that `snap connections`
-    shows for an assigned present snap (content snaps).
-  - flatpak needs no `Keeper`: its installed list is `--app` only, so
-    runtimes are never candidates. The Flatpak uninstall resolves the real
+    shows for an assigned present snap (content snaps). It also keeps every
+    snap named in the snapd seed, `/var/lib/snapd/seed/seed.yaml`: built in
+    snaps the OS shipped, such as firefox, snap-store and firmware-updater on
+    Ubuntu Desktop, are left alone. A missing seed file means no seeded
+    snaps. A seed file that cannot be read or parsed is an error, so nothing
+    is removed.
+  - flatpak keeps every app id named by a `[Flatpak Preinstall <app-id>]`
+    group in a `*.preinstall` file in `/usr/share/flatpak/preinstall.d` or
+    `/etc/flatpak/preinstall.d` (built in apps). Ids compare in lowercase. A
+    missing directory is fine. A file that cannot be read is an error, so
+    nothing is removed. A flatpak that a distro bakes into its image without
+    a preinstall.d entry is not recognized, so the admin must check the
+    server's preview of the removals. Runtimes are never candidates: the
+    installed list is `--app` only. The Flatpak uninstall resolves the real
     case of an application id, because the installed map is lowercase.
+  - choco has no built in protection: Windows does not preinstall
+    Chocolatey packages.
 - The agent also reports each available backend's installed packages in the
   software facts (design 0006), with the backend name as `source`, so the
   server can preview what an exclusive set would remove.

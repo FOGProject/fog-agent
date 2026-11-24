@@ -500,7 +500,11 @@ remove it. On an exclusive host the disabled entry's package is sent in
 
 `manage` is optional. `"exclusive"` makes the agent also uninstall every
 package that a backend lists as installed and that is neither assigned nor
-protected (design 0003, "Exclusive level"). Those removals have no result
+protected. Protected packages include the ones the OS shipped with: the
+snaps in the snapd seed and the flatpak apps in a `preinstall.d` directory.
+A flatpak baked into the image with no `preinstall.d` entry is not
+recognized, so check the server's preview (design 0003, "Exclusive level").
+Those removals have no result
 item. Any other value, `"assigned"` and a missing field included, removes
 nothing beyond the entries' own `absent` state. An exclusive policy with no
 entries is still acted on.
