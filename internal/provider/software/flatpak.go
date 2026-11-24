@@ -71,6 +71,18 @@ func ParseFlatpakList(out string) map[string]string {
 	return m
 }
 
+// MatchFlatpakID returns the installed application id from `flatpak list
+// --columns=application` output that equals id ignoring case, or id itself
+// when none does.
+func MatchFlatpakID(out, id string) string {
+	for _, line := range strings.Split(out, "\n") {
+		if got := strings.TrimSpace(line); got != "" && strings.EqualFold(got, id) {
+			return got
+		}
+	}
+	return id
+}
+
 // FlatpakInstallArgs is the command line Install runs, exposed for the
 // tests. An empty source means the flathub remote.
 func FlatpakInstallArgs(e Entry) []string {
@@ -109,5 +121,16 @@ func (f *Flatpak) Upgrade(ctx context.Context, e Entry) Result {
 
 // Uninstall implements Backend.
 func (f *Flatpak) Uninstall(ctx context.Context, e Entry) Result {
+	// The installed map is lowercase, but flatpak ids are case-sensitive:
+	// exclusive removal passes the lowercase key. Every uninstall resolves
+	// the real-case id from the installed list, not only exclusive ones.
+	// That also fixes an absent entry whose package was typed in the wrong
+	// case, which flatpak alone would refuse. An id with no match, or a
+	// list that fails, passes through unchanged.
+	lctx, cancel := context.WithTimeout(ctx, ListTimeout)
+	defer cancel()
+	if r := runCmd(lctx, f.path(), 0, "list", "--system", "--app", "--columns=application"); r.Status == "" && r.ExitCode == 0 {
+		e.Package = MatchFlatpakID(r.Details, e.Package)
+	}
 	return runCmd(ctx, f.path(), e.Timeout, FlatpakUninstallArgs(e)...)
 }

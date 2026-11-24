@@ -6,10 +6,13 @@
 package software
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"sort"
+
+	provider "github.com/FOGProject/fog-agent/internal/provider/software"
 )
 
 // Program is one installed program as the OS reports it.
@@ -36,10 +39,22 @@ type Program struct {
 // programs, and the caller must not report a list in that case -- the
 // server's reconcile marks everything absent from a reported list as
 // removed, so a false "empty" would wipe a host's whole software history.
-func List() ([]Program, bool) {
+//
+// The error is non-nil, with the bool false, when a package manager the
+// agent drives is available but its list failed. A list without that
+// manager's rows would be partial, and the server would read the missing rows
+// as removed, so this cycle reports no software at all. A manager that is not
+// installed is not an error: it simply has no rows.
+func List() ([]Program, bool, error) {
 	progs, collected := list()
 	if !collected {
-		return nil, false
+		return nil, false, nil
+	}
+	// The package managers the software capability drives report what they
+	// hold too, so the server can preview an exclusive set against them.
+	progs, err := appendBackends(context.Background(), progs, provider.BackendNames(), provider.BackendFor)
+	if err != nil {
+		return nil, false, err
 	}
 	sort.Slice(progs, func(a, b int) bool {
 		if progs[a].Name != progs[b].Name {
@@ -50,7 +65,40 @@ func List() ([]Program, bool) {
 		}
 		return progs[a].Version < progs[b].Version
 	})
-	return progs, true
+	return progs, true, nil
+}
+
+// appendBackends appends every named backend's rows, stopping at the first
+// available backend whose list fails.
+func appendBackends(ctx context.Context, progs []Program, names []string, lookup func(string) provider.Backend) ([]Program, error) {
+	for _, name := range names {
+		var err error
+		if progs, err = appendBackend(ctx, progs, name, lookup(name)); err != nil {
+			return nil, err
+		}
+	}
+	return progs, nil
+}
+
+// appendBackend adds one row per package the backend lists as installed, with
+// the backend's name as Source. A missing or unavailable backend contributes
+// nothing and is not an error. An available backend whose list fails is an
+// error, because the rows it would have added are unknown.
+func appendBackend(ctx context.Context, progs []Program, name string, b provider.Backend) ([]Program, error) {
+	if b == nil {
+		return progs, nil
+	}
+	if ok, _ := b.Available(); !ok {
+		return progs, nil
+	}
+	installed, err := b.Installed(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("%s installed list: %w", name, err)
+	}
+	for id, ver := range installed {
+		progs = append(progs, Program{Name: id, Version: ver, Source: name})
+	}
+	return progs, nil
 }
 
 // Hash is a stable digest of a sorted program list: the agent sends the list

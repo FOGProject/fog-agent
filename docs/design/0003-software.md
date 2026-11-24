@@ -180,6 +180,52 @@ Chocolatey specifics that shape the code:
 - `choco` holds its own lock and returns 1618-style codes when it collides
   with a running installer, which the retry outcome already handles.
 
+### Exclusive level
+
+The software policy carries an optional `manage` field. `"exclusive"` adds a
+step after the assigned entries of a backend converge: the agent uninstalls
+every package that backend lists as installed and that is neither assigned
+nor protected. Any other value (`""`, `"assigned"`, a missing field from an
+older server) is the behavior above, with no removal.
+
+- `Unwanted(manage, entries, installed, keep)` is pure. It returns nil unless
+  the level is exclusive. A package is assigned when ANY entry for the
+  backend names it, present or absent. Ids compare in lowercase, as `Decide`
+  does. A blank id is never returned.
+- `ConvergeExclusive` runs after `Converge`, so it reads the installed list
+  the assigned entries left. It does nothing when the backend is unavailable
+  or the list fails. A backend that implements `Keeper` returns the ids it
+  protects and an optional removal order. When `Keep` fails, nothing is
+  removed for that backend.
+- A backend with no entries is also cleaned when the level is exclusive, if
+  it is available. The Chocolatey bootstrap does not run for it.
+- A disabled entry is not removed. The server sends its package in the
+  policy's `retain` list (`{backend, package}`). The agent treats a retained
+  package as assigned for protection: it is never unwanted, and for choco its
+  dependency closure is kept too.
+- The agent skips exclusive removal for a backend, and logs why, when any
+  `Converge` report for it is `cannot_run`, or when an assigned `present`
+  entry is still not installed after the pass. A failed install can leave its
+  dependencies behind, and those must not be taken for strays. An `absent`
+  entry that is not installed is the goal and does not skip.
+- Removals are not reported per item, because the server has no row for a
+  package it did not assign. The agent logs each one.
+- Protection, per backend:
+  - choco keeps `chocolatey`, every `chocolatey-*.extension`, and the
+    dependency closure of each installed assigned `present` package, read
+    from `lib\<id>\<id>.nuspec`. A missing or unreadable nuspec in the
+    closure is an error, except for `chocolatey` and its extensions, which
+    are kept by name. A package is removed before its own dependencies.
+  - snap keeps every snap whose `snap list` Notes include base, core, snapd,
+    kernel or gadget, and the providers of the slots that `snap connections`
+    shows for an assigned present snap (content snaps).
+  - flatpak needs no `Keeper`: its installed list is `--app` only, so
+    runtimes are never candidates. The Flatpak uninstall resolves the real
+    case of an application id, because the installed map is lowercase.
+- The agent also reports each available backend's installed packages in the
+  software facts (design 0006), with the backend name as `source`, so the
+  server can preview what an exclusive set would remove.
+
 ## 6. UI
 
 - **Software** node: list, add, edit, delete, with the same permission

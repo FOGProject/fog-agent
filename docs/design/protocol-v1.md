@@ -495,7 +495,21 @@ already run before any software entry.
 version (pinned; installed with `--force` when the host has another).
 `state` is `present` or `absent`. A disabled entry is left out, not sent as
 absent: turning an entry off stops managing the package, it does not
-remove it.
+remove it. On an exclusive host the disabled entry's package is sent in
+`retain`, so the agent keeps it instead of removing it as unassigned.
+
+`manage` is optional. `"exclusive"` makes the agent also uninstall every
+package that a backend lists as installed and that is neither assigned nor
+protected (design 0003, "Exclusive level"). Those removals have no result
+item. Any other value, `"assigned"` and a missing field included, removes
+nothing beyond the entries' own `absent` state. An exclusive policy with no
+entries is still acted on.
+
+`retain` is optional, a list of `{"backend": "choco", "package": "vlc"}`. It
+names the packages of disabled entries. On an exclusive host the agent keeps
+each one, and for choco it keeps the package's dependencies too. Backend and
+package compare without regard to case. A retained package that is not
+installed is ignored. A missing field means nothing is retained.
 
 `bootstrap` is what the agent does when Chocolatey is missing. An empty
 `url` (the default, `FOG_SOFTWARE_CHOCO_BOOTSTRAP_URL`) means nothing: every

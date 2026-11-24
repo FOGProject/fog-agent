@@ -62,6 +62,80 @@ func ParseSnapList(out string) map[string]string {
 	return m
 }
 
+// snapPlumbingNotes are the `snap list` Notes values that mark a snap other
+// snaps or the system run on.
+var snapPlumbingNotes = map[string]bool{"base": true, "core": true, "snapd": true, "kernel": true, "gadget": true}
+
+// ParseSnapPlumbing reads `snap list` output and returns the lowercase names
+// whose Notes column (the sixth, comma-separated) holds a plumbing note:
+// base, core, snapd, kernel or gadget.
+func ParseSnapPlumbing(out string) map[string]bool {
+	m := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 6 || fields[0] == "Name" {
+			continue
+		}
+		for _, note := range strings.Split(fields[5], ",") {
+			if snapPlumbingNotes[note] {
+				m[strings.ToLower(fields[0])] = true
+				break
+			}
+		}
+	}
+	return m
+}
+
+// ParseSnapSlotProviders reads `snap connections <name>` output and returns
+// the lowercase names of the snaps that provide a slot the snap is
+// connected to: the Slot column is `provider:slot`, `:slot` for the system
+// itself, or `-` when unconnected.
+func ParseSnapSlotProviders(out string) map[string]bool {
+	m := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] == "Interface" {
+			continue
+		}
+		slot := fields[2]
+		if slot == "-" || strings.HasPrefix(slot, ":") {
+			continue
+		}
+		if name, _, ok := strings.Cut(slot, ":"); ok && name != "" {
+			m[strings.ToLower(name)] = true
+		}
+	}
+	return m
+}
+
+// Keep implements Keeper: every base, core, snapd, kernel and gadget snap,
+// plus the providers of the slots an assigned present snap is connected to
+// (content snaps). A command that fails is an error, so nothing is removed
+// on a guess.
+func (s *Snap) Keep(ctx context.Context, assigned []Entry, installed map[string]string) (map[string]bool, []string, error) {
+	ctx, cancel := context.WithTimeout(ctx, ListTimeout)
+	defer cancel()
+	r := runCmd(ctx, s.path(), 0, "list")
+	if r.Status == StatusCannotRun || r.Status == StatusTimeout || r.ExitCode != 0 {
+		return nil, nil, fmt.Errorf("snap list: %s", strings.TrimSpace(firstLine(r.Details)))
+	}
+	keep := ParseSnapPlumbing(r.Details)
+	for _, e := range assigned {
+		name := strings.ToLower(e.Package)
+		if _, there := installed[name]; !there || e.State == StateAbsent {
+			continue
+		}
+		r := runCmd(ctx, s.path(), 0, "connections", name)
+		if r.Status == StatusCannotRun || r.Status == StatusTimeout || r.ExitCode != 0 {
+			return nil, nil, fmt.Errorf("snap connections %s: %s", name, strings.TrimSpace(firstLine(r.Details)))
+		}
+		for p := range ParseSnapSlotProviders(r.Details) {
+			keep[p] = true
+		}
+	}
+	return keep, nil, nil
+}
+
 // channelArg is the --channel flag for a source, or nothing when the
 // source is empty and the snap's default channel applies.
 func channelArg(e Entry) []string {
