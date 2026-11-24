@@ -8,6 +8,7 @@ package software
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -37,6 +38,41 @@ type Policy struct {
 	// Bootstrap is what to do when the backend is missing.
 	Bootstrap Bootstrap `json:"bootstrap"`
 	Entries   []Entry   `json:"entries"`
+	// Manage is the level: "exclusive" also removes every package a backend
+	// lists that is neither assigned nor protected. Anything else, an older
+	// server's missing field included, means assigned only.
+	Manage string `json:"manage,omitempty"`
+	// Retain lists the packages of disabled entries. An exclusive host keeps
+	// them instead of removing them. An older server omits it.
+	Retain []RetainItem `json:"retain,omitempty"`
+}
+
+// RetainItem names a package an exclusive host must keep although no
+// enabled entry assigns it, the package of a disabled entry.
+type RetainItem struct {
+	Backend string `json:"backend"`
+	Package string `json:"package"`
+}
+
+// The levels the server sends in Policy.Manage.
+const (
+	ManageAssigned  = "assigned"
+	ManageExclusive = "exclusive"
+)
+
+// ExclusiveTimeout is the timeout, in seconds, of an exclusive removal. It
+// matches the server's default entry timeout (swTimeout 900), since a
+// removal has no entry of its own to carry one.
+const ExclusiveTimeout = 900
+
+// stateRetained marks an Entry built from a retain item. It is internal: it
+// never comes from the server and is not a state a backend is asked to hold.
+const stateRetained = "retain"
+
+// BackendNames is every backend name this agent has, in the order a
+// backend-less exclusive pass visits them. BackendFor resolves each one.
+func BackendNames() []string {
+	return []string{"choco", "flatpak", "snap"}
 }
 
 // The version policies and states the server sends.
@@ -197,6 +233,140 @@ func Converge(ctx context.Context, b Backend, entries []Entry) []Report {
 		}
 	}
 	return reports
+}
+
+// Keeper is the optional half of a Backend that knows which installed
+// packages are plumbing the backend or an assigned package needs (a
+// runtime, a base, a dependency). A backend without it protects nothing
+// beyond the assigned entries.
+type Keeper interface {
+	// Keep returns the lowercase ids that exclusive removal must never
+	// touch. order, which may be nil, is the preferred removal order for
+	// ids. An error means the protected set is unknown, and nothing is
+	// removed.
+	Keep(ctx context.Context, assigned []Entry, installed map[string]string) (keep map[string]bool, order []string, err error)
+}
+
+// Unwanted returns the installed ids exclusive removal should uninstall, in
+// sorted order. It is nil for every level but exclusive.
+//
+// An id is wanted when ANY entry for the backend names it, present or
+// absent: an absent entry is still managed by its entry, which already
+// removed it or is about to. A blank id is never returned: there would be
+// nothing to pass to the backend, and a remove-everything bug is exactly
+// the shape this must not have.
+func Unwanted(manage string, entries []Entry, installed map[string]string, keep map[string]bool) []string {
+	if manage != ManageExclusive {
+		return nil
+	}
+	assigned := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		assigned[strings.ToLower(e.Package)] = true
+	}
+	var out []string
+	for id := range installed {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" || assigned[id] || keep[id] {
+			continue
+		}
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ConvergeExclusive is the exclusive level's removal step for one backend.
+// Call it after Converge so the installed list it reads already holds what
+// the assigned entries did. It returns the ids it asked the backend to
+// remove. It acts only when the backend is available, the list reads, and
+// the protected set is known: any doubt removes nothing. Doubt includes a
+// Converge report of cannot_run for the backend (reports), and an assigned
+// present entry that is still not installed after the pass: a failed install
+// can leave dependencies behind that must not be mistaken for strays. Each
+// removal is logged through logf and is not reported to the server, which
+// has no row for a package it never assigned.
+//
+// The policy supplies the level and the retain list: packages of disabled
+// entries, which an exclusive host keeps rather than removes.
+func ConvergeExclusive(ctx context.Context, name string, b Backend, entries []Entry, reports []Report, policy Policy, logf func(string)) []string {
+	if policy.Manage != ManageExclusive {
+		return nil
+	}
+	manage := policy.Manage
+	if ok, _ := b.Available(); !ok {
+		return nil
+	}
+	for _, r := range reports {
+		if r.Status == StatusCannotRun {
+			logf(fmt.Sprintf("software %s: exclusive removal skipped, %q could not run", name, r.Entry.Package))
+			return nil
+		}
+	}
+	installed, err := b.Installed(ctx)
+	if err != nil {
+		logf(fmt.Sprintf("software %s: exclusive removal skipped, installed list: %s", name, err))
+		return nil
+	}
+	for _, e := range entries {
+		if e.State == StateAbsent {
+			continue
+		}
+		if _, there := installed[strings.ToLower(e.Package)]; !there {
+			logf(fmt.Sprintf("software %s: exclusive removal skipped, assigned %q is not installed", name, e.Package))
+			return nil
+		}
+	}
+	// A retained package is managed like an assigned one for protection
+	// (Unwanted skips it, Keep follows its dependencies), but it is not an
+	// entry the pass above had to install.
+	managed := append([]Entry(nil), entries...)
+	for _, r := range policy.Retain {
+		if strings.EqualFold(r.Backend, name) {
+			managed = append(managed, Entry{Backend: name, Package: r.Package, State: stateRetained})
+		}
+	}
+	entries = managed
+	var keep map[string]bool
+	var order []string
+	if k, ok := b.(Keeper); ok {
+		keep, order, err = k.Keep(ctx, entries, installed)
+		if err != nil {
+			logf(fmt.Sprintf("software %s: exclusive removal skipped, protected set unknown: %s", name, err))
+			return nil
+		}
+	}
+	unwanted := Unwanted(manage, entries, installed, keep)
+	var removed []string
+	for _, id := range orderRemovals(unwanted, order) {
+		r := b.Uninstall(ctx, Entry{Backend: name, Package: id, State: StateAbsent, Timeout: ExclusiveTimeout})
+		_, code, detail := fill(StatusRemoved, r)
+		logf(fmt.Sprintf("software %s: exclusive removal of %q, exit %d (%s)", name, id, code, firstLine(detail)))
+		removed = append(removed, id)
+	}
+	return removed
+}
+
+// orderRemovals puts ids in the preferred order: those named in order first,
+// in that order, then the rest as given. An id in order that is not in ids
+// is ignored, so a preference can never add a removal.
+func orderRemovals(ids, order []string) []string {
+	want := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range order {
+		if want[id] {
+			out = append(out, id)
+			delete(want, id)
+		}
+	}
+	for _, id := range ids {
+		if want[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // IsPinned says whether the entry asks for an exact version.

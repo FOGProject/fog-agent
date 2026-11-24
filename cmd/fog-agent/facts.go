@@ -83,7 +83,13 @@ func attachFacts(st *enroll.State, req *enroll.PollRequest, now time.Time, out *
 			sent.inventory = h
 		}
 	}
-	if progs, ok := software.List(); ok {
+	progs, ok, err := software.List()
+	if err != nil {
+		// No software block this cycle: neither a hash nor a "want" answer
+		// is recorded for it, so the next collection tries again.
+		out.say("software facts skipped: " + err.Error())
+	}
+	if ok {
 		if h := software.Hash(progs); h != st.Config.SoftwareHash || st.Config.WantSoftware {
 			req.Software = progs
 			sent.software = h

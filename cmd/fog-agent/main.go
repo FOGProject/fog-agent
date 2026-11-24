@@ -1316,7 +1316,25 @@ func runSoftware(ctx context.Context, st *enroll.State, client *enroll.Client, r
 		if ok, _ := b.Available(); !ok {
 			missing = append(missing, name)
 		}
-		reports = append(reports, software.Converge(ctx, b, groups[name])...)
+		rs := software.Converge(ctx, b, groups[name])
+		reports = append(reports, rs...)
+		// Exclusive level: after the assigned entries, remove what is
+		// installed and neither assigned nor protected. Not reported per
+		// item; each removal is logged.
+		software.ConvergeExclusive(ctx, name, b, groups[name], rs, *policy, out.say)
+	}
+	// An exclusive set also cleans a backend that has no entries: with
+	// nothing assigned, everything it lists is unwanted. Only an available
+	// backend, and never the Chocolatey bootstrap, which is for entries.
+	if policy.Manage == software.ManageExclusive {
+		for _, name := range software.BackendNames() {
+			if _, has := groups[name]; has {
+				continue
+			}
+			if b := software.BackendFor(name); b != nil {
+				software.ConvergeExclusive(ctx, name, b, nil, nil, *policy, out.say)
+			}
+		}
 	}
 	if bootstrapFailed {
 		// Not every poll: a bootstrap that failed is tried again at the
@@ -1567,7 +1585,12 @@ func missingBackendAppeared(st *enroll.State) bool {
 // driftDue says whether the software set should be re-checked without
 // the revision having moved.
 func driftDue(st *enroll.State, policy *software.Policy, now time.Time) bool {
-	if policy == nil || len(policy.Entries) == 0 || policy.DriftInterval <= 0 {
+	// An exclusive set with no entries still has work: removing what is
+	// installed and not assigned.
+	if policy == nil || policy.DriftInterval <= 0 {
+		return false
+	}
+	if len(policy.Entries) == 0 && policy.Manage != software.ManageExclusive {
 		return false
 	}
 	return now.Sub(st.Config.SoftwareChecked) >= time.Duration(policy.DriftInterval)*time.Second || missingBackendAppeared(st)
