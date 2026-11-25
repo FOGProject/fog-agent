@@ -253,13 +253,51 @@ func refuseMsstore(e Entry) (Result, bool) {
 	return Result{}, false
 }
 
+// wingetPinRefused reports whether winget declined a pinned install. winget
+// install never downgrades: when another version is installed it falls back
+// to an upgrade and exits with 0x8A15002B (update not applicable). The
+// uint32 compare matches the exit code on every architecture (see
+// wingetUpgradeExit).
+func wingetPinRefused(e Entry, r Result) bool {
+	return IsPinned(e) && r.Status == "" && uint32(r.ExitCode) == wingetUpdateNotApplicable
+}
+
+// wingetOtherVersionInstalled reports whether the package is installed at a
+// version other than the pin. The retry needs both: with nothing installed
+// an uninstall cannot help, and with the pin already installed a retry would
+// uninstall and reinstall on every pass.
+func wingetOtherVersionInstalled(e Entry, installed map[string]string) bool {
+	have, present := installed[strings.ToLower(e.Package)]
+	return present && !sameVersion(have, e.Version)
+}
+
 // Install implements Backend. A pinned entry installs with --version, so
-// there is no refusePin here.
+// there is no refusePin here. When winget refuses to move to the pin and
+// another version is installed, that version is removed and the pinned
+// install runs again. Otherwise winget's own result is reported.
 func (w *Winget) Install(ctx context.Context, e Entry) Result {
 	if r, refused := refuseMsstore(e); refused {
 		return r
 	}
-	return runCmdIn(ctx, w.dir(), w.path(), e.Timeout, WingetInstallArgs(e)...)
+	r := runCmdIn(ctx, w.dir(), w.path(), e.Timeout, WingetInstallArgs(e)...)
+	if !wingetPinRefused(e, r) {
+		return r
+	}
+	// Read the installed version only on this rare path, so a normal
+	// install costs no extra export.
+	installed, err := w.Installed(ctx)
+	if err != nil || !wingetOtherVersionInstalled(e, installed) {
+		return r
+	}
+	u := w.Uninstall(ctx, e)
+	details := "install --version: " + r.Details + "\nuninstall: " + u.Details
+	if u.Status != "" || u.ExitCode != 0 {
+		u.Details = procs.Clip(details, MaxDetails)
+		return u
+	}
+	r = runCmdIn(ctx, w.dir(), w.path(), e.Timeout, WingetInstallArgs(e)...)
+	r.Details = procs.Clip(details+"\ninstall --version: "+r.Details, MaxDetails)
+	return r
 }
 
 // Upgrade implements Backend.

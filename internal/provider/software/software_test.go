@@ -22,6 +22,7 @@ func TestDecide(t *testing.T) {
 		{"present, pinned, missing", Entry{Package: "vlc", State: StatePresent, Version: "3.1"}, nil, Install},
 		{"present, pinned, wrong version", Entry{Package: "vlc", State: StatePresent, Version: "3.1"}, map[string]string{"vlc": "3.0"}, Install},
 		{"present, pinned, right version", Entry{Package: "vlc", State: StatePresent, Version: "3.1"}, map[string]string{"vlc": "3.1"}, None},
+		{"present, pinned, winget zero-padded version", Entry{Package: "7zip.7zip", State: StatePresent, Version: "26.02"}, map[string]string{"7zip.7zip": "26.02.00.0"}, None},
 		{"absent, installed", Entry{Package: "vlc", State: StateAbsent}, map[string]string{"vlc": "3.0"}, Uninstall},
 		{"absent, missing", Entry{Package: "vlc", State: StateAbsent}, nil, None},
 		{"package id case-insensitive", Entry{Package: "GoogleChrome", State: StatePresent}, map[string]string{"googlechrome": "1"}, None},
@@ -30,6 +31,31 @@ func TestDecide(t *testing.T) {
 		got, _ := Decide(c.entry, c.installed)
 		if got != c.want {
 			t.Errorf("%s: got %s, want %s", c.name, got, c.want)
+		}
+	}
+}
+
+// sameVersion ignores case and trailing all-zero segments, nothing else.
+func TestSameVersion(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"26.02.00.0", "26.02", true},
+		{"26.02", "26.02.00.0", true},
+		{"1.2.0", "1.2", true},
+		{"1.0", "1", true},
+		{"1.2", "1.2", true},
+		{"1.0.0-RC1", "1.0.0-rc1", true},
+		{"1.20", "1.2", false},
+		{"26.02", "26.2", false},
+		{"1.2.0.1", "1.2", false},
+		{"1.2", "1.3", false},
+		{"", "", true},
+	}
+	for _, c := range cases {
+		if got := sameVersion(c.a, c.b); got != c.want {
+			t.Errorf("sameVersion(%q, %q) = %v, want %v", c.a, c.b, got, c.want)
 		}
 	}
 }
