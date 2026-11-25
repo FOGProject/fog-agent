@@ -8,6 +8,7 @@ package software
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 )
@@ -163,10 +164,25 @@ func Decide(e Entry, installed map[string]string) (Action, string) {
 	case VersionLatest:
 		return Upgrade, fmt.Sprintf("%s %s is installed; tracking latest", e.Package, have)
 	}
-	if strings.EqualFold(have, e.Version) {
+	if sameVersion(have, e.Version) {
 		return None, fmt.Sprintf("%s %s is installed as pinned", e.Package, have)
 	}
 	return Install, fmt.Sprintf("%s %s is installed; pinned to %s", e.Package, have, e.Version)
+}
+
+// sameVersion compares two versions without case and without trailing
+// all-zero dot segments. winget export reports the ARP version padded with
+// zeros (26.02.00.0) where the catalog and the pin say 26.02. The remaining
+// segments compare as exact strings, so 26.02 and 26.2 stay different.
+func sameVersion(a, b string) bool {
+	trimZeroSegments := func(v string) []string {
+		segs := strings.Split(strings.ToLower(strings.TrimSpace(v)), ".")
+		for len(segs) > 1 && strings.Trim(segs[len(segs)-1], "0") == "" {
+			segs = segs[:len(segs)-1]
+		}
+		return segs
+	}
+	return slices.Equal(trimZeroSegments(a), trimZeroSegments(b))
 }
 
 // Report is one entry's result, ready to post.

@@ -169,6 +169,53 @@ func TestWingetUpgradeExit(t *testing.T) {
 	}
 }
 
+// A pinned install that winget turns into a no-op upgrade is recognized.
+// Nothing else is.
+func TestWingetPinRefused(t *testing.T) {
+	pinned := Entry{Package: "7zip.7zip", Version: "25.01"}
+	cases := []struct {
+		name string
+		e    Entry
+		r    Result
+		want bool
+	}{
+		{"pinned, amd64 code", pinned, Result{ExitCode: 2316632107}, true},
+		{"pinned, 386 code", pinned, Result{ExitCode: -1978335189}, true},
+		{"unpinned", Entry{Package: "7zip.7zip"}, Result{ExitCode: 2316632107}, false},
+		{"latest", Entry{Package: "7zip.7zip", Version: VersionLatest}, Result{ExitCode: 2316632107}, false},
+		{"exit 0", pinned, Result{}, false},
+		{"exit 1", pinned, Result{ExitCode: 1}, false},
+		{"cannot_run", pinned, Result{Status: StatusCannotRun, ExitCode: 2316632107}, false},
+		{"timeout", pinned, Result{Status: StatusTimeout, ExitCode: 2316632107}, false},
+	}
+	for _, c := range cases {
+		if got := wingetPinRefused(c.e, c.r); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+// The uninstall-and-retry runs only when another version is installed: not
+// when nothing is installed, and not when the pin already is.
+func TestWingetOtherVersionInstalled(t *testing.T) {
+	pinned := Entry{Package: "7zip.7zip", Version: "26.02"}
+	cases := []struct {
+		name      string
+		installed map[string]string
+		want      bool
+	}{
+		{"newer installed", map[string]string{"7zip.7zip": "26.06.00.0"}, true},
+		{"pin installed, zero-padded", map[string]string{"7zip.7zip": "26.02.00.0"}, false},
+		{"nothing installed", map[string]string{}, false},
+		{"other package only", map[string]string{"mozilla.firefox": "133.0"}, false},
+	}
+	for _, c := range cases {
+		if got := wingetOtherVersionInstalled(pinned, c.installed); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestWingetRoot(t *testing.T) {
 	if got := wingetRoot(`C:\Program Files`, `C:\Program Files (x86)`); got != `C:\Program Files` {
 		t.Errorf("both set: got %q", got)

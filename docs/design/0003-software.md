@@ -214,6 +214,18 @@ and removes packages at machine scope.
   `APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE` (0x8A15002B). The agent
   maps that code to 0, so the entry reports `converged`. Every other code
   goes to the return-code table.
+- **A pinned entry can downgrade.** `winget install` never moves to an
+  older version. It falls back to an upgrade and exits with 0x8A15002B.
+  For a pinned entry, the agent then reads the installed list. Only when the
+  package is installed at a version other than the pin does it run
+  `uninstall` and `install --version` again. With nothing installed, or with
+  the pin already installed, it reports winget's own result, so a pass never
+  uninstalls a package for nothing. A failed uninstall is reported with its own
+  status and exit code. The details carry the output of every step.
+- **Versions compare without trailing zero segments.** `winget export`
+  reports the installed version padded with zeros (`26.02.00.0`), and the
+  pin says `26.02`. So `26.02.00.0` equals `26.02`, and `26.02` differs from
+  `26.2`. This applies to every backend.
 - **The exclusive level never removes winget packages** (below).
 
 ### Exclusive level
