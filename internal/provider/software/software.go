@@ -1,8 +1,8 @@
 // Package software is the software capability (design 0003): a desired set
 // of packages the host is converged toward through a package manager,
 // with detection done by the manager's own installed list. Chocolatey is
-// the first Backend, then flatpak and snap; the convergence logic knows
-// nothing about any of them.
+// the first Backend, then flatpak, snap and winget; the convergence logic
+// knows nothing about any of them.
 package software
 
 import (
@@ -69,8 +69,10 @@ const ExclusiveTimeout = 900
 // never comes from the server and is not a state a backend is asked to hold.
 const stateRetained = "retain"
 
-// BackendNames is every backend name this agent has, in the order a
-// backend-less exclusive pass visits them. BackendFor resolves each one.
+// BackendNames is every backend name the software inventory reports and a
+// backend-less exclusive pass visits, in that order. BackendFor resolves
+// each one. winget is not listed: its inventory source is a separate
+// change, and exclusive removal never runs for it (Winget.Keep).
 func BackendNames() []string {
 	return []string{"choco", "flatpak", "snap"}
 }
@@ -393,6 +395,8 @@ func BackendFor(name string) Backend {
 		return &Flatpak{}
 	case "snap":
 		return &Snap{}
+	case "winget":
+		return &Winget{}
 	}
 	return nil
 }

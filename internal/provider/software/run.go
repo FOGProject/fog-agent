@@ -17,12 +17,19 @@ import (
 // for none). The Status is empty when the program ran and the exit code is
 // its own. Every backend runs its commands through here.
 func runCmd(ctx context.Context, path string, timeout int, args ...string) Result {
+	return runCmdIn(ctx, "", path, timeout, args...)
+}
+
+// runCmdIn is runCmd with the working directory set to dir. An empty dir is
+// the agent's own, as for runCmd. winget needs its own folder (winget.go).
+func runCmdIn(ctx context.Context, dir, path string, timeout int, args ...string) Result {
 	runCtx, cancel := ctx, context.CancelFunc(func() {})
 	if timeout > 0 {
 		runCtx, cancel = context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
 	}
 	defer cancel()
 	cmd := exec.CommandContext(runCtx, path, args...)
+	cmd.Dir = dir
 	procs.Attach(cmd)
 	out := procs.NewTail(MaxDetails)
 	cmd.Stdout, cmd.Stderr = out, out
