@@ -60,8 +60,8 @@ also has the simpler self-hosting story: a folder or share is a valid
 source, which is what offline labs, FOG's home turf, need. Its costs are
 real and named: it must be installed on the host (follow-on), and the
 community feed rate-limits fleets, which the per-entry `source` answers.
-winget stays a later backend, and the natural route for it is the per-user
-helper from 0001 section 6.1 rather than the service.
+The winget backend ships in section 5, "winget". It runs in the service as
+SYSTEM. It does not use the per-user helper from 0001 section 6.1.
 
 **The backend is the `choco` CLI, not "Windows".** The provider execs a
 `choco` binary at a configured path (default
@@ -180,6 +180,42 @@ Chocolatey specifics that shape the code:
 - `choco` holds its own lock and returns 1618-style codes when it collides
   with a running installer, which the retry outcome already handles.
 
+### winget
+
+`winget.go` is the winget backend for Windows. It installs, upgrades, pins
+and removes packages at machine scope.
+
+- **It runs in the service as SYSTEM.** Machine scope is what a fleet
+  wants. The per-user helper does not exist.
+- **Microsoft does not support winget as SYSTEM** (section 2). The path
+  glob below is the mitigation:
+  `<root>\WindowsApps\Microsoft.DesktopAppInstaller_*__8wekyb3d8bbwe\winget.exe`.
+  A winget update moves the folder. So each `Available()` call globs again.
+- `<root>` is `ProgramW6432` when it is set, else `ProgramFiles`. The
+  `windows/386` build runs under WOW64. There, `ProgramFiles` is
+  `Program Files (x86)`, and winget is not in it.
+- When more than one folder matches, the highest version wins. The agent
+  compares the versions numerically, one dotted part at a time.
+- `Winget.Path` overrides the glob. No match is `cannot_run`. The agent
+  never installs App Installer.
+- **The run directory is the folder that holds winget.exe.** winget as
+  SYSTEM loads its DLLs from there.
+- **The installed list is `winget export`**, not `winget list`, which
+  truncates long ids. The export has no `--source`, so it covers every
+  configured source, a private REST source included.
+- **The commands** are `install`, `upgrade` and `uninstall` with
+  `--id <pkg> --exact --source <src> --scope machine --silent` and the
+  agreement flags. The default source is `winget`. A pinned entry adds
+  `--version`, so winget holds an exact version. `--exact` matches the
+  id's case, so enter the id as winget shows it.
+- **The msstore source is refused** with `cannot_run`, and nothing runs.
+  The Microsoft Store source does not work under SYSTEM.
+- **An upgrade with nothing newer** exits with
+  `APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE` (0x8A15002B). The agent
+  maps that code to 0, so the entry reports `converged`. Every other code
+  goes to the return-code table.
+- **The exclusive level never removes winget packages** (below).
+
 ### Exclusive level
 
 The software policy carries an optional `manage` field. `"exclusive"` adds a
@@ -235,6 +271,13 @@ older server) is the behavior above, with no removal.
     case of an application id, because the installed map is lowercase.
   - choco has no built in protection: Windows does not preinstall
     Chocolatey packages.
+  - winget has no protected set yet. Its `Keep` always fails, so exclusive
+    removal skips winget. The reasons:
+    - The export lists packages that Windows ships. App Installer (winget
+      itself) is one of them.
+    - The installed map is lowercase. `--exact` matches the id's case.
+  - winget is not in `BackendNames`. So winget is not in the software facts
+    below.
 - The agent also reports each available backend's installed packages in the
   software facts (design 0006), with the backend name as `source`, so the
   server can preview what an exclusive set would remove.
@@ -273,9 +316,9 @@ older server) is the behavior above, with no removal.
   bootstrap needs no internet (the URL settings already accept any host).
 - FOG as a package source (host `.nupkg` files and serve a NuGet v2 feed
   from the storage node), which also gives an offline path.
-- flatpak and snap shipped in [0018](0018-software-linux-backends.md). The
-  rest remain follow-ons behind the same interface: winget for Windows,
-  apt/dnf/zypper for Linux, brew for macOS.
+- flatpak and snap shipped in [0018](0018-software-linux-backends.md), and
+  winget shipped in section 5. The rest remain follow-ons behind the same
+  interface: apt/dnf/zypper for Linux, brew for macOS.
 - Migrate the two Chocolatey snapin templates: they keep working, and the
   docs page gains a "prefer Software for this" pointer once this ships.
 

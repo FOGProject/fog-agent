@@ -1570,7 +1570,8 @@ func printersDriftDue(cfg enroll.Config, now time.Time) bool {
 }
 
 // missingBackendAppeared says whether any backend that was missing at the last run
-// is there now; a stat per backend, so it costs nothing per poll.
+// is there now. A backend may stat its binary or glob one directory (winget),
+// so it costs little per poll.
 func missingBackendAppeared(st *enroll.State) bool {
 	for _, name := range st.Config.SoftwareMissing {
 		if b := software.BackendFor(name); b != nil {
